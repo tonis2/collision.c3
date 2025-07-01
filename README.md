@@ -69,3 +69,27 @@ Use spatial hashmap, to optimize which meshes to detect collision on.
         // Detect collsion for pairs that are close to eachother    
     };
 ```
+
+
+Basic AABB collision detecting
+
+
+```c
+
+    Aabb3 box = {
+        .min = {1,1,1}, 
+        .max = {2.5,2.5,2.5},
+    };
+
+    Aabb3 box2 = {
+        .min = {2,2,2}, 
+        .max = {3,3,3},
+    };
+
+    // Transform a box based on Matrix4
+    box.transform(MATRIX4F_IDENTITY);
+
+    // Detect if collides
+    if (first.aabb.collides(second.aabb)) {}
+
+```
