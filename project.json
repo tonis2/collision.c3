@@ -1,0 +1,22 @@
+{
+	"langrev": "1",
+	"warnings": ["no-unused"],
+	"authors": [],
+	"version": "0.1.1",
+	"dependency-search-paths": [],
+	"dependencies": [],
+	"features": [],
+	"script-dir": "./",
+	"linked-libraries": [],
+	"sources": ["./test/*", "./src/*"],
+	"targets": {
+		"main": {
+			"type": "executable"
+		},
+		"zip": {
+			"type": "prepare",
+			"exec": ["zip collision.c3l ./src/*.c3 ./manifest.json"]
+		}
+	},
+	"output": "./build"
+}
