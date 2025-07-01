@@ -2,7 +2,7 @@
 # Collision detection library for [C3 language](https://c3-lang.org/)
 
 
-#### Contains algorithms needed for detecting collision for 3D meshes
+#### Contains algorithms needed for detecting collision on 3D meshes
 
 Currently contains
 
