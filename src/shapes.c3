@@ -1,10 +1,30 @@
 module collision;
 
 import std::math;
+import std::io;
 
 interface ConvexShape
 {
     fn Vec3f furthest_point(Vec3f direction);
+}
+
+interface RayCast
+{
+    fn Vec3f intersect(Vec3f direction);
+}
+
+struct Ray {
+    Vec3f origin;
+    Vec3f direction; // Should be a unit vector.
+}
+
+struct Triangle {
+    Vec3f v0, v1, v2;
+}
+
+struct Sphere {
+    Vec3f center;
+    float radius;
 }
 
 // Shapes
@@ -28,6 +48,33 @@ fn Vec3f Aabb3.furthest_point(&self, Vec3f direction) @dynamic {
     return point;
 }
 
+
+fn bool Aabb3.intersect(&self, Ray ray) @dynamic {
+    Vec3f inv_dir = {1.0 / ray.direction.x, 1.0f / ray.direction.y, 1.0f / ray.direction.z};
+    
+    float t1 = (self.min.x - ray.origin.x) * inv_dir.x;
+    float t2 = (self.max.x - ray.origin.x) * inv_dir.x;
+    float t3 = (self.min.y - ray.origin.y) * inv_dir.y;
+    float t4 = (self.max.y - ray.origin.y) * inv_dir.y;
+    float t5 = (self.min.z - ray.origin.z) * inv_dir.z;
+    float t6 = (self.max.z - ray.origin.z) * inv_dir.z;
+
+    float tmin = math::max(math::max(math::min(t1, t2), math::min(t3, t4)), math::min(t5, t6));
+    float tmax = math::min(math::min(math::max(t1, t2), math::max(t3, t4)), math::max(t5, t6));
+
+    // if tmax < 0, ray is intersecting AABB, but the whole AABB is behind us
+    if (tmax < 0) {
+        return false;
+    }
+
+    // if tmin > tmax, ray doesn't intersect AABB
+    if (tmin > tmax) {
+        return false;
+    }
+
+    return true;
+}
+
 fn Vec3f TransformedConvex.furthest_point(&self, Vec3f direction) @dynamic {
     Vec3f local_direction = direction.rotate_by_quat(self.rotation.conjugate());
     Vec3f point = self.shape.furthest_point(local_direction);
@@ -47,4 +94,56 @@ fn Vec3f ConvexPolyhedron.furthest_point(&self, Vec3f direction) @dynamic {
     }
 
     return furthest_point;
+}
+
+fn Vec3f Ray.intersect(&self, Vec3f direction) {
+    // Assuming direction is a unit vector
+    Vec3f intersection = self.origin + self.direction * direction;
+    return intersection;
+}
+
+
+fn bool Triangle.intersect(&self, Ray ray) @dynamic {
+    const float EPSILON = 0.0000001f;
+
+    Vec3f edge1 = self.v1 - self.v0;
+    Vec3f edge2 = self.v2 - self.v0;
+    Vec3f h = ray.direction.cross(edge2);
+    float a = edge1.dot(h);
+
+    if (a > -EPSILON && a < EPSILON) return false; // Ray is parallel to the triangle.
+
+    float f = 1.0f / a;
+    Vec3f s = ray.origin - self.v0;
+    float u = f * s.dot(h);
+
+    if (u < 0.0f || u > 1.0f) return false;
+
+    Vec3f q = s.cross(edge1);
+    float v = f * ray.direction.dot(q);
+
+    if (v < 0.0f || u + v > 1.0f) return false;
+
+    float t = f * edge2.dot(q);
+    return t > EPSILON;
+}
+
+
+fn float Sphere.intersect(&self, Ray ray) @dynamic {
+    Vec3f oc = ray.origin - self.center;
+    float a = ray.direction.dot(ray.direction);
+    float b = 2.0 * oc.dot(ray.direction);
+    float c = oc.dot(oc) - self.radius * self.radius;
+    float discriminant = b * b - 4 * a * c;
+
+    if (discriminant < 0) {
+        return -1.0f; // No intersection
+    } else {
+        // Return the nearest positive intersection distance
+        float t1 = (-b - math::sqrt(discriminant)) / (float)(2.0 * a);
+        if (t1 > 0) return t1;
+        float t2 = (-b + math::sqrt(discriminant)) / (float)(2.0 * a);
+        if (t2 > 0) return t2;
+        return -1.0;
+    }
 }
