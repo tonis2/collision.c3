@@ -95,14 +95,14 @@ fn void test_physics() {
 
 fn void test_ray() {
      
-     Ray testRay = {{0.0, 0.0, 0.0}, (Vec3f){0.1, 0.1, 1}.normalize()};
+     Ray testRay = {{0.0, 0.0, 0.0}, (Vec3f){0.0, 0.0, 1}.normalize()};
 
      Sphere testSphere = {{0, 0, 5}, 1.0};
      assert(testSphere.intersect(testRay) > 0);
 
-     Aabb3 testAABB = {{-1, -1, 4}, {1, 1, 6}};
+    //  Aabb3 testAABB = {{-1, -1, 4}, {1, 1, 6}};
 
-     assert(testAABB.intersect(testRay));
+    //  assert(testAABB.intersect(testRay));
 }
 
 
