@@ -4,6 +4,7 @@ import collision;
 
 import std::math;
 import std::io;
+import std::collections::list;
 
 alias Vec2f @private = float[<2>];
 alias Vec3f @private = float[<3>];
@@ -155,6 +156,21 @@ fn void test_octree() {
     Octree octree = {.boundary = scene_boundary, .capacity = 4};
     defer octree.free();
 
+    Triangle[] triangles = {
+        {{-5,-5,-5}, {5,-5,-5}, {0,5,-5}},
+        {{10,10,10}, {20,10,10}, {15,20,10}},
+        {{-50,-50,-50}, {-40,-50,-50}, {-45,-40,-50}}
+    };
 
+    foreach (tri : triangles) octree.insert(tri);
+
+    Aabb3 player_box = {{ -7, -7, -7 }, { 7, 7, 7 }};
+
+    List{Triangle} potential_collisions;
+    defer potential_collisions.free();
+
+    octree.query(player_box, &potential_collisions);
+
+    assert(potential_collisions.len() == 1);
 
 }
