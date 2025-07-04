@@ -45,6 +45,12 @@ fn bool Aabb3.collides(self, Aabb3 target) {
            self.max.z >= target.min.z;
 }
 
+fn bool Aabb3.contains_point(self, Vec3f point) {
+    return (point.x >= self.min.x && point.x <= self.max.x) &&
+           (point.y >= self.min.y && point.y <= self.max.y) &&
+           (point.z >= self.min.z && point.z <= self.max.z);
+}
+
 fn void Aabb3.expand_min(&self, Vec3f point) {
     self.min.x = math::min(self.min.x, point.x);
     self.min.y = math::min(self.min.y, point.y);
@@ -71,6 +77,32 @@ fn Aabb3 Aabb3.scale(self, Vec3f scale) {
         center - newHalfExtents,
         center + newHalfExtents
     };
+}
+
+fn bool Aabb3.intersect(&self, Ray ray) @dynamic {
+    Vec3f inv_dir = {1.0 / ray.direction.x, 1.0f / ray.direction.y, 1.0f / ray.direction.z};
+    
+    float t1 = (self.min.x - ray.origin.x) * inv_dir.x;
+    float t2 = (self.max.x - ray.origin.x) * inv_dir.x;
+    float t3 = (self.min.y - ray.origin.y) * inv_dir.y;
+    float t4 = (self.max.y - ray.origin.y) * inv_dir.y;
+    float t5 = (self.min.z - ray.origin.z) * inv_dir.z;
+    float t6 = (self.max.z - ray.origin.z) * inv_dir.z;
+
+    float tmin = math::max(math::max(math::min(t1, t2), math::min(t3, t4)), math::min(t5, t6));
+    float tmax = math::min(math::min(math::max(t1, t2), math::max(t3, t4)), math::max(t5, t6));
+
+    // if tmax < 0, ray is intersecting AABB, but the whole AABB is behind us
+    if (tmax < 0) {
+        return false;
+    }
+
+    // if tmin > tmax, ray doesn't intersect AABB
+    if (tmin > tmax) {
+        return false;
+    }
+
+    return true;
 }
 
 fn Aabb3 Aabb3.transform(self, Matrix4f matrix)

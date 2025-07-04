@@ -147,3 +147,14 @@ fn void test_flow() {
          assert(!collision::check_collision(&transformed_shape_1, &transformed_shape_2).collided);
      };
 }
+
+
+fn void test_octree() {
+    Aabb3 scene_boundary = {{-100, -100, -100}, {100, 100, 100}};
+
+    Octree octree = {.boundary = scene_boundary, .capacity = 4};
+    defer octree.free();
+
+
+
+}

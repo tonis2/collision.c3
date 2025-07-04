@@ -48,33 +48,6 @@ fn Vec3f Aabb3.furthest_point(&self, Vec3f direction) @dynamic {
     return point;
 }
 
-
-fn bool Aabb3.intersect(&self, Ray ray) @dynamic {
-    Vec3f inv_dir = {1.0 / ray.direction.x, 1.0f / ray.direction.y, 1.0f / ray.direction.z};
-    
-    float t1 = (self.min.x - ray.origin.x) * inv_dir.x;
-    float t2 = (self.max.x - ray.origin.x) * inv_dir.x;
-    float t3 = (self.min.y - ray.origin.y) * inv_dir.y;
-    float t4 = (self.max.y - ray.origin.y) * inv_dir.y;
-    float t5 = (self.min.z - ray.origin.z) * inv_dir.z;
-    float t6 = (self.max.z - ray.origin.z) * inv_dir.z;
-
-    float tmin = math::max(math::max(math::min(t1, t2), math::min(t3, t4)), math::min(t5, t6));
-    float tmax = math::min(math::min(math::max(t1, t2), math::max(t3, t4)), math::max(t5, t6));
-
-    // if tmax < 0, ray is intersecting AABB, but the whole AABB is behind us
-    if (tmax < 0) {
-        return false;
-    }
-
-    // if tmin > tmax, ray doesn't intersect AABB
-    if (tmin > tmax) {
-        return false;
-    }
-
-    return true;
-}
-
 fn Vec3f TransformedConvex.furthest_point(&self, Vec3f direction) @dynamic {
     Vec3f local_direction = direction.rotate_by_quat(self.rotation.conjugate());
     Vec3f point = self.shape.furthest_point(local_direction);
@@ -128,6 +101,13 @@ fn bool Triangle.intersect(&self, Ray ray) @dynamic {
     return t > EPSILON;
 }
 
+fn Aabb3 Triangle.get_aabb(&self) @dynamic {
+    Aabb3 box = {
+        .min = {math::min(self.v0.x, self.v1.x, self.v2.x), math::min(self.v0.y, self.v1.y, self.v2.y), math::min(self.v0.z, self.v1.z, self.v2.z)},
+        .max = {math::max(self.v0.x, self.v1.x, self.v2.x), math::max(self.v0.y, self.v1.y, self.v2.y), math::max(self.v0.z, self.v1.z, self.v2.z)}
+    };  
+    return box;
+}
 
 fn float Sphere.intersect(&self, Ray ray) @dynamic {
     Vec3f oc = ray.origin - self.center;
