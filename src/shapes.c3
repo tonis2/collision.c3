@@ -75,8 +75,7 @@ fn Vec3f Ray.intersect(&self, Vec3f direction) {
     return intersection;
 }
 
-
-fn bool Triangle.intersect(&self, Ray ray) @dynamic {
+fn bool Triangle.intersect_ray(&self, Ray ray) @dynamic {
     const float EPSILON = 0.0000001f;
 
     Vec3f edge1 = self.v1 - self.v0;
@@ -101,11 +100,31 @@ fn bool Triangle.intersect(&self, Ray ray) @dynamic {
     return t > EPSILON;
 }
 
-fn Aabb3 Triangle.get_aabb(&self) @dynamic {
+fn usz? Triangle.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("v1 %s, v2 %s v3 %s", self.v0, self.v1, self.v2)!;
+
+fn Aabb3 Triangle.get_aabb(&self) {
     Aabb3 box = {
         .min = {math::min(self.v0.x, self.v1.x, self.v2.x), math::min(self.v0.y, self.v1.y, self.v2.y), math::min(self.v0.z, self.v1.z, self.v2.z)},
         .max = {math::max(self.v0.x, self.v1.x, self.v2.x), math::max(self.v0.y, self.v1.y, self.v2.y), math::max(self.v0.z, self.v1.z, self.v2.z)}
     };  
+    return box;
+}
+
+<*
+ @require self.len != 0 : `Triangle list is empty`
+*>
+fn Aabb3 Triangle[].calculate_aabb(self) {   
+    Aabb3 box = {
+        self[0].v0,
+        self[0].v0
+    };
+
+    foreach (triangle: self) {
+        box.expand_by_point(triangle.v0);
+        box.expand_by_point(triangle.v1);
+        box.expand_by_point(triangle.v2);
+    }
+
     return box;
 }
 

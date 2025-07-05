@@ -68,6 +68,14 @@ fn void Aabb3.expand_by_point(&self, Vec3f point) {
     self.expand_min(point);
 }
 
+fn Vec3f Aabb3.center(self) {
+    return {
+        (self.min.x + self.max.x) * (float)0.5,
+        (self.min.y + self.max.y) * (float)0.5,
+        (self.min.z + self.max.z) * (float)0.5
+    };
+}
+
 fn Aabb3 Aabb3.scale(self, Vec3f scale) {
     Vec3f center = (self.min + self.max) * 0.5f;
     Vec3f halfExtents = (self.max - self.min) * 0.5f;
@@ -79,29 +87,37 @@ fn Aabb3 Aabb3.scale(self, Vec3f scale) {
     };
 }
 
-fn bool Aabb3.intersect(&self, Ray ray) @dynamic {
-    Vec3f inv_dir = {1.0 / ray.direction.x, 1.0f / ray.direction.y, 1.0f / ray.direction.z};
-    
-    float t1 = (self.min.x - ray.origin.x) * inv_dir.x;
-    float t2 = (self.max.x - ray.origin.x) * inv_dir.x;
-    float t3 = (self.min.y - ray.origin.y) * inv_dir.y;
-    float t4 = (self.max.y - ray.origin.y) * inv_dir.y;
-    float t5 = (self.min.z - ray.origin.z) * inv_dir.z;
-    float t6 = (self.max.z - ray.origin.z) * inv_dir.z;
+fn Aabb3 Aabb3.child_bounds(self, uint index) {
+    Vec3f c = self.center();
+    Vec3f newMin = self.min;
+    Vec3f newMax = self.max;
 
-    float tmin = math::max(math::max(math::min(t1, t2), math::min(t3, t4)), math::min(t5, t6));
-    float tmax = math::min(math::min(math::max(t1, t2), math::max(t3, t4)), math::max(t5, t6));
+    if (index & 1) {newMin.x = c.x;} else {newMax.x = c.x;}
+    if (index & 2) {newMin.y = c.y;} else {newMax.y = c.y;}
+    if (index & 4) {newMin.z = c.z;} else {newMax.z = c.z;}
 
-    // if tmax < 0, ray is intersecting AABB, but the whole AABB is behind us
-    if (tmax < 0) {
-        return false;
+    return { newMin, newMax };
+}
+
+fn bool Aabb3.intersect_ray(&self, Ray ray) @dynamic {
+    float tmin = 0.0;
+    float tmax = float.max;
+
+    for (uint i = 0; i < 3; ++i) {
+        if (math::abs(ray.direction[i]) < 1e-6) {
+            if (ray.origin[i] < self.min[i] || ray.origin[i] > self.max[i]) {
+                return false; // Parallel and outside the box
+            }
+        } else {
+            float ood = 1.0 / ray.direction[i];
+            float t1 = (self.min[i] - ray.origin[i]) * ood;
+            float t2 = (self.max[i] - ray.origin[i]) * ood;
+            if (t1 > t2) @swap(t1, t2);
+            tmin = math::max(tmin, t1);
+            tmax = math::min(tmax, t2);
+            if (tmin > tmax) return false;
+        }
     }
-
-    // if tmin > tmax, ray doesn't intersect AABB
-    if (tmin > tmax) {
-        return false;
-    }
-
     return true;
 }
 
@@ -134,4 +150,4 @@ fn Aabb3 Aabb3.transform(self, Matrix4f matrix)
     };
 }
 
-fn Vec3f Aabb3.len(self) => self.max - self.min;
+fn Vec3f Aabb3.size(self) => self.max - self.min;

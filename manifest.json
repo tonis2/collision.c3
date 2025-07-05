@@ -2,13 +2,13 @@
   "provides" : "collision",
   "targets" : {
     "macos-x64" : {
-      "sources": ["src/aabb.c3", "src/epa.c3", "src/gjk.c3", "src/helpers.c3", "src/shapes.c3", "src/spatial_hash.c3", "src/octree.c3"]
+      "sources": ["src/aabb.c3", "src/epa.c3", "src/gjk.c3", "src/helpers.c3", "src/shapes.c3", "src/spatial_hash.c3", "src/bvh.c3"]
     },
     "linux-x64" : {
-      "sources": ["src/aabb.c3", "src/epa.c3", "src/gjk.c3", "src/helpers.c3", "src/shapes.c3", "src/spatial_hash.c3", "src/octree.c3"]
+      "sources": ["src/aabb.c3", "src/epa.c3", "src/gjk.c3", "src/helpers.c3", "src/shapes.c3", "src/spatial_hash.c3", "src/bvh.c3"]
     },
     "windows-x64" : {
-      "sources": ["src/aabb.c3", "src/epa.c3", "src/gjk.c3", "src/helpers.c3", "src/shapes.c3", "src/spatial_hash.c3", "src/octree.c3"]
+      "sources": ["src/aabb.c3", "src/epa.c3", "src/gjk.c3", "src/helpers.c3", "src/shapes.c3", "src/spatial_hash.c3", "src/bvh.c3"]
     }
   }
 }

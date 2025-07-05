@@ -150,27 +150,32 @@ fn void test_flow() {
 }
 
 
-fn void test_octree() {
-    Aabb3 scene_boundary = {{-100, -100, -100}, {100, 100, 100}};
-
-    Octree octree = {.boundary = scene_boundary, .capacity = 4};
-    defer octree.free();
-
-    Triangle[] triangles = {
-        {{-5,-5,-5}, {5,-5,-5}, {0,5,-5}},
-        {{10,10,10}, {20,10,10}, {15,20,10}},
-        {{-50,-50,-50}, {-40,-50,-50}, {-45,-40,-50}}
+fn void test_bvh() {
+    Triangle[] terrain = {
+        {{-1, 0, -1}, {1, 0, -1}, {-1, 0, 1}},
+        {{1, 0, -1}, {1, 0, 1}, {-1, 0, 1}},
+        {{1, 0, -1}, {3, 1, -1}, {1, 0, 1}},
+        {{3, 1, -1}, {3, 1, 1}, {1, 0, 1}}
     };
 
-    foreach (tri : triangles) octree.insert(tri);
+    BVHNode bvh;
 
-    Aabb3 player_box = {{ -7, -7, -7 }, { 7, 7, 7 }};
+    bvh.build_recursive(terrain);
 
-    List{Triangle} potential_collisions;
-    defer potential_collisions.free();
+    Ray test_ray = {
+        .origin = {0, 5, 0},
+        .direction = {0, -1, 0}
+    };
 
-    octree.query(player_box, &potential_collisions);
+    Aabb3 box = {
+        .min = {3, 1, 1},
+        .max = {4, 3, 3}
+    };
 
-    assert(potential_collisions.len() == 1);
+    HitInfo hit;
+    bool result = bvh.ray_intersects(test_ray, &hit);
+    bool result_2 = bvh.box_intersects(box, &hit);
 
+    assert(result == true);
+    assert(result_2 == true);
 }
