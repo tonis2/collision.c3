@@ -8,11 +8,6 @@ import std::collections::map;
 
 const int MAX_TRIS_PER_LEAF = 8;
 
-struct HitInfo {
-    float depth;
-    Vec3f point;
-}
-
 // Represents a node in the BVH tree
 struct BVHNode {
     Aabb3 box;
@@ -89,9 +84,12 @@ fn bool BVHNode.ray_intersects(&self, Ray ray, HitInfo* nearest_info = null) {
     if (self.is_leaf()) {
         bool hit = false;
         foreach (triangle: self.triangles) {
-            if (triangle.intersect_ray(ray)) {
+            HitInfo info = triangle.intersect_ray(ray);
+            if (info.hits) {
                 if (nearest_info != null) {
-                    nearest_info.point = triangle.v0;
+                    nearest_info.point = triangle.v0.cross(triangle.v1);
+                    nearest_info.hits = true;
+                    nearest_info.depth = info.depth;
                 }
                 hit = true;
             }
@@ -115,7 +113,7 @@ fn bool BVHNode.box_intersects(&self, Aabb3 box, HitInfo* nearest_info = null) {
         foreach (triangle: self.triangles) {
             if (triangle.collides_aabb(box)) {
                 if (nearest_info != null) {
-                    nearest_info.point = triangle.v0;
+                    nearest_info.point = triangle.v0.cross(triangle.v1);
                 }
                 hit = true;
             }

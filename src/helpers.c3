@@ -7,6 +7,12 @@ alias Vec2f @private = float[<2>];
 alias Vec3f @private = float[<3>];
 alias Vec4f @private = float[<4>];
 
+struct HitInfo {
+    bool hits;
+    float depth;
+    Vec3f point;
+}
+
 fn Quaternionf Quaternionf.conjugate(&self) => {self.i, -self.j, -self.k, -self.l};
 
 fn void Vec3f.set(&self, Vec3f new) => mem::copy(self, &new, Vec3f.sizeof, 0);

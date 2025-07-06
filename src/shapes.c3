@@ -75,29 +75,37 @@ fn Vec3f Ray.intersect(&self, Vec3f direction) {
     return intersection;
 }
 
-fn bool Triangle.intersect_ray(&self, Ray ray) @dynamic {
+
+fn HitInfo Triangle.intersect_ray(&self, Ray ray) {
     const float EPSILON = 0.0000001f;
+
+    HitInfo result = {
+        .hits = false
+    };
 
     Vec3f edge1 = self.v1 - self.v0;
     Vec3f edge2 = self.v2 - self.v0;
     Vec3f h = ray.direction.cross(edge2);
     float a = edge1.dot(h);
 
-    if (a > -EPSILON && a < EPSILON) return false; // Ray is parallel to the triangle.
+    if (a > -EPSILON && a < EPSILON) return result; // Ray is parallel to the triangle.
 
     float f = 1.0f / a;
     Vec3f s = ray.origin - self.v0;
     float u = f * s.dot(h);
 
-    if (u < 0.0f || u > 1.0f) return false;
+    if (u < 0.0f || u > 1.0f) return result;
 
     Vec3f q = s.cross(edge1);
     float v = f * ray.direction.dot(q);
 
-    if (v < 0.0f || u + v > 1.0f) return false;
+    if (v < 0.0f || u + v > 1.0f) return result;
 
     float t = f * edge2.dot(q);
-    return t > EPSILON;
+    return {
+        .hits = true,
+        .depth = t
+    };
 }
 
 fn usz? Triangle.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("v1 %s, v2 %s v3 %s", self.v0, self.v1, self.v2)!;
