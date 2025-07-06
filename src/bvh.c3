@@ -9,7 +9,7 @@ import std::collections::map;
 const int MAX_TRIS_PER_LEAF = 8;
 
 struct HitInfo {
-    float t;
+    float depth;
     Vec3f point;
 }
 
@@ -81,7 +81,7 @@ fn void BVHNode.build_recursive(&self, Triangle[] triangles) {
     
 }
 
-fn bool BVHNode.ray_intersects(&self, Ray ray, HitInfo* nearest_info) {
+fn bool BVHNode.ray_intersects(&self, Ray ray, HitInfo* nearest_info = null) {
     if (!self.box.intersect_ray(ray)) {
         return false;
     }
@@ -90,6 +90,9 @@ fn bool BVHNode.ray_intersects(&self, Ray ray, HitInfo* nearest_info) {
         bool hit = false;
         foreach (triangle: self.triangles) {
             if (triangle.intersect_ray(ray)) {
+                if (nearest_info != null) {
+                    nearest_info.point = triangle.v0;
+                }
                 hit = true;
             }
         }
@@ -102,7 +105,7 @@ fn bool BVHNode.ray_intersects(&self, Ray ray, HitInfo* nearest_info) {
     return hit_left || hit_right;
 }
 
-fn bool BVHNode.box_intersects(&self, Aabb3 box, HitInfo* nearest_info) {
+fn bool BVHNode.box_intersects(&self, Aabb3 box, HitInfo* nearest_info = null) {
     if (!self.box.collides(box)) {
         return false;
     }
@@ -111,6 +114,9 @@ fn bool BVHNode.box_intersects(&self, Aabb3 box, HitInfo* nearest_info) {
         bool hit = false;
         foreach (triangle: self.triangles) {
             if (triangle.collides_aabb(box)) {
+                if (nearest_info != null) {
+                    nearest_info.point = triangle.v0;
+                }
                 hit = true;
             }
         }
