@@ -110,6 +110,73 @@ fn Aabb3 Triangle.get_aabb(&self) {
     return box;
 }
 
+fn Vec2f Vec3f[].get_interval(self, uint count, Vec3f axis) {
+    float min = self[0].dot(axis);
+    float max = min;
+
+    for (uint i = 1; i < count; ++i) {
+        float value = self[i].dot(axis);
+        min = math::min(value, min);
+        max = math::max(value, max);
+    }
+
+    return {
+        min,
+        max,
+    };
+}
+
+fn bool Triangle.collides_aabb(&self, Aabb3 box) {
+    Vec3f box_center = (box.min + box.max) * 0.5;
+    Vec3f box_extents = box.max - box_center;
+    Vec3f[3] tri_verts = {
+        self.v0 - box_center,
+        self.v1 - box_center,
+        self.v2 - box_center
+    };
+
+    for (int i = 0; i < 3; ++i) {
+        if (math::max(tri_verts[0][i], tri_verts[1][i], tri_verts[2][i]) < -box_extents[i] || math::min(tri_verts[0][i], tri_verts[1][i], tri_verts[2][i]) > box_extents[i]) {
+            return false; // Found a separating axis
+        }
+    }
+
+    Vec3f[3] tri_edges = {
+        tri_verts[1] - tri_verts[0],
+        tri_verts[2] - tri_verts[1],
+        tri_verts[0] - tri_verts[2]
+    };
+
+    Vec3f tri_normal = tri_edges[0].cross(tri_edges[1]);
+    float tri_radius = math::abs(tri_verts[0].dot(tri_normal));
+    float box_radius = math::abs(box_extents.x * tri_normal.x) +
+                       math::abs(box_extents.y * tri_normal.y) +
+                       math::abs(box_extents.z * tri_normal.z);
+
+    if (tri_radius > box_radius) {
+        return false;
+    }
+
+    Vec3f[3] axes = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+
+    for (uint i = 0; i < 3; ++i) {
+        for (uint j = 0; j < 3; ++j) {
+            Vec3f axis = tri_edges[i].cross(axes[j]);
+            Vec2f tri_interval = tri_verts[0..].get_interval(3, axis);
+
+            float box_radius_axis = box_extents.x * math::abs(axes[0].dot(axis)) +
+                                    box_extents.y * math::abs(axes[1].dot(axis)) +
+                                    box_extents.z * math::abs(axes[2].dot(axis));
+
+            if (tri_interval.x > box_radius_axis || tri_interval.y < -box_radius_axis) {
+                return false;
+            }                         
+        }
+    } 
+
+    return true;
+}
+
 <*
  @require self.len != 0 : `Triangle list is empty`
 *>
