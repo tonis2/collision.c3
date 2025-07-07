@@ -75,49 +75,6 @@ fn Vec3f Ray.intersect(&self, Vec3f direction) {
     return intersection;
 }
 
-
-fn HitInfo Triangle.intersect_ray(&self, Ray ray) {
-    const float EPSILON = 0.0000001f;
-
-    HitInfo result = {
-        .hits = false
-    };
-
-    Vec3f edge1 = self.v1 - self.v0;
-    Vec3f edge2 = self.v2 - self.v0;
-    Vec3f h = ray.direction.cross(edge2);
-    float a = edge1.dot(h);
-
-    if (a > -EPSILON && a < EPSILON) return result; // Ray is parallel to the triangle.
-
-    float f = 1.0f / a;
-    Vec3f s = ray.origin - self.v0;
-    float u = f * s.dot(h);
-
-    if (u < 0.0f || u > 1.0f) return result;
-
-    Vec3f q = s.cross(edge1);
-    float v = f * ray.direction.dot(q);
-
-    if (v < 0.0f || u + v > 1.0f) return result;
-
-    float t = f * edge2.dot(q);
-    return {
-        .hits = true,
-        .depth = t
-    };
-}
-
-fn usz? Triangle.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("v1 %s, v2 %s v3 %s", self.v0, self.v1, self.v2)!;
-
-fn Aabb3 Triangle.get_aabb(&self) {
-    Aabb3 box = {
-        .min = {math::min(self.v0.x, self.v1.x, self.v2.x), math::min(self.v0.y, self.v1.y, self.v2.y), math::min(self.v0.z, self.v1.z, self.v2.z)},
-        .max = {math::max(self.v0.x, self.v1.x, self.v2.x), math::max(self.v0.y, self.v1.y, self.v2.y), math::max(self.v0.z, self.v1.z, self.v2.z)}
-    };  
-    return box;
-}
-
 fn Vec2f Vec3f[].get_interval(self, uint count, Vec3f axis) {
     float min = self[0].dot(axis);
     float max = min;
@@ -132,75 +89,6 @@ fn Vec2f Vec3f[].get_interval(self, uint count, Vec3f axis) {
         min,
         max,
     };
-}
-
-fn bool Triangle.collides_aabb(&self, Aabb3 box) {
-    Vec3f box_center = (box.min + box.max) * 0.5;
-    Vec3f box_extents = box.max - box_center;
-    Vec3f[3] tri_verts = {
-        self.v0 - box_center,
-        self.v1 - box_center,
-        self.v2 - box_center
-    };
-
-    for (int i = 0; i < 3; ++i) {
-        if (math::max(tri_verts[0][i], tri_verts[1][i], tri_verts[2][i]) < -box_extents[i] || math::min(tri_verts[0][i], tri_verts[1][i], tri_verts[2][i]) > box_extents[i]) {
-            return false; // Found a separating axis
-        }
-    }
-
-    Vec3f[3] tri_edges = {
-        tri_verts[1] - tri_verts[0],
-        tri_verts[2] - tri_verts[1],
-        tri_verts[0] - tri_verts[2]
-    };
-
-    Vec3f tri_normal = tri_edges[0].cross(tri_edges[1]);
-    float tri_radius = math::abs(tri_verts[0].dot(tri_normal));
-    float box_radius = math::abs(box_extents.x * tri_normal.x) +
-                       math::abs(box_extents.y * tri_normal.y) +
-                       math::abs(box_extents.z * tri_normal.z);
-
-    if (tri_radius > box_radius) {
-        return false;
-    }
-
-    Vec3f[3] axes = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
-
-    for (uint i = 0; i < 3; ++i) {
-        for (uint j = 0; j < 3; ++j) {
-            Vec3f axis = tri_edges[i].cross(axes[j]);
-            Vec2f tri_interval = tri_verts[0..].get_interval(3, axis);
-
-            float box_radius_axis = box_extents.x * math::abs(axes[0].dot(axis)) +
-                                    box_extents.y * math::abs(axes[1].dot(axis)) +
-                                    box_extents.z * math::abs(axes[2].dot(axis));
-
-            if (tri_interval.x > box_radius_axis || tri_interval.y < -box_radius_axis) {
-                return false;
-            }                         
-        }
-    } 
-
-    return true;
-}
-
-<*
- @require self.len != 0 : `Triangle list is empty`
-*>
-fn Aabb3 Triangle[].calculate_aabb(self) {   
-    Aabb3 box = {
-        self[0].v0,
-        self[0].v0
-    };
-
-    foreach (triangle: self) {
-        box.expand_by_point(triangle.v0);
-        box.expand_by_point(triangle.v1);
-        box.expand_by_point(triangle.v2);
-    }
-
-    return box;
 }
 
 fn float Sphere.intersect(&self, Ray ray) @dynamic {

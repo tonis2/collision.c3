@@ -27,15 +27,19 @@ fn void BVHNode.free(&self) {
  @require triangles.len != 0 : `Triangle list is empty`
 *>
 fn void BVHNode.build_recursive(&self, Triangle[] triangles) {
-    Aabb3 box = triangles.calculate_aabb();
-    self.box = box;
+    foreach (triangle: triangles) {
+        self.box.expand_by_point(triangle.v0);
+        self.box.expand_by_point(triangle.v1);
+        self.box.expand_by_point(triangle.v2);
+    }
+    
 
     if (triangles.len <= MAX_TRIS_PER_LEAF) {
         self.triangles.add_array(triangles);
         return;
     }
 
-    Vec3f extent = box.max - box.min;
+    Vec3f extent = self.box.max - self.box.min;
     uint axis = 0;
 
     if (extent.y > extent.x) axis = 1;
@@ -82,19 +86,20 @@ fn bool BVHNode.ray_intersects(&self, Ray ray, HitInfo* nearest_info = null) {
     }
 
     if (self.is_leaf()) {
-        bool hit = false;
         foreach (triangle: self.triangles) {
             HitInfo info = triangle.intersect_ray(ray);
-            if (info.hits) {
+         
+            if (info.hits == true) {
                 if (nearest_info != null) {
-                    nearest_info.point = triangle.v0.cross(triangle.v1);
+                    nearest_info.normal = triangle.v0.cross(triangle.v1);
                     nearest_info.hits = true;
                     nearest_info.depth = info.depth;
                 }
-                hit = true;
+               
+                return true;
             }
         }
-        return hit;
+        return false;
     }
 
     bool hit_left = self.left.ray_intersects(ray, nearest_info);
@@ -113,7 +118,7 @@ fn bool BVHNode.box_intersects(&self, Aabb3 box, HitInfo* nearest_info = null) {
         foreach (triangle: self.triangles) {
             if (triangle.collides_aabb(box)) {
                 if (nearest_info != null) {
-                    nearest_info.point = triangle.v0.cross(triangle.v1);
+                    nearest_info.normal = triangle.v0.cross(triangle.v1);
                 }
                 hit = true;
             }
