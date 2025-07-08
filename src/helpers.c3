@@ -56,38 +56,39 @@ fn Vec3f Vec3f.rotate_by_quat(&self, Quaternionf q) {
     };
 }
 
-fn HitInfo Triangle.intersect_ray(&self, Ray ray) {
-    const float EPSILON = 0.0000001f;
-
-    HitInfo result = {
-        .hits = false
-    };
+fn bool Triangle.intersect_ray(&self, Ray ray, HitInfo* info) {
+    const float EPSILON = 1e-6f;
 
     Vec3f edge1 = self.v1 - self.v0;
     Vec3f edge2 = self.v2 - self.v0;
     Vec3f h = ray.direction.cross(edge2);
-    float det = edge1.dot(h);
+    float a = edge1.dot(h);
 
-    if (det > -EPSILON && det < EPSILON) return result; // Ray is parallel to the triangle.
+    if (math::abs(a) < EPSILON) return false; // Ray is parallel to triangle
 
-    float inv_det = 1.0f / det;
+    float f = 1.0f / a;
     Vec3f s = ray.origin - self.v0;
-    float u = inv_det * s.dot(h);
+    float u = f * s.dot(h);
 
-    if ((u < 0 && math::abs(u) > EPSILON) || (u > 1 && math::abs(u-1) > EPSILON)) return result;
+    if (u < 0.0f || u > 1.0f) return false;
+
+
 
     Vec3f q = s.cross(edge1);
-    float v = inv_det * ray.direction.dot(q);
+    float v = f * ray.direction.dot(q);
 
-    if ((v < 0 && math::abs(v) > EPSILON) || (u + v > 1 && math::abs(u + v - 1) > EPSILON)) return result;
+    if (v < 0.0f || u + v > (float)1.5) return false;
 
-    float t = inv_det * edge2.dot(q);
-    
-    return {
-        .hits = true,
-        .depth = t,
-        .normal = ray.origin + ray.direction * t,
-    };
+    // Compute t to find the intersection point on the ray
+    float t = f * edge2.dot(q);
+
+    if (t > EPSILON) {
+        info.depth = t;
+        return true;
+    } // ray intersection
+
+
+    return false;
 }
 
 fn Aabb3 Triangle.get_aabb(&self) {
@@ -97,7 +98,6 @@ fn Aabb3 Triangle.get_aabb(&self) {
     };  
     return box;
 }
-
 
 fn usz? Triangle.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("v1 %s, v2 %s v3 %s", self.v0, self.v1, self.v2)!;
 

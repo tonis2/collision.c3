@@ -80,24 +80,17 @@ fn void BVHNode.build_recursive(&self, Triangle[] triangles) {
     
 }
 
-fn bool BVHNode.ray_intersects(&self, Ray ray, HitInfo* nearest_info = null) {
+fn bool BVHNode.ray_intersects(&self, Ray ray, HitInfo* nearest_info) {
     if (!self.box.intersect_ray(ray)) {
         return false;
     }
 
     if (self.is_leaf()) {
         foreach (triangle: self.triangles) {
-            HitInfo info = triangle.intersect_ray(ray);
-         
-            if (info.hits == true) {
-                if (nearest_info != null) {
-                    nearest_info.normal = triangle.v0.cross(triangle.v1);
-                    nearest_info.hits = true;
-                    nearest_info.depth = info.depth;
-                }
-               
+            if (triangle.intersect_ray(ray, nearest_info)) {
+                nearest_info.normal = triangle.v0.cross(triangle.v1);
                 return true;
-            }
+            };
         }
         return false;
     }
@@ -108,7 +101,7 @@ fn bool BVHNode.ray_intersects(&self, Ray ray, HitInfo* nearest_info = null) {
     return hit_left || hit_right;
 }
 
-fn bool BVHNode.box_intersects(&self, Aabb3 box, HitInfo* nearest_info = null) {
+fn bool BVHNode.box_intersects(&self, Aabb3 box, HitInfo* nearest_info) {
     if (!self.box.collides(box)) {
         return false;
     }
@@ -117,9 +110,7 @@ fn bool BVHNode.box_intersects(&self, Aabb3 box, HitInfo* nearest_info = null) {
         bool hit = false;
         foreach (triangle: self.triangles) {
             if (triangle.collides_aabb(box)) {
-                if (nearest_info != null) {
-                    nearest_info.normal = triangle.v0.cross(triangle.v1);
-                }
+                nearest_info.normal = triangle.v0.cross(triangle.v1);
                 hit = true;
             }
         }

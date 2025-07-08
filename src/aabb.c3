@@ -99,7 +99,7 @@ fn Aabb3 Aabb3.child_bounds(self, uint index) {
     return { newMin, newMax };
 }
 
-fn bool Aabb3.intersect_ray(&self, Ray ray) @dynamic {
+fn bool Aabb3.intersect_ray(&self, Ray ray, HitInfo* info = null) {
     float tmin = 0.0;
     float tmax = float.max;
 
@@ -118,6 +118,7 @@ fn bool Aabb3.intersect_ray(&self, Ray ray) @dynamic {
             if (tmin > tmax) return false;
         }
     }
+    if (info != null) info.depth = tmin;
     return true;
 }
 
