@@ -72,21 +72,19 @@ fn bool Triangle.intersect_ray(&self, Ray ray, HitInfo* info) {
 
     if (u < 0.0f || u > 1.0f) return false;
 
-
-
     Vec3f q = s.cross(edge1);
     float v = f * ray.direction.dot(q);
 
-    if (v < 0.0f || u + v > (float)1.5) return false;
+    if (v < 0.0f || u + v > (float)2) return false;
 
     // Compute t to find the intersection point on the ray
     float t = f * edge2.dot(q);
 
     if (t > EPSILON) {
         info.depth = t;
+        info.normal = edge1.cross(edge2).normalize();
         return true;
     } // ray intersection
-
 
     return false;
 }

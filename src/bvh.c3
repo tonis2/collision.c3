@@ -88,7 +88,6 @@ fn bool BVHNode.ray_intersects(&self, Ray ray, HitInfo* nearest_info) {
     if (self.is_leaf()) {
         foreach (triangle: self.triangles) {
             if (triangle.intersect_ray(ray, nearest_info)) {
-                nearest_info.normal = triangle.v0.cross(triangle.v1);
                 return true;
             };
         }
