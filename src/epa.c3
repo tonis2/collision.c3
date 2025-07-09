@@ -45,9 +45,10 @@ fn void FaceArray.replace_array(&self, Face[] array, usz start_index = 0)
 	foreach (index, &value : array) {self.entries[start_index + index] = *value;}
 }
 
-fn CollisionInfo epa(Simplex simplex, ConvexShape shape_1, ConvexShape shape_2) {
+fn void epa(CollisionInfo* info, ConvexShape shape_1, ConvexShape shape_2) {
     FaceArray faces;
-   
+    Simplex simplex = info.simplex;
+
     faces.push({.a = simplex[0].point, .b = simplex[1].point, .c = simplex[2].point});
     faces.push({.a = simplex[0].point, .b = simplex[3].point, .c = simplex[1].point});
     faces.push({.a = simplex[0].point, .b = simplex[2].point, .c = simplex[3].point});
@@ -80,11 +81,10 @@ fn CollisionInfo epa(Simplex simplex, ConvexShape shape_1, ConvexShape shape_2) 
         float support_distance = closest_face.normal.dot(support_point);
 
         if (support_distance - closest_face.distance < 0.001f) {
-           return (CollisionInfo) {
-                .normal = closest_face.normal,
-                .depth = support_distance,
-                .collided = true,
-           };
+           info.normal = closest_face.normal;
+           info.depth = support_distance;
+           info.collided = true;
+           return;
         }
 
         FaceArray new_faces;
@@ -110,9 +110,7 @@ fn CollisionInfo epa(Simplex simplex, ConvexShape shape_1, ConvexShape shape_2) 
         faces.replace_array(new_faces.array_view());
     }
 
-    return {
-        .normal = faces[0].normal,
-        .depth = faces[0].distance,
-        .collided = false,
-    };
+    info.normal = faces[0].normal;
+    info.depth = faces[0].distance;
+    info.collided = false;
 }
