@@ -7,7 +7,7 @@ import std::collections::map;
 import std::io;
 
 struct Face {
-    Vec3f a,b,c;
+    usz a,b,c;
     Vec3f normal;
     // usz[3] indices;
     float distance;
@@ -16,14 +16,9 @@ struct Face {
 struct CollisionInfo {
     Simplex simplex;
     Vec3f normal;
-    // Vec3f[2] contact_points;
+    Vec3f[2] contact_points;
     float depth;
     bool collided;
-}
-
-struct Edge {
-    Vec3f a, b;
-    uint index_a, index_b;
 }
 
 const uint EPA_MAX_FACES = 24;
@@ -31,10 +26,9 @@ const uint EPA_MAX_LOOSE_EDGES = EPA_MAX_FACES / 2;
 const uint EPA_MAX_ITER = 32;
 const float EPA_TOLERANCE = 0.0001;
 
-alias EdgeArray = ElasticArray{Edge, EPA_MAX_LOOSE_EDGES};
+alias EdgeArray = ElasticArray{Pair, EPA_MAX_LOOSE_EDGES};
 alias FaceArray = ElasticArray{Face, EPA_MAX_FACES};
-
-macro bool Edge.equals(self, Edge b) @operator(==) => self.a == b.b;
+alias Polytope = ElasticArray{SupportPoint, EPA_MAX_FACES};
 
 <*
  @require array.len > 0 : `Array should not be empty`
@@ -47,20 +41,25 @@ fn void FaceArray.replace_array(&self, Face[] array, usz start_index = 0)
 
 fn void epa(CollisionInfo* info, ConvexShape shape_1, ConvexShape shape_2) {
     FaceArray faces;
-    Simplex simplex = info.simplex;
+    Polytope polytope;
+    polytope.add_array(info.simplex.array_view());
 
-    faces.push({.a = simplex[0].point, .b = simplex[1].point, .c = simplex[2].point});
-    faces.push({.a = simplex[0].point, .b = simplex[3].point, .c = simplex[1].point});
-    faces.push({.a = simplex[0].point, .b = simplex[2].point, .c = simplex[3].point});
-    faces.push({.a = simplex[1].point, .b = simplex[3].point, .c = simplex[2].point});
+    faces.push({.a = 0, .b = 1, .c = 2});
+    faces.push({.a = 0, .b = 3, .c = 1});
+    faces.push({.a = 0, .b = 2, .c = 3});
+    faces.push({.a = 1, .b = 3, .c = 2});
 
     for (int i = 0; i < EPA_MAX_ITER; ++i) {
         float min_distance = float.max;
         uint closest_face_index = 0;
-      
+
         foreach (uint index, face: faces) {
-            Vec3f normal = (Vec3f){face.b - face.a}.cross((Vec3f){face.c - face.a});
-            float distance = normal.dot(face.a);
+            Vec3f p0 = polytope[face.a].point;
+            Vec3f p1 = polytope[face.b].point;
+            Vec3f p2 = polytope[face.c].point;
+
+            Vec3f normal = (Vec3f){p1 - p0}.cross((Vec3f){p2 - p0}).normalize();
+            float distance = normal.dot(p0);
 
             if (distance < 0) {
                 normal *= -1.0f;
@@ -77,35 +76,65 @@ fn void epa(CollisionInfo* info, ConvexShape shape_1, ConvexShape shape_2) {
         }
 
         Face closest_face = faces[closest_face_index];
-        Vec3f support_point = shape_1.furthest_point(closest_face.normal) - shape_2.furthest_point(-closest_face.normal);
-        float support_distance = closest_face.normal.dot(support_point);
+
+        Vec3f a = shape_1.furthest_point(closest_face.normal);
+        Vec3f b = shape_2.furthest_point(-closest_face.normal);
+
+        SupportPoint new_support = {
+            a - b,
+            a,
+            b
+        };
+
+        float support_distance = closest_face.normal.dot(new_support.point);
 
         if (support_distance - closest_face.distance < 0.001f) {
-           info.normal = closest_face.normal;
-           info.depth = support_distance;
-           info.collided = true;
-           return;
+            info.normal = closest_face.normal;
+            info.depth = support_distance;
+            info.collided = true;
+
+            Vec3f p_on_minkowski = closest_face.normal * closest_face.distance;
+
+           // Collision found, get contact points
+           
+            SupportPoint s0 = polytope[closest_face.a];
+            SupportPoint s1 = polytope[closest_face.b];
+            SupportPoint s2 = polytope[closest_face.c];
+            Vec3f bary = p_on_minkowski.barycentric(s0.point, s1.point, s2.point);
+
+            info.contact_points = {
+                bary.x * s0.support_a + bary.y * s1.support_a + bary.z * s2.support_a,
+                bary.x * s0.support_b + bary.y * s1.support_b + bary.z * s2.support_b,
+            };
+
+            return;
         }
+
+        polytope.push(new_support);
+
+        usz new_point_idx = polytope.len() - 1;
 
         FaceArray new_faces;
         EdgeArray unique_edges;
 
-        foreach (uint index, &face: faces) {
-            if (face.normal.dot(support_point - face.a) > 0) {
-                Edge[] edges = {{.a = face.a, .b = face.b}, {.a = face.b, .b = face.c}, {.a = face.c, .b = face.a}};
+        foreach (uint index, face: faces) {
+            if (face.normal.dot(new_support.point - polytope[face.a].point) > 0) {
+                Pair[] edges = {{face.a, face.b}, {face.b, face.c}, {face.c, face.a}};
 
                 foreach (edge: edges) {
-                    usz removed = unique_edges.remove_using_test(fn (first_edge, ctx) => *first_edge == *(Edge*)ctx, &&edge);
+                    usz removed = unique_edges.remove_using_test(fn (first_edge, ctx) => *first_edge == *(Pair*)ctx, &&edge);
                     if (removed == 0) unique_edges.push(edge);
                 }
             } else {
-                new_faces.push(*face);
+                new_faces.push(face);
             }
         }
 
         foreach (edge: unique_edges) {
-            new_faces.push({.a = edge.a, .b = edge.b, .normal = support_point, .distance = support_distance});
+            new_faces.push({.a = edge.first, .b = edge.second, .c = new_point_idx});
         }
+
+        //TODO: Calculate face normals here for new_points only
 
         faces.replace_array(new_faces.array_view());
     }
