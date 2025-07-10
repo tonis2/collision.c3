@@ -8,7 +8,7 @@ Currently contains
 
 * SpatialHash Grid
 * GJK
-* EPA - (not fully ready)
+* EPA
 * AABB
 
 
