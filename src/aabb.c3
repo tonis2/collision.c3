@@ -19,6 +19,7 @@ struct Obb3 {
 }
 
 fn usz? Aabb3.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("min %s max %s", self.min, self.max)!;
+macro bool Aabb3.equals(self, Aabb3 b) @operator(==) => self.min == b.min && self.max == b.max;
 
 fn bool Aabb3.is_empty(self) {
     return self.max.xyz == (Vec3f){0,0,0};
