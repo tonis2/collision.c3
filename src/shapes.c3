@@ -22,9 +22,21 @@ struct Triangle {
     Vec3f v0, v1, v2;
 }
 
-struct Sphere {
+struct Sphere (ConvexShape) {
     Vec3f center;
     float radius;
+}
+
+struct Cylinder (ConvexShape) {
+    float height;
+    float radius_top;
+    float radius_bottom;
+}
+
+struct Capsule (ConvexShape) {
+    float height;
+    float radius_top;
+    float radius_bottom;
 }
 
 // Shapes
@@ -39,20 +51,21 @@ struct ConvexPolyhedron (ConvexShape) {
     Vec3f[] vertices;
 }
 
-fn Vec3f Aabb3.furthest_point(&self, Vec3f direction) @dynamic {
-    Vec3f point = {
-        (direction.x > 0) ? self.max.x : self.min.x,
-        (direction.y > 0) ? self.max.y : self.min.y,
-        (direction.z > 0) ? self.max.z : self.min.z
-    };
-    return point;
-}
-
 fn Vec3f TransformedConvex.furthest_point(&self, Vec3f direction) @dynamic {
     Vec3f local_direction = direction.rotate_by_quat(self.rotation.conjugate());
     Vec3f point = self.shape.furthest_point(local_direction);
     return point.rotate_by_quat(self.rotation) * self.scale + self.position;
 }
+
+// struct TransformedConvex (ConvexShape) {
+//     Vec3f position;
+//     Vec3f scale;
+//     ConvexShape shape;
+// }
+
+// fn Vec3f TransformedConvex.furthest_point(&self, Vec3f direction) @dynamic {
+//     return self.shape.furthest_point(direction) * self.scale + self.position;
+// }
 
 fn Vec3f ConvexPolyhedron.furthest_point(&self, Vec3f direction) @dynamic {
     Vec3f furthest_point;
@@ -108,4 +121,30 @@ fn float Sphere.intersect(&self, Ray ray) @dynamic {
         if (t2 > 0) return t2;
         return -1.0;
     }
+}
+
+fn Vec3f Sphere.furthest_point(&self, Vec3f direction) @dynamic {
+    return direction.normalize() * self.radius + self.center;
+}
+
+fn Vec3f Cylinder.furthest_point(&self, Vec3f direction) @dynamic {
+    Vec3f dir_xz = {direction.x, 0, direction.z};
+    Vec3f result = dir_xz.normalize() * self.height;
+    result.y = (direction.y  > 0) ? self.radius_top : self.radius_bottom;
+    return result;
+}
+
+fn Vec3f Capsule.furthest_point(&self, Vec3f direction) @dynamic {
+    Vec3f result = direction.normalize() * self.height;
+    result.y += (direction.y > 0) ? self.radius_top : self.radius_bottom;
+    return result;
+}
+
+fn Vec3f Aabb3.furthest_point(&self, Vec3f direction) @dynamic {
+    Vec3f point = {
+        (direction.x > 0) ? self.max.x : self.min.x,
+        (direction.y > 0) ? self.max.y : self.min.y,
+        (direction.z > 0) ? self.max.z : self.min.z
+    };
+    return point;
 }
