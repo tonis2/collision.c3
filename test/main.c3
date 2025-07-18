@@ -31,7 +31,7 @@ fn void test_physics() {
         {{5,5,5}, {6,6,6}},
     };
 
-    foreach (usz i, item: boxes) spatial_map.insert({.min = item.min, .max = item.max, .id = i })!!;
+    foreach (usz i, item: boxes) spatial_map.insert(item, i)!!;
     spatial_map.@get_pairs(;Pair pair) { assert(pair.first == 0 && pair.second == 1); };
 
     ///
@@ -125,7 +125,7 @@ fn void test_flow() {
     };
 
     // Store AABB boxes in spatial map, so you don't need to loop over all the boxes, then detecting collision
-    foreach (usz i, item: boxes) spatial_map.insert({.min = item.min, .max = item.max, .id = i })!!;
+    foreach (usz i, item: boxes) spatial_map.insert(item, i)!!;
 
 
     // Loop over the AABB pairs that are in same grid are
