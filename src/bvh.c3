@@ -27,18 +27,18 @@ fn void BVHNode.free(&self) {
  @require triangles.len != 0 : `Triangle list is empty`
 *>
 fn void BVHNode.build_recursive(&self, Triangle[] triangles) {
+
     foreach (triangle: triangles) {
         self.box.expand_by_point(triangle.v0);
         self.box.expand_by_point(triangle.v1);
         self.box.expand_by_point(triangle.v2);
     }
-    
 
     if (triangles.len <= MAX_TRIS_PER_LEAF) {
         self.triangles.add_array(triangles);
         return;
     }
-
+    
     Vec3f extent = self.box.max - self.box.min;
     uint axis = 0;
 
@@ -67,9 +67,10 @@ fn void BVHNode.build_recursive(&self, Triangle[] triangles) {
     // Handle cases where the split results in all triangles on one side.
     if (left.is_empty() || right.is_empty()) {
         uint half = triangles.len / 2;
+        left.clear();
+        right.clear();
         left.add_array(triangles[0..half]);
         right.add_array(triangles[half..triangles.len - 1]);
-        return;
     }
 
     self.left = mem::new(BVHNode, (BVHNode){});
@@ -77,23 +78,23 @@ fn void BVHNode.build_recursive(&self, Triangle[] triangles) {
 
     self.left.build_recursive(left.array_view());
     self.right.build_recursive(right.array_view());
-    
 }
 
 fn bool BVHNode.ray_intersects(&self, Ray ray, HitInfo* nearest_info) {
     if (!self.box.intersect_ray(ray)) {
         return false;
     }
-
+    
     if (self.is_leaf()) {
         foreach (triangle: self.triangles) {
             if (triangle.intersect_ray(ray, nearest_info)) {
                 return true;
-            };
+            }
         }
+        
         return false;
     }
-
+    
     bool hit_left = self.left.ray_intersects(ray, nearest_info);
     bool hit_right = self.right.ray_intersects(ray, nearest_info);
 

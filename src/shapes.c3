@@ -13,7 +13,7 @@ interface RayCast
     fn Vec3f intersect(Vec3f direction);
 }
 
-struct Ray {
+struct Ray (Printable) {
     Vec3f origin;
     Vec3f direction; // Should be a unit vector.
 }
@@ -56,6 +56,8 @@ fn Vec3f TransformedConvex.furthest_point(&self, Vec3f direction) @dynamic {
     Vec3f point = self.shape.furthest_point(local_direction);
     return point.rotate_by_quat(self.rotation) * self.scale + self.position;
 }
+
+fn usz? Ray.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("origin %s, direction %s", self.origin, self.direction)!;
 
 // struct TransformedConvex (ConvexShape) {
 //     Vec3f position;

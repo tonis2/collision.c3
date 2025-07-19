@@ -78,7 +78,7 @@ fn Vec3f Vec3f.barycentric(self, Vec3f a, Vec3f b, Vec3f c) {
 
 fn bool Triangle.intersect_ray(&self, Ray ray, HitInfo* info) {
     const float EPSILON = 1e-6f;
-
+    
     Vec3f edge1 = self.v1 - self.v0;
     Vec3f edge2 = self.v2 - self.v0;
     Vec3f h = ray.direction.cross(edge2);
@@ -90,12 +90,13 @@ fn bool Triangle.intersect_ray(&self, Ray ray, HitInfo* info) {
     Vec3f s = ray.origin - self.v0;
     float u = f * s.dot(h);
 
+
     if (u < 0.0f || u > 1.0f) return false;
 
     Vec3f q = s.cross(edge1);
     float v = f * ray.direction.dot(q);
 
-    if (v < 0.0f || u + v > (float)2) return false;
+    if (v < 0.0f || u + v > 2) return false;
 
     // Compute t to find the intersection point on the ray
     float t = f * edge2.dot(q);
