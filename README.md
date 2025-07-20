@@ -10,6 +10,7 @@ Currently contains
 * GJK
 * EPA
 * AABB
+* BVH for triangles (terrain collision)
 
 
 #### Examples
