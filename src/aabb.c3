@@ -6,8 +6,6 @@ import std::collections::list;
 import std::collections::elastic_array;
 import std::collections::map;
 
-fn float radians(float value) => value * (float)math::PI / 180;
-
 struct Aabb3 (Printable, ConvexShape) {
     Vec3f min;
     Vec3f max;

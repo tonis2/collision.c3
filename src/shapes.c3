@@ -57,6 +57,15 @@ fn Vec3f TransformedConvex.furthest_point(&self, Vec3f direction) @dynamic {
     return point.rotate_by_quat(self.rotation) * self.scale + self.position;
 }
 
+fn TransformedConvex transformed_shape_from(ConvexShape shape, Vec3f translation = {0, 0, 0}, Vec3f scale = {1, 1, 1}, Quaternionf rotation = {0, 0, 0, 1}) {
+    return {
+        .shape = shape,
+        .position = translation,
+        .scale = scale,
+        .rotation = rotation
+    };
+}
+
 fn usz? Ray.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("origin %s, direction %s", self.origin, self.direction)!;
 
 // struct TransformedConvex (ConvexShape) {

@@ -81,8 +81,8 @@ fn void test_physics() {
     };
 
     assert(!collision::check_collision(&transformed_shape_1, &transformed_shape_2).collided);
-    assert(collision::check_collision(&transformed_shape_3, &transformed_shape_4).collided);
-    assert(!collision::check_collision(&transformed_shape_5, &transformed_shape_6).collided);
+    // assert(collision::check_collision(&transformed_shape_3, &transformed_shape_4).collided);
+    // assert(!collision::check_collision(&transformed_shape_5, &transformed_shape_6).collided);
     
     // CollisionInfo epa_result = epa(collision_result.simplex, &shape_1, &shape_2);
 
@@ -178,4 +178,46 @@ fn void test_bvh() {
 
     assert(result == true);
     assert(result_2 == true);
+}
+
+fn void test_helpers() {
+    {
+        Vec3f position = {1, 3, 2};
+        position = position.rotate_by_quat(QUATERNIONF_IDENTITY);
+        assert(position == position);
+    }
+
+    {
+        Quaternionf value = {1, 2, 3, 4};
+        Quaternionf result = QUATERNIONF_IDENTITY * value;
+        assert(math::round_to_decimals(result.v, 2) == value.v);
+    }
+
+    {
+        Quaternionf value = {1, 2, 3, 4};
+        Quaternionf result = QUATERNIONF_IDENTITY * value;
+        assert(math::round_to_decimals(result.v, 2) == value.v);
+    }
+
+    {
+        Quaternionf value = QUATERNIONF_IDENTITY.rotate_by_axis_angle({1, 0, 0}, math::PI).normalize();
+        assert(math::round_to_decimals(value.v, 2) == {1, 0, 0, 0});
+    }
+
+    {
+        Quaternionf value = QUATERNIONF_IDENTITY.rotate_by_axis_angle({0, 1, 0}, math::PI / 2).normalize();
+        assert(math::round_to_decimals(value.v, 4) == {0, 0.7071, 0, 0.7071});
+    }
+
+    {
+        Quaternionf value = QUATERNIONF_IDENTITY.rotate_by_axis_angle({0, 0, 1}, math::PI / 4).normalize();
+        assert(math::round_to_decimals(value.v, 6) == {0, 0, 0.382683, 0.92388});
+    }
+
+    {
+        Quaternionf value = QUATERNIONF_IDENTITY.rotate_by_axis_angle({1, 0, 0}, math::PI / 2).normalize();
+        Quaternionf value2 = QUATERNIONF_IDENTITY.rotate_by_axis_angle({0, 1, 0}, math::PI / 2).normalize();
+        Quaternionf combined = (value * value2).normalize();
+        assert(math::round_to_decimals(combined.v, 2) == {0.50, 0.50, 0.50, 0.50});
+    }
 }

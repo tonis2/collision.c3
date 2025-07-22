@@ -13,12 +13,26 @@ struct HitInfo {
     Vec3f normal;
 }
 
-fn Quaternionf Quaternionf.conjugate(&self) => {self.i, -self.j, -self.k, -self.l};
+fn float radians(float value) => value * (float)math::PI / 180;
+
+// fn Quaternionf Quaternionf.mul2(q1, Quaternionf q2) {
+//     float w = (q1.v.w * q2.v.w) - (q1.v.x * q2.v.x) - (q1.v.y * q2.v.y) - (q1.v.z * q2.v.z);
+//     float x = (q1.v.x * q2.v.w) + (q1.v.w * q2.v.x) + (q1.v.y * q2.v.z) - (q1.v.z * q2.v.y);
+//     float y = (q1.v.y * q2.v.w) + (q1.v.w * q2.v.y) + (q1.v.z * q2.v.x) - (q1.v.x * q2.v.z);
+//     float z = (q1.v.z * q2.v.w) + (q1.v.w * q2.v.z) + (q1.v.x * q2.v.y) - (q1.v.y * q2.v.x);
+
+//     return {
+//         x, y, z, w
+//     };
+// }
+
+fn Quaternionf Quaternionf.conjugate(&self) => {-self.v.x, -self.v.y, -self.v.z, self.v.w};
 
 fn Quaternionf Quaternionf.rotate_by_axis_angle(self, Vec3f axis, float angle) {
     Vec3f normal_axis = axis.normalize();
     float half_angle = angle * 0.5;
     float sin_half = math::sin(half_angle);
+   
     return {
         normal_axis.x * sin_half,
         normal_axis.y * sin_half,
@@ -30,32 +44,10 @@ fn Quaternionf Quaternionf.rotate_by_axis_angle(self, Vec3f axis, float angle) {
 fn void Vec3f.set(&self, Vec3f new) => mem::copy(self, &new, Vec3f.sizeof, 0);
 
 fn Vec3f Vec3f.rotate_by_quat(&self, Quaternionf q) {
-    Vec3f uv, uuv;
-    Vec3f qvec = {q.j, q.j, q.k};
-    
-    uv.x = qvec.y * self.z - qvec.z * self.y;
-    uv.y = qvec.z * self.x - qvec.x * self.z;
-    uv.z = qvec.x * self.y - qvec.y * self.x;
-    
-    uuv.x = qvec.y * uv.z - qvec.z * uv.y;
-    uuv.y = qvec.z * uv.x - qvec.x * uv.z;
-    uuv.z = qvec.x * uv.y - qvec.y * uv.x;
-    
-    uv.x *= 2.0f * q.l;
-    uv.y *= 2.0f * q.l;
-    uv.z *= 2.0f * q.l;
-    
-    uuv.x *= 2.0f;
-    uuv.y *= 2.0f;
-    uuv.z *= 2.0f;
-    
-    return {
-        self.x + uv.x + uuv.x,
-        self.y + uv.y + uuv.y,
-        self.z + uv.z + uuv.z
-    };
+    Quaternionf p = {self.x, self.y, self.z, 0};
+    Quaternionf result = q * p * q.conjugate();
+    return {result.v.x, result.v.y, result.v.z};
 }
-
 
 fn Vec3f Vec3f.barycentric(self, Vec3f a, Vec3f b, Vec3f c) {
     Vec3f v0 = b - a;
