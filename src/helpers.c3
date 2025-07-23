@@ -15,16 +15,16 @@ struct HitInfo {
 
 fn float radians(float value) => value * (float)math::PI / 180;
 
-// fn Quaternionf Quaternionf.mul2(q1, Quaternionf q2) {
-//     float w = (q1.v.w * q2.v.w) - (q1.v.x * q2.v.x) - (q1.v.y * q2.v.y) - (q1.v.z * q2.v.z);
-//     float x = (q1.v.x * q2.v.w) + (q1.v.w * q2.v.x) + (q1.v.y * q2.v.z) - (q1.v.z * q2.v.y);
-//     float y = (q1.v.y * q2.v.w) + (q1.v.w * q2.v.y) + (q1.v.z * q2.v.x) - (q1.v.x * q2.v.z);
-//     float z = (q1.v.z * q2.v.w) + (q1.v.w * q2.v.z) + (q1.v.x * q2.v.y) - (q1.v.y * q2.v.x);
+fn Quaternionf Quaternionf.mul2(q1, Quaternionf q2) {
+    float w = (q1.v.w * q2.v.w) - (q1.v.x * q2.v.x) - (q1.v.y * q2.v.y) - (q1.v.z * q2.v.z);
+    float x = (q1.v.x * q2.v.w) + (q1.v.w * q2.v.x) + (q1.v.y * q2.v.z) - (q1.v.z * q2.v.y);
+    float y = (q1.v.y * q2.v.w) + (q1.v.w * q2.v.y) + (q1.v.z * q2.v.x) - (q1.v.x * q2.v.z);
+    float z = (q1.v.z * q2.v.w) + (q1.v.w * q2.v.z) + (q1.v.x * q2.v.y) - (q1.v.y * q2.v.x);
 
-//     return {
-//         x, y, z, w
-//     };
-// }
+    return {
+        x, y, z, w
+    };
+}
 
 fn Quaternionf Quaternionf.conjugate(&self) => {-self.v.x, -self.v.y, -self.v.z, self.v.w};
 
@@ -45,7 +45,7 @@ fn void Vec3f.set(&self, Vec3f new) => mem::copy(self, &new, Vec3f.sizeof, 0);
 
 fn Vec3f Vec3f.rotate_by_quat(&self, Quaternionf q) {
     Quaternionf p = {self.x, self.y, self.z, 0};
-    Quaternionf result = q * p * q.conjugate();
+    Quaternionf result = q.mul2(p).mul2(q.conjugate()); 
     return {result.v.x, result.v.y, result.v.z};
 }
 
