@@ -21,15 +21,15 @@ struct CollisionInfo {
 }
 
 
-const uint EPA_MAX_ITER = 32;
+const uint EPA_MAX_ITER = 16;
 const float EPA_TOLERANCE = 0.0001;
 
 const uint MAX_FACES = 40;
 
-alias EdgeArray = ElasticArray{Pair, 100};
-alias FaceArray = ElasticArray{Face, 100};
-alias VertexArray = ElasticArray{Vec3f, MAX_FACES};
-alias IndexArray = ElasticArray{uint, MAX_FACES};
+alias EdgeArray @private = ElasticArray{Pair, MAX_FACES};
+alias FaceArray @private = ElasticArray{Face, MAX_FACES};
+alias VertexArray @private = ElasticArray{Vec3f, MAX_FACES};
+alias IndexArray @private = ElasticArray{uint, MAX_FACES};
 
 <*
  @require array.len > 0 : `Array should not be empty`
@@ -42,19 +42,18 @@ fn void FaceArray.replace_array(&self, Face[] array, usz start_index = 0)
 
 fn void EdgeArray.add(&self, usz a, usz b)
 {
-    if (a > b) @swap(a, b);
-    Pair pair = {a, b};
+    Pair pair = {b, a};
 
     for (uint i = 0; i < self.len(); i++) {
         Pair edge = self.get(i);
         if (edge == pair) {
             self.set(i, self.last()!!);
             self.remove_last();
-            i--;
+            return;
         }
     }
 
-    self.push(pair);
+    self.push({a, b});
 }
 
 fn void Face.calculate_normal(&self, Vec3f a, Vec3f b, Vec3f c)
@@ -98,15 +97,11 @@ fn void VertexArray.expand(&self, FaceArray* faces, Vec3f support)
         Vec3f c = self.get(face.c);
 
         face.calculate_normal(a, b, c);
-
-        // assert(face.normal != (Vec3f){0,0,0});
         faces.push(face);
     };
-
-    self.push(support);
 }
 
-fn uint Face[].get_closest(self, float min_distance = float.max) {
+fn uint Face[].get_closest(self, float min_distance = float.max) @private {
     uint closest = 0;
 
     foreach (uint i, face: self) {
@@ -143,7 +138,7 @@ fn void epa(CollisionInfo* info, ConvexShape shape_1, ConvexShape shape_2) {
         Vec3f c = vertices.get(face.c);
         face.calculate_normal(a, b, c);
     }    
-
+    
     uint closest_face_index = faces.array_view().get_closest();
 
     Face closest_face;
@@ -155,10 +150,8 @@ fn void epa(CollisionInfo* info, ConvexShape shape_1, ConvexShape shape_2) {
         Vec3f support_point = shape_1.furthest_point(face_normal) - shape_2.furthest_point(-face_normal);
 
         float support_distance = face_normal.dot(support_point);
-   
         if (support_distance - closest_face.distance < EPA_TOLERANCE) {
             // We have a hit
-            
             info.normal = closest_face.normal;
             info.depth = closest_face.distance;
             assert(info.normal != (Vec3f){0, 0, 0});
@@ -166,7 +159,7 @@ fn void epa(CollisionInfo* info, ConvexShape shape_1, ConvexShape shape_2) {
         }
 
         usz offset = faces.len();
-        // io::printfn("epa index %s, face %s", i, closest_face_index);
+        vertices.push(support_point);
         vertices.expand(&faces, support_point);
 
         closest_face_index = faces.entries[offset..].get_closest();
@@ -174,5 +167,5 @@ fn void epa(CollisionInfo* info, ConvexShape shape_1, ConvexShape shape_2) {
 
     info.normal = closest_face.normal;
     info.depth = closest_face.distance;
-    info.collided = false;
+    // info.collided = false;
 }

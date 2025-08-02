@@ -100,10 +100,6 @@ fn void test_ray() {
 
      Sphere testSphere = {{0, 0, 5}, 1.0};
      assert(testSphere.intersect(testRay) > 0);
-
-    //  Aabb3 testAABB = {{-1, -1, 4}, {1, 1, 6}};
-
-    //  assert(testAABB.intersect(testRay));
 }
 
 
