@@ -155,6 +155,23 @@ fn void epa(CollisionInfo* info, ConvexShape shape_1, ConvexShape shape_2) {
             info.normal = closest_face.normal;
             info.depth = closest_face.distance;
             assert(info.normal != (Vec3f){0, 0, 0});
+
+            Vec3f p = info.normal * -info.depth;
+
+            Vec3f a = vertices[closest_face.a];
+            Vec3f b = vertices[closest_face.b];
+            Vec3f c = vertices[closest_face.c];
+
+            Vec3f bary = p.barycentric(a, b, c);
+
+            Vec3f[2] support_a = {shape_1.furthest_point(a), shape_2.furthest_point(-a)};
+            Vec3f[2] support_b = {shape_1.furthest_point(b), shape_2.furthest_point(-b)};
+            Vec3f[2] support_c = {shape_1.furthest_point(c), shape_2.furthest_point(-c)};
+
+            info.contact_points = {
+                support_a[0] * bary.x + support_b[0] * bary.y + support_c[0] * bary.z,
+                support_a[1] * bary.x + support_b[1] * bary.y + support_c[1] * bary.z,
+            };
             return;
         }
 
