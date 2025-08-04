@@ -28,7 +28,7 @@ const uint MAX_FACES = 40;
 
 alias EdgeArray @private = ElasticArray{Pair, MAX_FACES};
 alias FaceArray @private = ElasticArray{Face, MAX_FACES};
-alias VertexArray @private = ElasticArray{Vec3f, MAX_FACES};
+alias SupportArray @private = ElasticArray{SupportPoint, MAX_FACES};
 alias IndexArray @private = ElasticArray{uint, MAX_FACES};
 
 <*
@@ -70,7 +70,7 @@ fn void Face.calculate_normal(&self, Vec3f a, Vec3f b, Vec3f c)
 }
 
 
-fn void VertexArray.expand(&self, FaceArray* faces, Vec3f support)
+fn void SupportArray.expand(&self, FaceArray* faces, Vec3f support)
 {
     EdgeArray edges;
     IndexArray remove_faces;
@@ -92,9 +92,9 @@ fn void VertexArray.expand(&self, FaceArray* faces, Vec3f support)
     foreach (edge : edges) {
         Face face = {.a = (uint)edge.first, .b = (uint)edge.second, .c = (uint)self.len() - 1};
 
-        Vec3f a = self.get(face.a);
-        Vec3f b = self.get(face.b);
-        Vec3f c = self.get(face.c);
+        Vec3f a = self.get(face.a).point;
+        Vec3f b = self.get(face.b).point;
+        Vec3f c = self.get(face.c).point;
 
         face.calculate_normal(a, b, c);
         faces.push(face);
@@ -118,10 +118,10 @@ fn uint Face[].get_closest(self, float min_distance = float.max) @private {
  @require info.simplex.len() > 3 : `Collision simplex should have 4 values`
 *>
 fn void epa(CollisionInfo* info, ConvexShape shape_1, ConvexShape shape_2) {
-    VertexArray vertices;
+    SupportArray vertices;
 
     foreach (item: info.simplex) {
-        vertices.push(item.point);
+        vertices.push(item);
     };
 
     FaceArray faces;
@@ -133,9 +133,9 @@ fn void epa(CollisionInfo* info, ConvexShape shape_1, ConvexShape shape_2) {
     });
 
     foreach (&face : faces) { 
-        Vec3f a = vertices.get(face.a);
-        Vec3f b = vertices.get(face.b);
-        Vec3f c = vertices.get(face.c);
+        Vec3f a = vertices.get(face.a).point;
+        Vec3f b = vertices.get(face.b).point;
+        Vec3f c = vertices.get(face.c).point;
         face.calculate_normal(a, b, c);
     }    
     
@@ -147,9 +147,17 @@ fn void epa(CollisionInfo* info, ConvexShape shape_1, ConvexShape shape_2) {
         closest_face = faces[closest_face_index];
 
         Vec3f face_normal = closest_face.normal;
-        Vec3f support_point = shape_1.furthest_point(face_normal) - shape_2.furthest_point(-face_normal);
 
-        float support_distance = face_normal.dot(support_point);
+        Vec3f a_suppport = shape_1.furthest_point(face_normal);
+        Vec3f b_support = shape_2.furthest_point(-face_normal);
+
+        SupportPoint support_point = {
+            .a = a_suppport,
+            .b = b_support,
+            .point = a_suppport - b_support
+        };
+
+        float support_distance = face_normal.dot(support_point.point);
         if (support_distance - closest_face.distance < EPA_TOLERANCE) {
             // We have a hit
             info.normal = closest_face.normal;
@@ -158,15 +166,15 @@ fn void epa(CollisionInfo* info, ConvexShape shape_1, ConvexShape shape_2) {
 
             Vec3f p = info.normal * -info.depth;
 
-            Vec3f a = vertices[closest_face.a];
-            Vec3f b = vertices[closest_face.b];
-            Vec3f c = vertices[closest_face.c];
+            SupportPoint a = vertices[closest_face.a];
+            SupportPoint b = vertices[closest_face.b];
+            SupportPoint c = vertices[closest_face.c];
 
-            Vec3f bary = p.barycentric(a, b, c);
+            Vec3f bary = p.barycentric(a.point, b.point, c.point);
 
-            Vec3f[2] support_a = {shape_1.furthest_point(a), shape_2.furthest_point(-a)};
-            Vec3f[2] support_b = {shape_1.furthest_point(b), shape_2.furthest_point(-b)};
-            Vec3f[2] support_c = {shape_1.furthest_point(c), shape_2.furthest_point(-c)};
+            Vec3f[2] support_a = {a.a, a.b};
+            Vec3f[2] support_b = {b.a, b.b};
+            Vec3f[2] support_c = {c.a, c.b};
 
             info.contact_points = {
                 support_a[0] * bary.x + support_b[0] * bary.y + support_c[0] * bary.z,
@@ -176,8 +184,9 @@ fn void epa(CollisionInfo* info, ConvexShape shape_1, ConvexShape shape_2) {
         }
 
         usz offset = faces.len();
+
         vertices.push(support_point);
-        vertices.expand(&faces, support_point);
+        vertices.expand(&faces, support_point.point);
 
         closest_face_index = faces.entries[offset..].get_closest();
     }
