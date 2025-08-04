@@ -9,8 +9,8 @@ alias Simplex = ElasticArray{SupportPoint, 4};
 
 struct SupportPoint {
     Vec3f point;  // A - B
-    Vec3f support_a;
-    Vec3f support_b;
+    Vec3f a;
+    Vec3f b;
 }
 
 <*
