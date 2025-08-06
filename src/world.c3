@@ -147,6 +147,7 @@ fn void PhysicsWorld.run_step(&self, float time) {
         body.motion.torque = {0, 0, 0};
     }
 
+    // Todo: add broad phase optimizations
     for (uint i = 0; i < self.bodies.len(); ++i) {
         for (uint j = i + 1; j < self.bodies.len(); ++j) {
             Rigidbody* body_a = self.bodies.get_ref(i);
