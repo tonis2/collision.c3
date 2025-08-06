@@ -16,6 +16,7 @@ struct Obb3 {
     Vec3f max;
 }
 
+fn Vec3f Aabb3.size(self) => self.max - self.min;
 fn usz? Aabb3.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("min %s max %s", self.min, self.max)!;
 macro bool Aabb3.equals(self, Aabb3 b) @operator(==) => self.min == b.min && self.max == b.max;
 
@@ -150,4 +151,34 @@ fn Aabb3 Aabb3.transform(self, Matrix4f matrix)
     };
 }
 
-fn Vec3f Aabb3.size(self) => self.max - self.min;
+fn Matrix3f Aabb3.get_local_intertia(&self, float mass) {
+    Vec3f size = self.size();
+
+    float w = size.x;
+    float h = size.y;
+    float d = size.z;
+
+    float ix = (1.0f / 12.0f) * mass * (h*h + d*d);
+    float iy = (1.0f / 12.0f) * mass * (w*w + d*d);
+    float iz = (1.0f / 12.0f) * mass * (w*w + h*h);
+
+    return {
+        ix, 0, 0,
+        0, iy, 0,
+        0, 0, iz
+    };
+}
+
+
+fn Matrix3f Aabb3.get_world_invertia(&self, float mass, Quaternionf rotation) {
+    Matrix3f local_inertia = self.get_local_intertia(mass);
+
+    Matrix3f inv_inertia_local = {
+        (local_inertia.m00 > 0.0f) ? 1.0f / local_inertia.m00 : 0.0f, 0, 0,
+        0, (local_inertia.m11 > 0.0f) ? 1.0f / local_inertia.m11 : 0.0f, 0,
+        0, 0, (local_inertia.m22 > 0.0f) ? 1.0f / local_inertia.m22 : 0.0f
+    }; 
+
+    Matrix3f r = (Matrix3f){.m = (rotation.normalize().to_matrixf()).m[0..8]};
+    return r * inv_inertia_local * r.transpose();
+}

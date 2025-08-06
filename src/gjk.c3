@@ -128,7 +128,6 @@ fn bool tetrahedron_case(Simplex* simplex, Vec3f* direction) {
 }
 
 fn bool next_simplex(Simplex* simplex, Vec3f* direction) {
-    // io::printfn("old direction %s", *direction);
     switch (simplex.len()) {
         case 2: return line_case(simplex, direction);
         case 3: return triangle_case(simplex, direction);

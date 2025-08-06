@@ -29,7 +29,6 @@ const uint MAX_FACES = 40;
 alias EdgeArray @private = ElasticArray{Pair, MAX_FACES};
 alias FaceArray @private = ElasticArray{Face, MAX_FACES};
 alias SupportArray @private = ElasticArray{SupportPoint, MAX_FACES};
-alias IndexArray @private = ElasticArray{uint, MAX_FACES};
 
 <*
  @require array.len > 0 : `Array should not be empty`
@@ -73,7 +72,6 @@ fn void Face.calculate_normal(&self, Vec3f a, Vec3f b, Vec3f c)
 fn void SupportArray.expand(&self, FaceArray* faces, Vec3f support)
 {
     EdgeArray edges;
-    IndexArray remove_faces;
 
     for (uint i = 0; i < faces.len(); i++) {
         Face face = faces.get(i);
@@ -183,12 +181,12 @@ fn void epa(CollisionInfo* info, ConvexShape shape_1, ConvexShape shape_2) {
             return;
         }
 
-        usz offset = faces.len();
+        //usz offset = faces.len();
 
         vertices.push(support_point);
         vertices.expand(&faces, support_point.point);
 
-        closest_face_index = faces.entries[offset..].get_closest();
+        closest_face_index = faces.array_view().get_closest();
     }
 
     info.normal = closest_face.normal;
