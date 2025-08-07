@@ -21,7 +21,7 @@ struct SpatialHash3D {
 
 fn bool GridCoord.equals(&self, GridCoord other) => self.x == other.x && self.y == other.y && self.z == other.z;
 
-fn usz GridCoord.hash(&self) => ((usz)self.x * 73856093) ^ ((usz)self.y * 19349663) ^ ((usz)self.z * 83492791);
+fn usz GridCoord.hash(&self) => (usz)(builtin::@generic_hash(self.x) | builtin::@generic_hash(self.y) | builtin::@generic_hash(self.z));
 
 fn void SpatialHash3D.free(&self) {
     self.table.@each(; usz id, CellList cells) {
@@ -68,7 +68,7 @@ fn void? SpatialHash3D.update(&self, Aabb3 old_box, Aabb3 new_box, usz entity) {
     GridCoord old_min_cell = self.world_to_grid(old_box.min);
     GridCoord old_max_cell = self.world_to_grid(old_box.max);
 
-    if (new_min_cell.equals(old_min_cell) && new_max_cell.equals(old_max_cell)) return;
+    // if (new_min_cell.equals(old_min_cell) && new_max_cell.equals(old_max_cell)) return;
 
     CellIDs old_ids, new_ids;
     

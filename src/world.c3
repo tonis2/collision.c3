@@ -39,7 +39,6 @@ struct Material {
     PhysicsCombine restitution_combine;
 }
 
-
 struct Motion {
     bool is_kinematic;
     float mass;
@@ -61,15 +60,19 @@ struct Motion {
 struct Rigidbody {
     int bvh_node;
     uint id;
+    uint spatial_index;
 
     Vec3f translation;
     Vec3f scale;
     Quaternionf rotation;
+    Aabb3 aabb;
+    Aabb3 old_aabb;
     
     ConvexShape collider;
     Material material;
 
     Motion motion;
+    bool dirty;
 }
 
 fn void PhysicsWorld.free(&self) {
@@ -103,18 +106,23 @@ fn Rigidbody* PhysicsWorld.find_body(self, uint id) {
 <*
  @require body.collider != null : `Must have collider attached`
 *>
-fn void? PhysicsWorld.add_body(&self, Rigidbody body, Aabb3 aabb) {
-    body.motion.inverse_invertia = aabb.get_world_invertia(body.motion.mass, body.rotation);
+fn void? PhysicsWorld.add_body(&self, Rigidbody body) {
+    body.motion.inverse_invertia = body.aabb.get_world_invertia(body.motion.mass, body.rotation);
     body.motion.inverse_mass = body.motion.mass > 0 ? 1.0f / body.motion.mass : 0;
 
+    uint spatial_index = (uint)self.bodies.len();
+    body.spatial_index = spatial_index;
+
     self.bodies.push(body);
-    self.spatial_map.insert(aabb, body.id)!;
+    self.spatial_map.insert(body.get_transformed_aabb(), spatial_index)!;
 }
 
 fn void? PhysicsWorld.add_bvh_node(&self, Rigidbody body, Aabb3 aabb) {
     self.bodies.push(body);
     self.spatial_map.insert(aabb, body.id)!;
 }
+
+fn Aabb3 Rigidbody.get_transformed_aabb(&self) => self.aabb.transform(to_matrix(self.translation, self.scale, self.rotation));
 
 fn void Rigidbody.apply_force(&self, Vec3f force) => self.motion.force += force;
 fn void Rigidbody.apply_force_at_point(&self, Vec3f force, Vec3f point) {
@@ -138,7 +146,7 @@ fn void PhysicsWorld.run_step(&self, float time) {
     }
 
     foreach (&body: self.bodies) {
-        if (body.motion.inverse_mass == 0) continue;
+        if (body.motion.is_kinematic == false) continue;
 
         Vec3f linear_acceleration = body.motion.force * body.motion.inverse_mass;
         body.motion.linear_velocity += linear_acceleration * time;
@@ -147,46 +155,58 @@ fn void PhysicsWorld.run_step(&self, float time) {
         body.motion.torque = {0, 0, 0};
     }
 
-    // Todo: add broad phase optimizations
-    for (uint i = 0; i < self.bodies.len(); ++i) {
-        for (uint j = i + 1; j < self.bodies.len(); ++j) {
-            Rigidbody* body_a = self.bodies.get_ref(i);
-            Rigidbody* body_b = self.bodies.get_ref(j);
+    self.spatial_map.@get_pairs(;Pair pair) {
+        Rigidbody* body_a = self.bodies.get_ref(pair.first);
+        Rigidbody* body_b = self.bodies.get_ref(pair.second);
+  
+        TransformedConvex transformed_shape_1 = collision::transformed_shape_from(
+            shape: body_a.collider, 
+            translation: body_a.translation,
+            scale: body_a.scale,
+            rotation: body_a.rotation
+        );
 
-            TransformedConvex transformed_shape_1 = collision::transformed_shape_from(
-                shape: body_a.collider, 
-                translation: body_a.translation,
-                scale: body_a.scale,
-                rotation: body_a.rotation
-            );
+        TransformedConvex transformed_shape_2 = collision::transformed_shape_from(
+            shape: body_b.collider, 
+            translation: body_b.translation,
+            scale: body_b.scale,
+            rotation: body_b.rotation
+        );
 
-            TransformedConvex transformed_shape_2 = collision::transformed_shape_from(
-                shape: body_b.collider, 
-                translation: body_b.translation,
-                scale: body_b.scale,
-                rotation: body_b.rotation
-            );
+        CollisionInfo collision_info = collision::check_collision(&transformed_shape_1, &transformed_shape_2);
 
-            CollisionInfo collision_info = collision::check_collision(&transformed_shape_1, &transformed_shape_2);
+        if (collision_info.collided) {
+            collision::epa(&collision_info, &transformed_shape_1, &transformed_shape_2);
+            
+            self.collisions.push({
+                body_a,
+                body_b,
+                collision_info.normal,
+                collision_info.contact_points[0],
+                collision_info.depth,
+            });
 
-            if (collision_info.collided) {
-                collision::epa(&collision_info, &transformed_shape_1, &transformed_shape_2);
-
-                self.collisions.push({
-                    body_a,
-                    body_b,
-                    collision_info.normal,
-                    collision_info.contact_points[0],
-                    collision_info.depth,
-                });
-            }
-        }
-    }
+            body_a.dirty = true;
+            body_b.dirty = true;
+        }   
+    };
 
     foreach (collision : self.collisions) {
         resolve_collision(collision);
     }
 
+    // Update spatial map AABB boxes 
+    foreach (&body: self.bodies) {
+        if (body.motion.is_kinematic == false || body.dirty == false) {
+            continue;
+        };
+    
+        Aabb3 new_aabb = body.get_transformed_aabb();
+        self.spatial_map.update(body.old_aabb, new_aabb, body.spatial_index)!!;
+        body.old_aabb = new_aabb;
+        body.dirty = false;
+    }
+            
     self.collisions.clear();
 }
 
@@ -198,13 +218,13 @@ fn void resolve_collision(Collision collision) {
     Rigidbody* a = collision.body_a;
     Rigidbody* b = collision.body_b;
 
-    float slop = 0.01f;
-    float percent = 0.2f;
-  
-    Vec3f correction = collision.normal * math::max(collision.depth - slop, 0.0f) * percent;
+    float slop = 0.02f;
+    float percent = 0.5f;
+
+    Vec3f correction = collision.normal * math::max(collision.depth + slop, 0.0f) * percent * -1;
     
-    if (a.motion.inverse_mass != 0) a.translation += correction * -9.8 * a.motion.inverse_mass;
-    if (b.motion.inverse_mass != 0) b.translation -= correction * -9.8 * b.motion.inverse_mass;
+    if (a.motion.inverse_mass != 0) a.translation += correction * a.motion.inverse_mass;
+    if (b.motion.inverse_mass != 0) b.translation -= correction * b.motion.inverse_mass;
 
     Vec3f rv = b.motion.linear_velocity - a.motion.linear_velocity;
     float velocity_along_normal = rv.dot(collision.normal);

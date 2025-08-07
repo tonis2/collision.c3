@@ -20,7 +20,6 @@ struct CollisionInfo {
     bool collided;
 }
 
-
 const uint EPA_MAX_ITER = 16;
 const float EPA_TOLERANCE = 0.0001;
 
@@ -46,8 +45,9 @@ fn void EdgeArray.add(&self, usz a, usz b)
     for (uint i = 0; i < self.len(); i++) {
         Pair edge = self.get(i);
         if (edge == pair) {
-            self.set(i, self.last()!!);
-            self.remove_last();
+            // self.set(i, self.last()!!);
+            // self.remove_last();
+            self.remove_at(i);
             return;
         }
     }
@@ -80,9 +80,7 @@ fn void SupportArray.expand(&self, FaceArray* faces, Vec3f support)
             edges.add(face.a, face.b);
             edges.add(face.b, face.c);
             edges.add(face.c, face.a);
-            
-            faces.set(i, faces.last()!!);
-            faces.remove_last();
+            faces.remove_at(i);
             i--;
         }
     }
@@ -181,11 +179,10 @@ fn void epa(CollisionInfo* info, ConvexShape shape_1, ConvexShape shape_2) {
             return;
         }
 
-        //usz offset = faces.len();
-
+        // usz offset = faces.len() - 2;
         vertices.push(support_point);
         vertices.expand(&faces, support_point.point);
-
+     
         closest_face_index = faces.array_view().get_closest();
     }
 
