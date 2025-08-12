@@ -7,7 +7,7 @@ import std::collections::elastic_array;
 import std::collections::map;
 
 alias CellList = List{usz};
-alias SpatialMap = HashMap{usz, CellList};
+alias SpatialMap = HashMap{int, CellList};
 
 struct GridCoord {
     int x, y, z;
@@ -21,7 +21,12 @@ struct SpatialHash3D {
 
 fn bool GridCoord.equals(&self, GridCoord other) => self.x == other.x && self.y == other.y && self.z == other.z;
 
-fn usz GridCoord.hash(&self) => (usz)(builtin::@generic_hash(self.x) | builtin::@generic_hash(self.y) | builtin::@generic_hash(self.z));
+fn int GridCoord.hash(&self) {
+    int ux = (self.x << 1) ^ (self.x >> 31);
+    int uy = (self.y << 1) ^ (self.y >> 31);
+    int uz = (self.z << 1) ^ (self.z >> 31);
+    return (int)(ux * 73856093) ^ (uy * 19349663) ^ (uz * 83492791);
+}
 
 fn void SpatialHash3D.free(&self) {
     self.table.@each(; usz id, CellList cells) {
@@ -46,7 +51,7 @@ fn void? SpatialHash3D.insert(&self, Aabb3 box, usz id) {
     for (int x = min_cell.x; x <= max_cell.x; ++x) {
         for (int y = min_cell.y; y <= max_cell.y; ++y) {
             for (int z = min_cell.z; z <= max_cell.z; ++z) {
-                usz cell_id = (GridCoord){x, y, z}.hash();
+                int cell_id = (GridCoord){x, y, z}.hash();
                 if (!self.table.has_key(cell_id)) {
                     self.table.set(cell_id, {});
                 };
@@ -57,7 +62,7 @@ fn void? SpatialHash3D.insert(&self, Aabb3 box, usz id) {
     }
 }
 
-alias CellIDs = ElasticArray{usz, 24};
+alias CellIDs = ElasticArray{int, 24};
 
 fn void? SpatialHash3D.update(&self, Aabb3 old_box, Aabb3 new_box, usz entity) {
     if (old_box == new_box) return;
@@ -75,7 +80,7 @@ fn void? SpatialHash3D.update(&self, Aabb3 old_box, Aabb3 new_box, usz entity) {
     for (int x = old_min_cell.x; x <= old_max_cell.x; ++x) {
         for (int y = old_min_cell.y; y <= old_max_cell.y; ++y) {
             for (int z = old_min_cell.z; z <= old_max_cell.z; ++z) {
-                usz cell_id = (GridCoord){x, y, z}.hash();
+                int cell_id = (GridCoord){x, y, z}.hash();
                 old_ids.push(cell_id);
             }
         }
@@ -84,7 +89,7 @@ fn void? SpatialHash3D.update(&self, Aabb3 old_box, Aabb3 new_box, usz entity) {
     for (int x = new_min_cell.x; x <= new_max_cell.x; ++x) {
         for (int y = new_min_cell.y; y <= new_max_cell.y; ++y) {
             for (int z = new_min_cell.z; z <= new_max_cell.z; ++z) {
-                usz cell_id = (GridCoord){x, y, z}.hash();
+                int cell_id = (GridCoord){x, y, z}.hash();
                 new_ids.push(cell_id);      
             }
         }
@@ -135,10 +140,10 @@ macro void SpatialHash3D.@get_pairs_in_region(&self, Vec3f min, Vec3f max ; @cal
     GridCoord min_cell = self.world_to_grid(box.min);
     GridCoord max_cell = self.world_to_grid(box.max);
 
-    for (uint x = min_cell.x; x <= max_cell.x; ++x) {
-        for (uint y = min_cell.y; y <= max_cell.y; ++y) {
-                for (uint z = min_cell.z; z <= max_cell.z; ++z) {
-                    usz cell_id = (GridCoord){x, y, z}.hash();
+    for (int x = min_cell.x; x <= max_cell.x; ++x) {
+        for (int y = min_cell.y; y <= max_cell.y; ++y) {
+                for (int z = min_cell.z; z <= max_cell.z; ++z) {
+                    int cell_id = (GridCoord){x, y, z}.hash();
                     CellList cells = self.table.get(cell_id);
                     
                     for (usz i = 0; i < cells.len(); ++i) {

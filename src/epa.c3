@@ -156,7 +156,7 @@ fn void epa(CollisionInfo* info, ConvexShape shape_1, ConvexShape shape_2) {
         float support_distance = face_normal.dot(support_point.point);
         if (support_distance - closest_face.distance < EPA_TOLERANCE) {
             // We have a hit
-            info.normal = closest_face.normal;
+            info.normal = closest_face.normal.normalize();
             info.depth = closest_face.distance;
             assert(info.normal != (Vec3f){0, 0, 0});
 
@@ -176,13 +176,16 @@ fn void epa(CollisionInfo* info, ConvexShape shape_1, ConvexShape shape_2) {
                 support_a[0] * bary.x + support_b[0] * bary.y + support_c[0] * bary.z,
                 support_a[1] * bary.x + support_b[1] * bary.y + support_c[1] * bary.z,
             };
+
+            assert((info.contact_points[0] - info.contact_points[1]).dot(info.normal) > 0.0f);    
             return;
         }
 
         // usz offset = faces.len() - 2;
         vertices.push(support_point);
         vertices.expand(&faces, support_point.point);
-     
+
+    
         closest_face_index = faces.array_view().get_closest();
     }
 

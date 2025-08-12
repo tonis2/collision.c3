@@ -20,7 +20,7 @@ struct Collision {
     Rigidbody* body_a;
     Rigidbody* body_b;
     Vec3f normal;
-    Vec3f contact;
+    Vec3f[2] contact;
     float depth;
 }
 
@@ -47,14 +47,14 @@ struct Motion {
 
     Vec3f mass_center;
     Vec3f inertia_diagonal;
-    Vec4f inertia_orientation;
+    Quaternionf inertia_orientation;
+    Matrix3f inertia_inverse;
+
     Vec3f linear_velocity;
     Vec3f angular_velocity;
 
     Vec3f torque;
     Vec3f force;
-
-    Matrix3f inverse_invertia;
 }
 
 struct Rigidbody {
@@ -109,10 +109,12 @@ fn Rigidbody* PhysicsWorld.find_body(self, uint id) {
 fn void? PhysicsWorld.add_body(&self, Rigidbody body) {
     uint spatial_index = (uint)self.bodies.len();
     body.spatial_index = spatial_index;
-
     body.motion.inverse_mass = body.motion.mass > 0 ? 1.0f / body.motion.mass : 0;
     body.old_aabb = body.get_transformed_aabb();
-    body.motion.inverse_invertia = body.old_aabb.get_world_invertia(body.motion.mass, body.rotation);
+
+    
+    body.motion.inverse_mass > 0 ? 
+        body.old_aabb.get_world_invertia(body.motion.mass, body.rotation).inverse()!! : MATRIX3F_IDENTITY;
 
     self.bodies.push(body);
     self.spatial_map.insert(body.old_aabb, spatial_index)!;
@@ -132,9 +134,9 @@ fn void Rigidbody.apply_force_at_point(&self, Vec3f force, Vec3f point) {
     self.motion.torque += r.cross(force);
 }
 
-fn void Rigidbody.rotate(&self, Quaternionf rotation) {
 
-}
+// fn void Rigidbody.apply_inertia(&self, Vec3f force) {}
+// fn void Rigidbody.rotate(&self, Quaternionf rotation) {}
 
 <*
  @require self.bodies.len() > 0 : `Must have some bodies to simulate`
@@ -179,11 +181,15 @@ fn void PhysicsWorld.run_step(&self, float time) {
         if (collision_info.collided) {
             collision::epa(&collision_info, &transformed_shape_1, &transformed_shape_2);
             
+            // io::printfn(" ");
+            // io::printf("%s,%s,%s", collision_info.contact_points[0].x, collision_info.contact_points[0].y, collision_info.contact_points[0].z);
+            // io::printf(" %s,%s,%s", collision_info.contact_points[1].x, collision_info.contact_points[1].y, collision_info.contact_points[1].z);
+            // io::printfn(" ");
             self.collisions.push({
                 body_a,
                 body_b,
                 collision_info.normal,
-                collision_info.contact_points[0],
+                collision_info.contact_points,
                 collision_info.depth,
             });
 
@@ -201,6 +207,12 @@ fn void PhysicsWorld.run_step(&self, float time) {
         if (body.motion.is_kinematic == false || body.dirty == false) {
             continue;
         };
+
+        float angle = body.motion.angular_velocity.sq_magnitude();
+        if (angle > 0.0001f) {
+            Vec3f axis = body.motion.angular_velocity.normalize();
+            body.rotation = body.rotation.rotate_by_axis_angle(axis, angle * time);
+        }
     
         Aabb3 new_aabb = body.get_transformed_aabb();
         self.spatial_map.update(body.old_aabb, new_aabb, body.spatial_index)!!;
@@ -221,47 +233,70 @@ fn void resolve_collision(Collision collision) {
     Rigidbody* a = collision.body_a;
     Rigidbody* b = collision.body_b;
 
-    float slop = 0.02f;
-    float percent = 0.5f;
-
-    Vec3f correction = collision.normal * math::max(collision.depth + slop, 0.0f) * percent * -1;
-    
-    if (a.motion.inverse_mass != 0) a.translation += correction * a.motion.inverse_mass;
-    if (b.motion.inverse_mass != 0) b.translation -= correction * b.motion.inverse_mass;
-
-    Vec3f rv = b.motion.linear_velocity - a.motion.linear_velocity;
-    float velocity_along_normal = rv.dot(collision.normal);
-
-    // Do not resolve if velocities are separating
-    if (velocity_along_normal >= 0) return;
-
     float inverse_mass_sum = a.motion.inverse_mass + b.motion.inverse_mass;
 
-    float e = a.material.restitution + b.material.restitution; // Restitution (bounciness)
-    float j = -(1 + e) * velocity_along_normal;
-    j /= inverse_mass_sum;
 
-    Vec3f friction_impulse;
-    float static_friction = math::sqrt(a.material.static_friction * b.material.static_friction);
+    // Correction
+    float slop = 0.002f;
+    float percent = 0.3f;
 
-    Vec3f tangent = rv - rv.dot(collision.normal) * collision.normal;
-    if (tangent.sq_magnitude() > EPSILON) {tangent = tangent.normalize();}
-    else {tangent = (Vec3f){0,0,0};};
+    Vec3f correction = (collision.normal * -1) * math::max(collision.depth + slop, 0.0f) / inverse_mass_sum * percent;
 
-    float jt = -rv.dot(tangent);
-    jt /= inverse_mass_sum;
+    a.translation += correction * a.motion.inverse_mass;
+    b.translation -= correction * b.motion.inverse_mass;
 
-    if (math::abs(jt) < j * static_friction) {
-        friction_impulse = jt * tangent;
-    } else {
-        float dynamic_friction = math::sqrt(a.material.dynamic_friction * b.material.dynamic_friction);
-        friction_impulse = -j * dynamic_friction * tangent;
+    // Collision resolve
+    Vec3f ra = collision.contact[0] - a.translation;
+    Vec3f rb = collision.contact[1] - b.translation;
+
+    Vec3f velocity_a = a.motion.linear_velocity + a.motion.angular_velocity.cross(rb);
+    Vec3f velocity_b = b.motion.linear_velocity + b.motion.angular_velocity.cross(rb);
+
+    Vec3f relative_velocity = (velocity_b - velocity_a);
+
+    float velocity_along_normal = relative_velocity.dot(collision.normal);
+
+    // // Do not resolve if velocities are separating
+    if (velocity_along_normal >= 0) return;
+
+    float denominator = inverse_mass_sum +
+                        collision.normal.dot(
+                            (a.motion.inertia_inverse * ra.cross(collision.normal)).cross(ra) +
+                            (b.motion.inertia_inverse * rb.cross(collision.normal)).cross(rb)
+                        );
+    
+    float restitution = a.material.restitution + b.material.restitution; // Restitution (bounciness)
+    float j = ( -(1.0f + restitution ) * velocity_along_normal ) / ( inverse_mass_sum + denominator );
+
+    // Friction
+    // Vec3f friction_impulse;
+    // float static_friction = math::sqrt(a.material.static_friction * b.material.static_friction);
+
+    // Vec3f tangent = relative_velocity - relative_velocity.dot(collision.normal) * collision.normal;
+    // if (tangent.sq_magnitude() > EPSILON) {tangent = tangent.normalize();}
+    // else {tangent = (Vec3f){0,0,0};};
+
+    // float jt = -relative_velocity.dot(tangent);
+    // jt /= inverse_mass_sum;
+
+    // if (math::abs(jt) < j * static_friction) {
+    //     friction_impulse = jt * tangent;
+    // } else {
+    //     float dynamic_friction = math::sqrt(a.material.dynamic_friction * b.material.dynamic_friction);
+    //     friction_impulse = -j * dynamic_friction * tangent;
+    // }
+
+    // Motion
+    Vec3f impulse = collision.normal * j;
+
+    if (a.motion.inverse_mass > 0) {
+        a.motion.linear_velocity -= impulse * a.motion.inverse_mass;
+        a.motion.angular_velocity += a.motion.inertia_inverse * ra.cross(-impulse);
     }
 
-    a.motion.linear_velocity -= friction_impulse * a.motion.inverse_mass;
-    b.motion.linear_velocity += friction_impulse * b.motion.inverse_mass;
+    if (b.motion.inverse_mass > 0) {
+        b.motion.linear_velocity += impulse * b.motion.inverse_mass;
+        b.motion.angular_velocity += b.motion.inertia_inverse * rb.cross(impulse);
+    }
 
-    Vec3f impulse = collision.normal * j;
-    if (a.motion.inverse_mass != 0) a.motion.linear_velocity -= impulse * a.motion.inverse_mass;
-    if (b.motion.inverse_mass != 0) b.motion.linear_velocity += impulse * b.motion.inverse_mass;
-}
+}   

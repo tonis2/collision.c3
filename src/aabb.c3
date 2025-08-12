@@ -11,10 +11,6 @@ struct Aabb3 (Printable, ConvexShape) {
     Vec3f max;
 }
 
-struct Obb3 {
-    Vec3f min;
-    Vec3f max;
-}
 
 fn Vec3f Aabb3.size(self) => self.max - self.min;
 fn usz? Aabb3.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("min %s max %s", self.min, self.max)!;
@@ -134,7 +130,8 @@ fn Aabb3 Aabb3.transform(self, Matrix4f matrix)
         matrix.m10, matrix.m11, matrix.m12,
         matrix.m20, matrix.m21, matrix.m22,
     };
- 
+
+
     foreach (uint i, value: new_matrix.m) {
         uint index = i % 3;
 
@@ -158,27 +155,27 @@ fn Matrix3f Aabb3.get_local_intertia(&self, float mass) {
     float h = size.y;
     float d = size.z;
 
-    float ix = (1.0f / 12.0f) * mass * (h*h + d*d);
-    float iy = (1.0f / 12.0f) * mass * (w*w + d*d);
-    float iz = (1.0f / 12.0f) * mass * (w*w + h*h);
+    float ix = (mass / 12.0f) * (h*h + d*d);
+    float iy = (mass / 12.0f) * mass * (w*w + d*d);
+    float iz = (mass / 12.0f) * mass * (w*w + h*h);
 
-    return {
+    return (Matrix3f){
         ix, 0, 0,
-        0, iy, 0,
-        0, 0, iz
-    };
+        0,  iy, 0,
+        0, 0,  iz
+    }.inverse()!!;
 }
 
 
 fn Matrix3f Aabb3.get_world_invertia(&self, float mass, Quaternionf rotation) {
     Matrix3f local_inertia = self.get_local_intertia(mass);
 
-    Matrix3f inv_inertia_local = {
-        (local_inertia.m00 > 0.0f) ? 1.0f / local_inertia.m00 : 0.0f, 0, 0,
-        0, (local_inertia.m11 > 0.0f) ? 1.0f / local_inertia.m11 : 0.0f, 0,
-        0, 0, (local_inertia.m22 > 0.0f) ? 1.0f / local_inertia.m22 : 0.0f
-    }; 
+    Matrix4f matrix = rotation.normalize().to_matrixf();
+    Matrix3f r = (Matrix3f){
+        matrix.m00, matrix.m01, matrix.m02,
+        matrix.m10, matrix.m11, matrix.m12,
+        matrix.m20, matrix.m21, matrix.m22,
+    };
 
-    Matrix3f r = (Matrix3f){.m = (rotation.normalize().to_matrixf()).m[0..8]};
-    return r * inv_inertia_local * r.transpose();
+    return r * local_inertia * r.transpose();
 }

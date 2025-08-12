@@ -51,21 +51,28 @@ fn Vec3f Vec3f.rotate_by_quat(&self, Quaternionf q) {
 
 fn Vec3f Vec3f.barycentric(self, Vec3f a, Vec3f b, Vec3f c) {
     Vec3f v0 = b - a;
-    Vec3f v1 = c - a; 
+    Vec3f v1 = c - a;
     Vec3f v2 = self - a;
 
+    // Solve for coefficients a,b in v2 = a*v0 + b*v1 (in triangle plane)
     float d00 = v0.dot(v0);
     float d01 = v0.dot(v1);
     float d11 = v1.dot(v1);
     float d20 = v2.dot(v0);
     float d21 = v2.dot(v1);
-    float denom = d00 * d11 - d01 * d01;
-    if (math::abs(denom) < 1e-9) return {-1, -1, -1}; // Invalid triangle
 
-    float v = (d11 * d20 - d01 * d21) / denom;
-    float w = (d00 * d21 - d01 * d20) / denom;
-    float u = 1.0 - v - w;
-    return {u, v, w};
+    float denom = d00 * d11 - d01 * d01;
+
+    float inv_den = 1.0f / denom;
+    float u = (d11 * d20 - d01 * d21) * inv_den;
+    float w = (d00 * d21 - d01 * d20) * inv_den;
+
+    // barycentric weights relative to A,B,C:
+    return {
+        1.0f - u - w,
+        u,
+        w,
+    };
 }
 
 fn bool Triangle.intersect_ray(&self, Ray ray, HitInfo* info) {

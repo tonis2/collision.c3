@@ -32,9 +32,11 @@ fn void test_physics() {
     };
 
     foreach (usz i, item: boxes) spatial_map.insert(item, i)!!;
-    spatial_map.@get_pairs(;Pair pair) { assert(pair.first == 0 && pair.second == 1); };
 
-    ///
+    spatial_map.@get_pairs(;Pair pair) { 
+        assert(pair.first == 0 && pair.second == 1);
+     };
+
     Vec3f[] cube = {
         {-0.5, -0.5, -0.5}, {0.5, -0.5, -0.5}, {0.5, 0.5, -0.5}, {-0.5, 0.5, -0.5},
         {-0.5, -0.5, 0.5}, {0.5, -0.5, 0.5}, {0.5, 0.5, 0.5}, {-0.5, 0.5, 0.5}
@@ -100,6 +102,19 @@ fn void test_ray() {
 
      Sphere testSphere = {{0, 0, 5}, 1.0};
      assert(testSphere.intersect(testRay) > 0);
+}
+
+
+fn void test_aabb() {
+    Aabb3 box = collision::aabb_from_half_extent({1,1,1});     
+    Matrix3f local_invertia = box.get_local_intertia(1.0);
+    Matrix3f result = {
+        1.5, 0, 0,
+        0, 1.5, 0,
+        0, 0, 1.5
+    };
+
+    assert(local_invertia == result);
 }
 
 
