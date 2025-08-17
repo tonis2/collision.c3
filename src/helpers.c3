@@ -179,11 +179,20 @@ fn usz? Pair.to_format(&self, Formatter* formatter) @dynamic => formatter.printf
 macro bool Pair.equals(self, Pair b) @operator(==) => self.first == b.first && self.second == b.second;
 macro uint Pair.hash(Pair self) => builtin::@generic_hash(self.first) | builtin::@generic_hash(self.second);
 
-fn Matrix4f to_matrix(Vec3f translation, Vec3f scale, Quaternionf rotation) @private {
-    return (Matrix4f) {
-        scale.x, 0, 0, translation.x,
-        0, scale.y, 0, translation.y,
-        0, 0, scale.z, translation.z,
+fn Matrix4f to_matrix(Vec3f translation, Vec3f scale, Quaternionf rotation) {
+    Matrix4f translation_matrix = {
+        1, 0, 0, translation.x,
+        0, 1, 0, translation.y,
+        0, 0, 1, translation.z,
         0.0, 0.0, 0.0, 1.0,
-    }.mul(rotation.to_matrixf());
+    };
+
+    Matrix4f scale_matrix = {
+        scale.x, 0, 0, 0,
+        0, scale.y, 0, 0,
+        0, 0, scale.z, 0,
+        0.0, 0.0, 0.0, 1.0,
+    };
+    
+   return translation_matrix * rotation.to_matrixf() * scale_matrix;
 }
