@@ -156,8 +156,8 @@ fn Matrix3f Aabb3.get_local_intertia(&self, float mass) {
     float d = size.z;
 
     float ix = (mass / 12.0f) * (h*h + d*d);
-    float iy = (mass / 12.0f) * mass * (w*w + d*d);
-    float iz = (mass / 12.0f) * mass * (w*w + h*h);
+    float iy = (mass / 12.0f) * (w*w + d*d);
+    float iz = (mass / 12.0f) * (w*w + h*h);
 
     return (Matrix3f){
         ix, 0, 0,

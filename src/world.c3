@@ -4,6 +4,7 @@ import std::collections::elastic_array;
 import std::io;
 import std::math;
 import std::collections::list;
+import std::time;
 
 
 Vec3f gravity = {0.0f, -9.81f, 0.0f};
@@ -112,9 +113,9 @@ fn void? PhysicsWorld.add_body(&self, Rigidbody body) {
     body.motion.inverse_mass = body.motion.mass > 0 ? 1.0f / body.motion.mass : 0;
     body.old_aabb = body.get_transformed_aabb();
 
-    
-    body.motion.inverse_mass > 0 ? 
-        body.old_aabb.get_world_invertia(body.motion.mass, body.rotation).inverse()!! : MATRIX3F_IDENTITY;
+    if (body.motion.inverse_mass > 0) {
+        body.motion.inertia_inverse = body.old_aabb.get_world_invertia(body.motion.mass, body.rotation).inverse()!!;
+    }
 
     self.bodies.push(body);
     self.spatial_map.insert(body.old_aabb, spatial_index)!;
@@ -157,6 +158,7 @@ fn void PhysicsWorld.run_step(&self, float time) {
         body.motion.force = {0, 0, 0};
         body.motion.torque = {0, 0, 0};
     }
+    
 
     self.spatial_map.@get_pairs(;Pair pair) {
         Rigidbody* body_a = self.bodies.get_ref(pair.first);
@@ -178,6 +180,7 @@ fn void PhysicsWorld.run_step(&self, float time) {
 
         CollisionInfo collision_info = collision::check_collision(&transformed_shape_1, &transformed_shape_2);
 
+        // io::printfn("collided %s %s", collision_info.collided, std::time::now());
         if (collision_info.collided) {
             collision::epa(&collision_info, &transformed_shape_1, &transformed_shape_2);
             
@@ -204,14 +207,15 @@ fn void PhysicsWorld.run_step(&self, float time) {
 
     // Update spatial map AABB boxes 
     foreach (&body: self.bodies) {
-        if (body.motion.is_kinematic == false || body.dirty == false) {
+        if (body.motion.is_kinematic == false) {
             continue;
         };
 
         float angle = body.motion.angular_velocity.sq_magnitude();
+      
         if (angle > 0.0001f) {
             Vec3f axis = body.motion.angular_velocity.normalize();
-            body.rotation = body.rotation.rotate_by_axis_angle(axis, angle * time);
+            body.rotation = body.rotation.rotate_by_axis_angle(axis, angle);
         }
     
         Aabb3 new_aabb = body.get_transformed_aabb();
@@ -235,12 +239,11 @@ fn void resolve_collision(Collision collision) {
 
     float inverse_mass_sum = a.motion.inverse_mass + b.motion.inverse_mass;
 
-
     // Correction
-    float slop = 0.002f;
-    float percent = 0.3f;
+    float slop = 0.01f;
+    float percent = 0.8f;
 
-    Vec3f correction = (collision.normal * -1) * math::max(collision.depth + slop, 0.0f) / inverse_mass_sum * percent;
+    Vec3f correction = (collision.normal * -1) * math::max(collision.depth + slop, 0.0f) * percent / inverse_mass_sum;
 
     a.translation += correction * a.motion.inverse_mass;
     b.translation -= correction * b.motion.inverse_mass;
@@ -266,32 +269,32 @@ fn void resolve_collision(Collision collision) {
                         );
     
     float restitution = a.material.restitution + b.material.restitution; // Restitution (bounciness)
-    float j = ( -(1.0f + restitution ) * velocity_along_normal ) / ( inverse_mass_sum + denominator );
+    float j = ( -(1.0f + restitution ) * velocity_along_normal ) /  denominator;
 
     // Friction
-    // Vec3f friction_impulse;
-    // float static_friction = math::sqrt(a.material.static_friction * b.material.static_friction);
+    Vec3f friction_impulse;
+    float static_friction = math::sqrt(a.material.static_friction * b.material.static_friction);
 
-    // Vec3f tangent = relative_velocity - relative_velocity.dot(collision.normal) * collision.normal;
-    // if (tangent.sq_magnitude() > EPSILON) {tangent = tangent.normalize();}
-    // else {tangent = (Vec3f){0,0,0};};
+    Vec3f tangent = relative_velocity - relative_velocity.dot(collision.normal) * collision.normal;
+    if (tangent.sq_magnitude() > EPSILON) {tangent = tangent.normalize();}
+    else {tangent = (Vec3f){0,0,0};};
 
-    // float jt = -relative_velocity.dot(tangent);
-    // jt /= inverse_mass_sum;
+    float jt = -relative_velocity.dot(tangent);
+    jt /= inverse_mass_sum;
 
-    // if (math::abs(jt) < j * static_friction) {
-    //     friction_impulse = jt * tangent;
-    // } else {
-    //     float dynamic_friction = math::sqrt(a.material.dynamic_friction * b.material.dynamic_friction);
-    //     friction_impulse = -j * dynamic_friction * tangent;
-    // }
+    if (math::abs(jt) < j * static_friction) {
+        friction_impulse = jt * tangent;
+    } else {
+        float dynamic_friction = math::sqrt(a.material.dynamic_friction * b.material.dynamic_friction);
+        friction_impulse = -j * dynamic_friction * tangent;
+    }
 
     // Motion
     Vec3f impulse = collision.normal * j;
 
     if (a.motion.inverse_mass > 0) {
         a.motion.linear_velocity -= impulse * a.motion.inverse_mass;
-        a.motion.angular_velocity += a.motion.inertia_inverse * ra.cross(-impulse);
+        a.motion.angular_velocity += a.motion.inertia_inverse * ra.cross(impulse);
     }
 
     if (b.motion.inverse_mass > 0) {

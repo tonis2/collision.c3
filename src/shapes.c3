@@ -157,5 +157,6 @@ fn Vec3f Aabb3.furthest_point(&self, Vec3f direction) @dynamic {
         (direction.y > 0) ? self.max.y : self.min.y,
         (direction.z > 0) ? self.max.z : self.min.z
     };
+
     return point;
 }

@@ -86,7 +86,7 @@ fn void test_physics() {
     // assert(collision::check_collision(&transformed_shape_3, &transformed_shape_4).collided);
     // assert(!collision::check_collision(&transformed_shape_5, &transformed_shape_6).collided);
     
-    // CollisionInfo epa_result = epa(collision_result.simplex, &shape_1, &shape_2);
+    //CollisionInfo epa_result = epa(collision_result.simplex, &shape_1, &shape_2);
 
     // {
     //     Aabb3 aabb = {

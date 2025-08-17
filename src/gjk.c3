@@ -1,5 +1,5 @@
 module collision;
-
+import std::io;
 import std::math;
 import std::collections::elastic_array;
 
@@ -165,7 +165,7 @@ fn CollisionInfo check_collision(ConvexShape shape_1, ConvexShape shape_2) {
         Vec3f a_support = shape_1.furthest_point(direction);
         Vec3f b_support = shape_2.furthest_point(-direction);
         Vec3f mikowski_difference = a_support - b_support;
-        
+    
         // If we didn't reach the origin, no collision
         if (mikowski_difference.dot(direction) <= 0) {
             return { .collided = false };
