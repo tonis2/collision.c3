@@ -16,8 +16,8 @@ struct PhysicsWorld {
 }
 
 struct Collision {
-    Rigidbody* body_a;
-    Rigidbody* body_b;
+    usz a;
+    usz b;
     Vec3f normal;
     Vec3f[2] contact;
     float depth;
@@ -140,7 +140,7 @@ fn void Rigidbody.apply_force_at_point(&self, Vec3f force, Vec3f point) {
 <*
  @require self.bodies.len() > 0 : `Must have some bodies to simulate`
 *>
-fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9.81f}) {
+fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9.8f}) {
 
     // Apply mass
     foreach (&body: self.bodies) {
@@ -153,6 +153,9 @@ fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9
         Vec3f linear_acceleration = body.motion.force * body.motion.inverse_mass;
         body.motion.linear_velocity += linear_acceleration * time;
         body.translation += body.motion.linear_velocity * time;
+
+        body.motion.angular_velocity += body.motion.inertia_inverse * body.motion.torque * time;
+
         body.motion.force = {0, 0, 0};
         body.motion.torque = {0, 0, 0};
     }
@@ -213,28 +216,24 @@ fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9
             scale: body_b.scale,
             rotation: body_b.rotation
         );
-
+  
         CollisionInfo collision_info = collision::check_collision(&transformed_shape_1, &transformed_shape_2);
-
-        
+      
         if (collision_info.collided) {
             collision::epa(&collision_info, &transformed_shape_1, &transformed_shape_2);
-            
+        
             self.collisions.push({
-                body_a,
-                body_b,
+                pair.first,
+                pair.second,
                 collision_info.normal,
                 collision_info.contact_points,
                 collision_info.depth,
             });
-
-            body_a.dirty = true;
-            body_b.dirty = true;
-        }   
+        }
     };
 
     foreach (collision : self.collisions) {
-        resolve_collision(collision);
+        self.resolve_collision(collision);
     }
 
     // Update spatial map AABB boxes 
@@ -249,7 +248,8 @@ fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9
         //     Vec3f axis = body.motion.angular_velocity.normalize();
         //     body.rotation = body.rotation.rotate_by_axis_angle(axis, angle);
         // }
-    
+
+      
         Aabb3 new_aabb = body.get_transformed_aabb();
         self.spatial_map.update(body.old_aabb, new_aabb, body.spatial_index)!!;
         body.old_aabb = new_aabb;
@@ -262,54 +262,56 @@ fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9
 const float EPSILON = 1e-6f;
 
 <*
- @require collision.body_a != null && collision.body_b != null : `Must have both collision bodies attached`
- @require collision.body_a != collision.body_b : `Collision bodies must not reference same body`
+ @require collision.a != collision.b : `Collision bodies must not reference same body`
 *>
-fn void resolve_collision(Collision collision) {
-    Rigidbody* a = collision.body_a;
-    Rigidbody* b = collision.body_b;
+fn void PhysicsWorld.resolve_collision(&self, Collision collision) {
+    Rigidbody* a = self.bodies.get_ref(collision.a);
+    Rigidbody* b = self.bodies.get_ref(collision.b);
 
     float inverse_mass_sum = a.motion.inverse_mass + b.motion.inverse_mass;
 
-    // Correction
-    // float slop = 0.001f;
-    // float percent = 0.4;
+    //Correction
+    // float slop = 0.01f;
+    // float percent = 0.6f;
+
+    Vec3f correction = collision.normal * collision.depth;
+    //Vec3f correction = collision.normal * math::max(collision.depth + slop, 0.0f) * percent;
 
     Vec3f relative_a = collision.contact[0];
     Vec3f relative_b = collision.contact[1];
 
-    Vec3f correction = collision.normal * math::max(collision.depth, 0.0f);
-
-    a.translation -= correction * (a.motion.inverse_mass * inverse_mass_sum);
-    b.translation += correction * (b.motion.inverse_mass * inverse_mass_sum);
+    a.translation -= correction * a.motion.inverse_mass;
+    b.translation += correction * b.motion.inverse_mass;
 
 	// Vec3f angular_velocity_a = a.motion.angular_velocity.cross(relative_a);
     // Vec3f angular_velocity_b = b.motion.angular_velocity.cross(relative_b);
 
-    // Vec3f full_velocity_a = a.motion.linear_velocity + angular_velocity_a;
-    // Vec3f full_velocity_b = b.motion.linear_velocity + angular_velocity_b;
+    Vec3f full_velocity_a = a.motion.linear_velocity;
+    Vec3f full_velocity_b = b.motion.linear_velocity;
 
-    // Vec3f contact_velocity = full_velocity_a - full_velocity_b;
+    Vec3f contact_velocity = full_velocity_b - full_velocity_a;
+    float impulse_force = contact_velocity.dot(collision.normal);
+    if (impulse_force > 0) return;
 
-    // float impulse_force = contact_velocity.dot(collision.normal);
+    float restitution = a.material.restitution + b.material.restitution;
+
+    float j = -(1 + restitution) * impulse_force;
+    j /= inverse_mass_sum;
 
     // Vec3f inertia_a = a.motion.inertia_inverse * relative_a.cross(collision.normal).cross(relative_a);
 	// Vec3f inertia_b = b.motion.inertia_inverse * relative_b.cross(collision.normal).cross(relative_b);
 	// float angular_effect = (inertia_a + inertia_b).dot(collision.normal);
 
-    // float restitution = a.material.restitution * b.material.restitution;
+    Vec3f impulse = collision.normal * j;
+    
+    if (a.motion.inverse_mass > 0) {
+        a.motion.linear_velocity -= impulse * a.motion.inverse_mass; 
+        //a.motion.angular_velocity += a.motion.inertia_inverse * ra.cross(impulse);
+    }
 
-    // float j = (-(1.0f + restitution) * impulse_force) * (inverse_mass_sum + angular_effect);
+    if (b.motion.inverse_mass > 0) {
+        b.motion.linear_velocity += impulse * b.motion.inverse_mass; 
 
-    // Vec3f impulse = collision.normal * j;
-
-    // if (a.motion.inverse_mass > 0) {
-    //     a.motion.linear_velocity -= impulse * a.motion.inverse_mass;
-    //     //a.motion.angular_velocity += a.motion.inertia_inverse * ra.cross(impulse);
-    // }
-
-    // if (b.motion.inverse_mass > 0) {
-    //     b.motion.linear_velocity += impulse * b.motion.inverse_mass;
-    //     //b.motion.angular_velocity += b.motion.inertia_inverse * rb.cross(impulse);
-    // }
+        // b.motion.angular_velocity += b.motion.inertia_inverse * rb.cross(impulse);
+    }
 }   

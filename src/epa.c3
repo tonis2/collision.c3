@@ -5,9 +5,10 @@ import std::collections::list;
 import std::collections::elastic_array;
 import std::collections::map;
 import std::io;
+import std::os;
 
-struct Face {
-    uint a,b,c;
+struct Face @private {
+    usz a,b,c;
     Vec3f normal;
     float distance;
 }
@@ -20,92 +21,68 @@ struct CollisionInfo {
     bool collided;
 }
 
-const uint MAX_FACES = 40;
-
-alias EdgeArray @private = ElasticArray{Pair, MAX_FACES};
-alias FaceArray @private = ElasticArray{Face, MAX_FACES};
-alias SupportArray @private = ElasticArray{SupportPoint, MAX_FACES};
-alias IndexArray @private = ElasticArray{uint, MAX_FACES};
-
-<*
- @require array.len > 0 : `Array should not be empty`
-*>
-fn void FaceArray.replace_array(&self, Face[] array, usz start_index = 0)
-{
-    self.size = array.len;
-	foreach (index, &value : array) {self.entries[start_index + index] = *value;}
-}
+alias EdgeArray @private = ElasticArray{Pair, 20};
+alias FaceArray @private = ElasticArray{Face, 60};
+alias SupportArray @private = ElasticArray{SupportPoint, 40};
 
 fn void EdgeArray.add_if_new(&self, Pair pair)
 {
-    bool found = false;
-    for (uint i = 0; i < self.len(); i++) {
-        Pair edge = self.get(i);
-        if (edge == pair) {
+    foreach (usz i, edge: self) {
+        if (edge == (Pair){pair.second, pair.first}) {
             self.remove_at(i);
-            found = true;
             return;
         }
     }
 
-    if (!found) self.push(pair);
+    self.push(pair);
 }
 
-fn void Face.calculate_normal(&self, SupportArray vertices)
+fn Face SupportArray.create_face(self, usz a_index, usz b_index, usz c_index)
 {
-    Vec3f a = vertices.get(self.a).point;
-    Vec3f b = vertices.get(self.b).point;
-    Vec3f c = vertices.get(self.c).point;
+    Vec3f a = self.get(a_index).point;
+    Vec3f b = self.get(b_index).point;
+    Vec3f c = self.get(c_index).point;
 
-    Vec3f ab = b - a;
-    Vec3f ac = c - a;
+    Vec3f normal = (b - a).cross(c - a).normalize();
+    float distance = a.dot(normal);
 
-    self.normal = ab.cross(ac).normalize();
-    self.distance = a.dot(self.normal);
-
-    if ((-a).dot(self.normal) > 0) {
-        self.normal   *= -1;
-        self.distance *= -1;
+    if ((-a).dot(normal) > 0) {
+        normal   *= -1;
+        distance *= -1;
     }
+
+    return {    
+        .a = a_index,
+        .b = b_index,
+        .c = c_index,
+        .distance = distance,
+        .normal = normal
+    };
     
-    assert(self.normal != (Vec3f){0, 0, 0});
+    // assert(self.normal != (Vec3f){0, 0, 0});
 }
 
 
-fn void SupportArray.reconstruct(self, FaceArray* faces, Vec3f extend_point)
+fn void SupportArray.reconstruct(self, FaceArray* faces, Vec3f new_point)
 {
-    IndexArray remove_faces;
+    EdgeArray edges;
     for (uint i = 0; i < faces.len(); i++) {
         Face face = faces.get(i);
-        if (face.normal.dot(extend_point - self.get(face.a).point) > 0) {
-            remove_faces.push(i);
+        if (face.normal.dot(new_point - self.get(face.a).point) > 0) {
+            edges.add_if_new({face.a, face.b});
+            edges.add_if_new({face.b, face.c});
+            edges.add_if_new({face.c, face.a});
+            faces.remove_at(i);
         }
     }
 
-    EdgeArray edges;
-    foreach (uint face_index: remove_faces) {
-        Face face = faces.get(face_index);
-        Pair edgeAB = {face.a, face.b};
-        Pair edgeAC = {face.a, face.c};
-        Pair edgeBC = {face.b, face.c};
-
-        edges.add_if_new(edgeAB);
-        edges.add_if_new(edgeAC);
-        edges.add_if_new(edgeBC);
-    }
-
-    for (int i = (int)remove_faces.len() - 1; i >= 0; i--) {
-        faces.remove_at(remove_faces[i]);
-    }
-
     foreach (edge: edges)  {
-        Face face = {.a = (uint)edge.first, .b = (uint)edge.second, .c = (uint)self.len() - 1};
-        face.calculate_normal(self);
-        faces.push(face);
+        Face new_face = self.create_face(edge.first, edge.second, self.len() - 1);
+        faces.push(new_face);
     }
 }
 
-fn uint Face[].get_closest(self, float min_distance = float.max) @private {
+fn uint Face[].get_closest(self, float min_distance = float.max) {
     uint closest = 0;
 
     foreach (uint i, face: self) {
@@ -131,13 +108,11 @@ fn void epa(CollisionInfo* info, ConvexShape shape_1, ConvexShape shape_2) {
 
     FaceArray faces;
     faces.add_array({
-        (Face){.a = 0, .b = 1, .c = 2},
-        (Face){.a = 0, .b = 1, .c = 3},
-        (Face){.a = 0, .b = 2, .c = 3},
-        (Face){.a = 1, .b = 2, .c = 3}
+        vertices.create_face(0, 1, 2),
+        vertices.create_face(0, 3, 1),
+        vertices.create_face(0, 2, 3),
+        vertices.create_face(1, 3, 2),
     });
-
-    foreach (&face : faces) face.calculate_normal(vertices);
     
     uint closest_face_index = faces.array_view().get_closest();
 
@@ -147,7 +122,6 @@ fn void epa(CollisionInfo* info, ConvexShape shape_1, ConvexShape shape_2) {
         closest_face = faces[closest_face_index];
 
         Vec3f face_normal = closest_face.normal;
-
         Vec3f a_support = shape_1.furthest_point(face_normal);
         Vec3f b_support = shape_2.furthest_point(-face_normal);
 
@@ -162,35 +136,36 @@ fn void epa(CollisionInfo* info, ConvexShape shape_1, ConvexShape shape_2) {
         if (support_distance - closest_face.distance < EPA_TOLERANCE) {
 
             // We have a hit
-            info.normal = closest_face.normal.normalize();
+            info.normal = closest_face.normal;
             info.depth = closest_face.distance;
 
             Vec3f p = info.normal * -info.depth;
 
-            SupportPoint a = vertices[closest_face.a];
-            SupportPoint b = vertices[closest_face.b];
-            SupportPoint c = vertices[closest_face.c];
+            if (p != {0,0,0}) {           
+                SupportPoint a = vertices[closest_face.a];
+                SupportPoint b = vertices[closest_face.b];
+                SupportPoint c = vertices[closest_face.c];
 
-            Vec3f bary = p.barycentric(a.point, b.point, c.point);
+                Vec3f bary = p.barycentric(a.point, b.point, c.point);
 
-            Vec3f[2] support_a = {a.a, a.b};
-            Vec3f[2] support_b = {b.a, b.b};
-            Vec3f[2] support_c = {c.a, c.b};
+                Vec3f[2] support_a = {a.a, a.b};
+                Vec3f[2] support_b = {b.a, b.b};
+                Vec3f[2] support_c = {c.a, c.b};
 
-            info.contact_points = {
-                support_a[0] * bary.x + support_b[0] * bary.y + support_c[0] * bary.z,
-                support_a[1] * bary.x + support_b[1] * bary.y + support_c[1] * bary.z,
-            };
+                info.contact_points = {
+                    support_a[0] * bary.x + support_b[0] * bary.y + support_c[0] * bary.z,
+                    support_a[1] * bary.x + support_b[1] * bary.y + support_c[1] * bary.z,
+                };
+            }
             return;
         }
-
 
         vertices.push(support_point);
         vertices.reconstruct(&faces, support_point.point);
 
         closest_face_index = faces.array_view().get_closest();
     }
-
+    
     info.normal = closest_face.normal;
     info.depth = closest_face.distance;
     // info.collided = false;
