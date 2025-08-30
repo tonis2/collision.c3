@@ -156,6 +156,10 @@ fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9
 
         body.motion.angular_velocity += body.motion.inertia_inverse * body.motion.torque * time;
 
+        Quaternionf dq = {...body.motion.angular_velocity, 0.0f};
+   
+        body.rotation += (dq * body.rotation * 0.5f * time).normalize();
+
         body.motion.force = {0, 0, 0};
         body.motion.torque = {0, 0, 0};
     }
