@@ -31,6 +31,15 @@ fn Quaternionf Quaternionf.mul2(q1, Quaternionf q2) {
 
 fn Quaternionf Quaternionf.conjugate(&self) => {-self.v.x, -self.v.y, -self.v.z, self.v.w};
 
+fn Matrix3f Quaternionf.as_mat3(self) {
+    Matrix4f matrix = self.to_matrixf();
+    return {
+        matrix.m00, matrix.m01, matrix.m02,
+        matrix.m10, matrix.m11, matrix.m12,
+        matrix.m20, matrix.m21, matrix.m22,
+    };
+}
+
 fn Quaternionf Quaternionf.rotate_by_axis_angle(self, Vec3f axis, float angle) {
     Vec3f normal_axis = axis.normalize();
     float half_angle = angle * 0.5;

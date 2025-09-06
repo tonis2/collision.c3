@@ -39,7 +39,6 @@ struct Material {
 }
 
 struct Motion {
-    bool is_kinematic;
     float mass;
     float inverse_mass;
     float gravity_factor;
@@ -47,7 +46,7 @@ struct Motion {
     Vec3f mass_center;
     Vec3f inertia_diagonal;
     Quaternionf inertia_orientation;
-    Matrix3f inertia_inverse;
+    Matrix3f inertia;
 
     Vec3f linear_velocity;
     Vec3f angular_velocity;
@@ -61,13 +60,11 @@ struct Rigidbody {
     uint id;
     uint spatial_index;
 
-    Vec3f translation;
-    Vec3f scale;
-    Quaternionf rotation;
     Aabb3 aabb;
     Aabb3 old_aabb;
-    
-    ConvexShape collider;
+ 
+
+    TransformedConvex collider;
     Material material;
 
     Motion motion;
@@ -102,9 +99,7 @@ fn Rigidbody* PhysicsWorld.find_body(self, uint id) {
    return null;
 }
 
-<*
- @require body.collider != null : `Must have collider attached`
-*>
+
 fn void? PhysicsWorld.add_body(&self, Rigidbody body) {
     uint spatial_index = (uint)self.bodies.len();
     body.spatial_index = spatial_index;
@@ -112,7 +107,9 @@ fn void? PhysicsWorld.add_body(&self, Rigidbody body) {
     body.old_aabb = body.get_transformed_aabb();
 
     if (body.motion.inverse_mass > 0) {
-        body.motion.inertia_inverse = body.old_aabb.get_world_invertia(body.motion.mass, body.rotation).inverse()!!;
+        body.motion.inertia = body.get_local_inertia();
+    } else {
+        body.motion.inertia = MATRIX3F_IDENTITY;
     }
 
     self.bodies.push(body);
@@ -124,18 +121,32 @@ fn void? PhysicsWorld.add_bvh_node(&self, Rigidbody body, Aabb3 aabb) {
     self.spatial_map.insert(aabb, body.id)!;
 }
 
-fn Aabb3 Rigidbody.get_transformed_aabb(&self) => self.aabb.transform(to_matrix(self.translation, self.scale, self.rotation));
+fn Aabb3 Rigidbody.get_transformed_aabb(&self) => self.aabb.transform(to_matrix(self.collider.translation, self.collider.scale, self.collider.rotation));
+
+fn Matrix3f Rigidbody.get_local_inertia(self) => self.collider.inertia_tensor(self.motion.mass);
+
+
+fn Matrix3f Rigidbody.get_inverse_world_inertia(self) {
+    if (self.is_static()) return MATRIX3F_IDENTITY;
+    return self.collider.world_inertia_from_local(self.motion.inertia.inverse()!!);
+}
 
 fn void Rigidbody.apply_force(&self, Vec3f force) => self.motion.force += force;
 fn void Rigidbody.apply_force_at_point(&self, Vec3f force, Vec3f point) {
     self.motion.force += force;
-    Vec3f r = point - self.translation;
+    Vec3f r = point - self.collider.translation;
     self.motion.torque += r.cross(force);
 }
 
 
-// fn void Rigidbody.apply_inertia(&self, Vec3f force) {}
-// fn void Rigidbody.rotate(&self, Quaternionf rotation) {}
+fn void Rigidbody.apply_linear_impulse(&self, Vec3f impulse) => self.motion.linear_velocity += impulse * self.motion.inverse_mass;
+
+fn void Rigidbody.apply_angular_impulse(&self, Vec3f impulse) {
+    Matrix3f inertia = self.get_inverse_world_inertia();
+    self.motion.angular_velocity += inertia * impulse;
+}
+
+fn bool Rigidbody.is_static(self) => self.motion.mass == 0;
 
 <*
  @require self.bodies.len() > 0 : `Must have some bodies to simulate`
@@ -144,120 +155,50 @@ fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9
 
     // Apply mass
     foreach (&body: self.bodies) {
-        body.apply_force(gravity * body.motion.mass);
-    }
+        if (body.is_static()) continue;
 
-    foreach (&body: self.bodies) {
-        if (body.motion.is_kinematic == false) continue;
+        body.collider.translation += body.motion.linear_velocity * time;
 
-        Vec3f linear_acceleration = body.motion.force * body.motion.inverse_mass;
-        body.motion.linear_velocity += linear_acceleration * time;
-        body.translation += body.motion.linear_velocity * time;
+        body.apply_linear_impulse(gravity * body.motion.mass * time);
 
-        body.motion.angular_velocity += body.motion.inertia_inverse * body.motion.torque * time;
-
-        Quaternionf dq = {...body.motion.angular_velocity, 0.0f};
+        float angle = body.motion.angular_velocity.sq_magnitude() * time;
    
-        body.rotation += (dq * body.rotation * 0.5f * time).normalize();
+        if (angle > 0.001f) {
+            body.collider.rotation = QUATERNIONF_IDENTITY.rotate_by_axis_angle(body.motion.angular_velocity.normalize(), angle).normalize();   
+        }
 
-        body.motion.force = {0, 0, 0};
-        body.motion.torque = {0, 0, 0};
+        Aabb3 new_aabb = body.get_transformed_aabb();
+        self.spatial_map.update(body.old_aabb, new_aabb, body.spatial_index)!!;
+        body.old_aabb = new_aabb;
     }
-    
 
     // for (uint i; i < self.bodies.len(); i++) {
     //     for (uint j = i+1; j < self.bodies.len(); j++) {
-    //             Rigidbody* body_a = self.bodies.get_ref(i);
-    //             Rigidbody* body_b = self.bodies.get_ref(j);
-        
-    //             TransformedConvex transformed_shape_1 = collision::transformed_shape_from(
-    //                 shape: body_a.collider, 
-    //                 translation: body_a.translation,
-    //                 scale: body_a.scale,
-    //                 rotation: body_a.rotation
-    //             );
-
-    //             TransformedConvex transformed_shape_2 = collision::transformed_shape_from(
-    //                 shape: body_b.collider, 
-    //                 translation: body_b.translation,
-    //                 scale: body_b.scale,
-    //                 rotation: body_b.rotation
-    //             );
-
-    //             CollisionInfo collision_info = collision::check_collision(&transformed_shape_1, &transformed_shape_2);
-
-    //             if (collision_info.collided) {
-    //                 collision::epa(&collision_info, &transformed_shape_1, &transformed_shape_2);
-
-    //                 self.collisions.push({
-    //                     body_a,
-    //                     body_b,
-    //                     collision_info.normal,
-    //                     collision_info.contact_points,
-    //                     collision_info.depth,
-    //                 });
-
-    //                 body_a.dirty = true;
-    //                 body_b.dirty = true;
-    //             }   
-    //     }
     // }
 
     self.spatial_map.@get_pairs(;Pair pair) {
         Rigidbody* body_a = self.bodies.get_ref(pair.first);
         Rigidbody* body_b = self.bodies.get_ref(pair.second);
   
-        TransformedConvex transformed_shape_1 = collision::transformed_shape_from(
-            shape: body_a.collider, 
-            translation: body_a.translation,
-            scale: body_a.scale,
-            rotation: body_a.rotation
-        );
-
-        TransformedConvex transformed_shape_2 = collision::transformed_shape_from(
-            shape: body_b.collider, 
-            translation: body_b.translation,
-            scale: body_b.scale,
-            rotation: body_b.rotation
-        );
-  
-        CollisionInfo collision_info = collision::check_collision(&transformed_shape_1, &transformed_shape_2);
+        CollisionInfo collision_info = collision::check_collision(&body_a.collider, &body_b.collider);
       
         if (collision_info.collided) {
-            collision::epa(&collision_info, &transformed_shape_1, &transformed_shape_2);
-        
-            self.collisions.push({
-                pair.first,
-                pair.second,
-                collision_info.normal,
-                collision_info.contact_points,
-                collision_info.depth,
-            });
+            collision::epa(&collision_info, &body_a.collider, &body_b.collider);
+
+            if (collision_info.collided) {
+                self.collisions.push({
+                    .a = pair.first,
+                    .b = pair.second,
+                    .normal = collision_info.normal,
+                    .contact = collision_info.contact_points,
+                    .depth = collision_info.depth,
+                });
+            }
         }
     };
 
     foreach (collision : self.collisions) {
         self.resolve_collision(collision);
-    }
-
-    // Update spatial map AABB boxes 
-    foreach (&body: self.bodies) {
-        if (body.motion.is_kinematic == false) {
-            continue;
-        };
-
-        // float angle = body.motion.angular_velocity.sq_magnitude();
-      
-        // if (angle > 0.0001f) {
-        //     Vec3f axis = body.motion.angular_velocity.normalize();
-        //     body.rotation = body.rotation.rotate_by_axis_angle(axis, angle);
-        // }
-
-      
-        Aabb3 new_aabb = body.get_transformed_aabb();
-        self.spatial_map.update(body.old_aabb, new_aabb, body.spatial_index)!!;
-        body.old_aabb = new_aabb;
-        body.dirty = false;
     }
             
     self.collisions.clear();
@@ -272,50 +213,95 @@ fn void PhysicsWorld.resolve_collision(&self, Collision collision) {
     Rigidbody* a = self.bodies.get_ref(collision.a);
     Rigidbody* b = self.bodies.get_ref(collision.b);
 
+    // Values
     float inverse_mass_sum = a.motion.inverse_mass + b.motion.inverse_mass;
+    float restitution = a.material.restitution * b.material.restitution;
 
-    //Correction
-    // float slop = 0.01f;
-    // float percent = 0.6f;
+    if (inverse_mass_sum == 0) return;
 
+    Vec3f ra = collision.contact[0] - a.collider.translation;
+    Vec3f rb = collision.contact[1] - b.collider.translation;
+
+    Vec3f relative_velocity = b.motion.linear_velocity + b.motion.angular_velocity.cross(collision.normal) - 
+                              a.motion.linear_velocity + a.motion.angular_velocity.cross(collision.normal);
+
+    float impulse_force = relative_velocity.dot(collision.normal);
+    if (impulse_force > 0.0f) return;
+
+    float impulse_denominator = inverse_mass_sum + (
+        (a.get_inverse_world_inertia() * ra.cross(collision.normal)).cross(ra) +
+        (b.get_inverse_world_inertia() * rb.cross(collision.normal)).cross(rb)
+    )
+    .dot(collision.normal);
+
+    float jn = (-(1.0f + restitution) * impulse_force) / impulse_denominator;
+    Vec3f impulse = jn * collision.normal;
+
+    // // Apply normal direction impulse
+    if (!a.is_static()) {
+        a.apply_linear_impulse(-impulse);
+        a.apply_angular_impulse(ra.cross(-impulse));
+    };
+    if (!b.is_static()) {
+        b.apply_linear_impulse(impulse);
+        b.apply_angular_impulse(rb.cross(impulse));
+    };
+
+    // Correction
     Vec3f correction = collision.normal * collision.depth;
-    //Vec3f correction = collision.normal * math::max(collision.depth + slop, 0.0f) * percent;
+    a.collider.translation -= correction * a.motion.inverse_mass / inverse_mass_sum;
+    b.collider.translation += correction * b.motion.inverse_mass / inverse_mass_sum;
 
-    Vec3f relative_a = collision.contact[0];
-    Vec3f relative_b = collision.contact[1];
+    // relative_velocity = b.motion.linear_velocity + b.motion.angular_velocity.cross(collision.normal) - 
+    //                     a.motion.linear_velocity + a.motion.angular_velocity.cross(collision.normal);
 
-    a.translation -= correction * a.motion.inverse_mass;
-    b.translation += correction * b.motion.inverse_mass;
 
-	// Vec3f angular_velocity_a = a.motion.angular_velocity.cross(relative_a);
-    // Vec3f angular_velocity_b = b.motion.angular_velocity.cross(relative_b);
 
-    Vec3f full_velocity_a = a.motion.linear_velocity;
-    Vec3f full_velocity_b = b.motion.linear_velocity;
+    // Vec3f tangent_direction = (relative_velocity - (relative_velocity.dot(collision.normal) * collision.normal)).normalize();
 
-    Vec3f contact_velocity = full_velocity_b - full_velocity_a;
-    float impulse_force = contact_velocity.dot(collision.normal);
-    if (impulse_force > 0) return;
+    // float static_friction = a.material.static_friction * b.material.static_friction;
 
-    float restitution = a.material.restitution + b.material.restitution;
+    // float jt = (-relative_velocity.dot(tangent_direction)) * inverse_mass_sum;
+    // Vec3f friction_impulse = jt * tangent_direction;
 
-    float j = -(1 + restitution) * impulse_force;
-    j /= inverse_mass_sum;
 
-    // Vec3f inertia_a = a.motion.inertia_inverse * relative_a.cross(collision.normal).cross(relative_a);
-	// Vec3f inertia_b = b.motion.inertia_inverse * relative_b.cross(collision.normal).cross(relative_b);
-	// float angular_effect = (inertia_a + inertia_b).dot(collision.normal);
-
-    Vec3f impulse = collision.normal * j;
+    // // Apply friction
+    // if (!a.is_static()) {
+    //     a.apply_linear_impulse(-friction_impulse);
+    //     a.apply_angular_impulse(ra.cross(-friction_impulse));
+    // };
+    // if (!b.is_static()) {
+    //     b.apply_linear_impulse(-friction_impulse);
+    //     b.apply_angular_impulse(rb.cross(-friction_impulse));
+    // };
     
-    if (a.motion.inverse_mass > 0) {
-        a.motion.linear_velocity -= impulse * a.motion.inverse_mass; 
-        //a.motion.angular_velocity += a.motion.inertia_inverse * ra.cross(impulse);
-    }
+    //float dynamic_friction = math::sqrt(a.material.dynamic_friction * b.material.dynamic_friction);
+    // if (tangent_velocity.sq_magnitude() > EPSILON) {
+    //     Vec3f tangent_direction = tangent_velocity.normalize();
+        
+    //     // float tangent_impulse_denominator = inverse_mass_sum + (
+    //     //     (a.get_inverse_world_inertia() * ra.cross(tangent_direction)).cross(ra) +
+    //     //     (b.get_inverse_world_inertia() * rb.cross(tangent_direction)).cross(rb)
+    //     // )
+    //     // .dot(tangent_direction);
 
-    if (b.motion.inverse_mass > 0) {
-        b.motion.linear_velocity += impulse * b.motion.inverse_mass; 
+    //     
+    //     
 
-        // b.motion.angular_velocity += b.motion.inertia_inverse * rb.cross(impulse);
-    }
+    //     Vec3f friction_impulse;
+
+    //     friction_impulse = jt * tangent_direction;
+    //     // if (math::abs(jt) < jn * static_friction) {
+    //     //     friction_impulse = jt * tangent_direction;
+    //     // } else {
+    //     //     
+    //     //     friction_impulse = -jn * dynamic_friction * tangent_direction;
+
+
+
+    //     // }
+
+
+    // }
+
 }   

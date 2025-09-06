@@ -6,6 +6,7 @@ import std::io;
 interface ConvexShape
 {
     fn Vec3f furthest_point(Vec3f direction);
+    fn Matrix3f inertia_tensor(float mass);
 }
 
 interface RayCast
@@ -41,9 +42,10 @@ struct Capsule (ConvexShape) {
 
 // Shapes
 struct TransformedConvex (ConvexShape) {
-    Vec3f position;
+    Vec3f translation;
     Vec3f scale;
     Quaternionf rotation;
+    Matrix3f inertia;
     ConvexShape shape;
 }
 
@@ -51,16 +53,10 @@ struct ConvexPolyhedron (ConvexShape) {
     Vec3f[] vertices;
 }
 
-fn Vec3f TransformedConvex.furthest_point(&self, Vec3f direction) @dynamic {
-    Vec3f local_direction = direction.rotate_by_quat(self.rotation.conjugate());
-    Vec3f point = self.shape.furthest_point(local_direction);
-    return point.rotate_by_quat(self.rotation) * self.scale + self.position;
-}
-
-fn TransformedConvex transformed_shape_from(ConvexShape shape, Vec3f translation = {0, 0, 0}, Vec3f scale = {1, 1, 1}, Quaternionf rotation = {0, 0, 0, 1}) {
+fn TransformedConvex transformed_shape_from(ConvexShape shape = null, Vec3f translation = {0, 0, 0}, Vec3f scale = {1, 1, 1}, Quaternionf rotation = {0, 0, 0, 1}) {
     return {
         .shape = shape,
-        .position = translation,
+        .translation = translation,
         .scale = scale,
         .rotation = rotation
     };
@@ -68,30 +64,6 @@ fn TransformedConvex transformed_shape_from(ConvexShape shape, Vec3f translation
 
 fn usz? Ray.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("origin %s, direction %s", self.origin, self.direction)!;
 
-// struct TransformedConvex (ConvexShape) {
-//     Vec3f position;
-//     Vec3f scale;
-//     ConvexShape shape;
-// }
-
-// fn Vec3f TransformedConvex.furthest_point(&self, Vec3f direction) @dynamic {
-//     return self.shape.furthest_point(direction) * self.scale + self.position;
-// }
-
-fn Vec3f ConvexPolyhedron.furthest_point(&self, Vec3f direction) @dynamic {
-    Vec3f furthest_point;
-    float max_distance = -float.max;
-
-    foreach (pos : self.vertices) {
-        float distance = pos.dot(direction);
-        if (distance > max_distance) {
-            max_distance = distance;
-            furthest_point = pos;
-        }
-    }
-
-    return furthest_point;
-}
 
 fn Vec3f Ray.intersect(&self, Vec3f direction) {
     // Assuming direction is a unit vector
@@ -134,9 +106,28 @@ fn float Sphere.intersect(&self, Ray ray) @dynamic {
     }
 }
 
-fn Vec3f Sphere.furthest_point(&self, Vec3f direction) @dynamic {
-    return direction.normalize() * self.radius + self.center;
+fn Vec3f TransformedConvex.furthest_point(&self, Vec3f direction) @dynamic {
+    Vec3f local_direction = direction.rotate_by_quat(self.rotation.conjugate());
+    Vec3f point = self.shape.furthest_point(local_direction);
+    return point.rotate_by_quat(self.rotation) * self.scale + self.translation;
 }
+
+fn Vec3f ConvexPolyhedron.furthest_point(&self, Vec3f direction) @dynamic {
+    Vec3f furthest_point;
+    float max_distance = -float.max;
+
+    foreach (pos : self.vertices) {
+        float distance = pos.dot(direction);
+        if (distance > max_distance) {
+            max_distance = distance;
+            furthest_point = pos;
+        }
+    }
+
+    return furthest_point;
+}
+
+fn Vec3f Sphere.furthest_point(&self, Vec3f direction) @dynamic => direction.normalize() * self.radius + self.center;
 
 fn Vec3f Cylinder.furthest_point(&self, Vec3f direction) @dynamic {
     Vec3f dir_xz = {direction.x, 0, direction.z};
@@ -151,12 +142,58 @@ fn Vec3f Capsule.furthest_point(&self, Vec3f direction) @dynamic {
     return result;
 }
 
-fn Vec3f Aabb3.furthest_point(&self, Vec3f direction) @dynamic {
-    Vec3f point = {
-        (direction.x > 0) ? self.max.x : self.min.x,
-        (direction.y > 0) ? self.max.y : self.min.y,
-        (direction.z > 0) ? self.max.z : self.min.z
+fn Matrix3f TransformedConvex.inertia_tensor(&self, float mass) @dynamic {
+    Matrix3f local_inertia = self.shape.inertia_tensor(mass);
+
+    Matrix4f matrix = self.rotation.normalize().to_matrixf();
+    Matrix3f r = (Matrix3f){
+        matrix.m00, matrix.m01, matrix.m02,
+        matrix.m10, matrix.m11, matrix.m12,
+        matrix.m20, matrix.m21, matrix.m22,
     };
 
-    return point;
+    return r * local_inertia * r.transpose();
 }
+
+fn Matrix3f TransformedConvex.world_inertia_from_local(&self, Matrix3f local_inertia) @dynamic {
+    Matrix4f matrix = self.rotation.normalize().to_matrixf();
+    Matrix3f r = (Matrix3f){
+        matrix.m00, matrix.m01, matrix.m02,
+        matrix.m10, matrix.m11, matrix.m12,
+        matrix.m20, matrix.m21, matrix.m22,
+    };
+
+    return r * local_inertia * r.transpose();
+}
+
+fn Matrix3f ConvexPolyhedron.inertia_tensor(&self, float mass) @dynamic => MATRIX3F_IDENTITY;
+
+fn Matrix3f Sphere.inertia_tensor(&self, float mass) @dynamic {
+    float r2 = self.radius * self.radius;
+    float i = mass * r2 * 2.0f / 5.0f;
+	return {
+        i, 0, 0,
+        0, i, 0,
+        0, 0, i
+    };
+}
+
+fn Matrix3f Cylinder.inertia_tensor(&self, float mass) @dynamic {
+    float r2 = self.radius_bottom * self.radius_top;
+    float h2 = self.height * self.height;
+
+    float ix = (mass / 12.0f) * (3 * r2 + h2);
+    float iy = (mass / 2.0f) * r2;
+    float iz = (mass / 12.0f) * (3 * r2 + h2);
+
+    return {
+        ix, 0, 0,
+        0,  iy, 0,
+        0, 0,  iz
+    };
+}
+
+fn Matrix3f Capsule.inertia_tensor(&self, float mass) @dynamic => MATRIX3F_IDENTITY;
+
+
+fn Vec3f TransformedConvex.get_world_center_of_mass(&self, Vec3f center_of_mass) => center_of_mass.rotate_by_quat(self.rotation) + self.translation;

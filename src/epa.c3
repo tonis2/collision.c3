@@ -141,7 +141,7 @@ fn void epa(CollisionInfo* info, ConvexShape shape_1, ConvexShape shape_2) {
 
             Vec3f p = info.normal * -info.depth;
 
-            if (p != {0,0,0}) {           
+            if (p != {0,0,0}) { 
                 SupportPoint a = vertices[closest_face.a];
                 SupportPoint b = vertices[closest_face.b];
                 SupportPoint c = vertices[closest_face.c];
@@ -156,6 +156,8 @@ fn void epa(CollisionInfo* info, ConvexShape shape_1, ConvexShape shape_2) {
                     support_a[0] * bary.x + support_b[0] * bary.y + support_c[0] * bary.z,
                     support_a[1] * bary.x + support_b[1] * bary.y + support_c[1] * bary.z,
                 };
+            } else {
+                info.collided = false;
             }
             return;
         }
@@ -168,5 +170,4 @@ fn void epa(CollisionInfo* info, ConvexShape shape_1, ConvexShape shape_2) {
     
     info.normal = closest_face.normal;
     info.depth = closest_face.distance;
-    // info.collided = false;
 }
