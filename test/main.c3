@@ -46,38 +46,38 @@ fn void test_physics() {
 
     TransformedConvex transformed_shape_1 = {
         .shape = &shape_1, 
-        .position = {-2.0, 0, 0}, 
+        .translation = {-2.0, 0, 0}, 
         .scale = {1, 1, 1},
     };
     
     TransformedConvex transformed_shape_2 = {
         .shape = &shape_1, 
-        .position = {2.0, 0, 0}, 
+        .translation = {2.0, 0, 0}, 
         .scale = {1, 1, 1},
     };
 
     TransformedConvex transformed_shape_3 = {
         .shape = &shape_1, 
-        .position = {0.0, 0, 0}, 
+        .translation = {0.0, 0, 0}, 
         .scale = {1, 1, 1},
     };
     
     TransformedConvex transformed_shape_4 = {
         .shape = &shape_1, 
-        .position = {0, 0, 0}, 
+        .translation = {0, 0, 0}, 
         .scale = {3, 3, 3},
     };
 
     TransformedConvex transformed_shape_5 = {
         .shape = &shape_1, 
-        .position = {-1.0, 0, 0}, 
+        .translation = {-1.0, 0, 0}, 
         .scale = {1, 1, 1},
         .rotation = {0, 0.5, 0, 1 }
     };
     
     TransformedConvex transformed_shape_6 = {
         .shape = &shape_1, 
-        .position = {1.0, 0, 0}, 
+        .translation = {1.0, 0, 0}, 
         .scale = {1, 1, 1},
         .rotation = {0, -0.5, 0, 1 }
     };
@@ -146,13 +146,13 @@ fn void test_flow() {
 
         TransformedConvex transformed_shape_1 = {
             .shape = &shape_1, 
-            .position = {-2.0, 0, 0}, 
+            .translation = {-2.0, 0, 0}, 
             .scale = {1, 1, 1},
         };
         
         TransformedConvex transformed_shape_2 = {
             .shape = &shape_1, 
-            .position = {2.0, 0, 0}, 
+            .translation = {2.0, 0, 0}, 
             .scale = {1, 1, 1},
         };
 
@@ -211,24 +211,28 @@ fn void test_helpers() {
     }
 
     {
-        Quaternionf value = QUATERNIONF_IDENTITY.rotate_by_axis_angle({1, 0, 0}, math::PI).normalize();
+        Quaternionf value = collision::quaternion_from_axis_angle({1, 0, 0}, math::PI).normalize();
         assert(math::round_to_decimals(value.v, 2) == {1, 0, 0, 0});
     }
 
     {
-        Quaternionf value = QUATERNIONF_IDENTITY.rotate_by_axis_angle({0, 1, 0}, math::PI / 2).normalize();
+        Quaternionf value = collision::quaternion_from_axis_angle({0, 1, 0}, math::PI / 2).normalize();
         assert(math::round_to_decimals(value.v, 4) == {0, 0.7071, 0, 0.7071});
     }
 
     {
-        Quaternionf value = QUATERNIONF_IDENTITY.rotate_by_axis_angle({0, 0, 1}, math::PI / 4).normalize();
+        Quaternionf value = collision::quaternion_from_axis_angle({0, 0, 1}, math::PI / 4).normalize();
         assert(math::round_to_decimals(value.v, 6) == {0, 0, 0.382683, 0.92388});
     }
 
     {
-        Quaternionf value = QUATERNIONF_IDENTITY.rotate_by_axis_angle({1, 0, 0}, math::PI / 2).normalize();
-        Quaternionf value2 = QUATERNIONF_IDENTITY.rotate_by_axis_angle({0, 1, 0}, math::PI / 2).normalize();
+        Quaternionf value = collision::quaternion_from_axis_angle({1, 0, 0}, math::PI / 2).normalize();
+        Quaternionf value2 = collision::quaternion_from_axis_angle({0, 1, 0}, math::PI / 2).normalize();
         Quaternionf combined = (value * value2).normalize();
         assert(math::round_to_decimals(combined.v, 2) == {0.50, 0.50, 0.50, 0.50});
     }
+
+    Quaternionf rotation = collision::quaternion_from_axis_angle({0.0f, 1.0f, 0.0f}, collision::radians(90));
+    Vec3f rotate_point = (Vec3f){1, 0, 0}.rotate_by_quat(rotation);
+    assert(math::round_to_decimals(rotate_point, 2) == (Vec3f){0, 0, -1.0});
 }

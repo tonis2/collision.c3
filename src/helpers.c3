@@ -40,7 +40,7 @@ fn Matrix3f Quaternionf.as_mat3(self) {
     };
 }
 
-fn Quaternionf Quaternionf.rotate_by_axis_angle(self, Vec3f axis, float angle) {
+fn Quaternionf quaternion_from_axis_angle(Vec3f axis, float angle) {
     Vec3f normal_axis = axis.normalize();
     float half_angle = angle * 0.5;
     float sin_half = math::sin(half_angle);
