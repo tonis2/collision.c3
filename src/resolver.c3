@@ -156,14 +156,13 @@ fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9
 
         body.apply_linear_impulse(gravity * body.motion.mass * time);
 
-        float angle = body.motion.angular_velocity.sq_magnitude() * time * 0.5f;
+        float angle = body.motion.angular_velocity.sq_magnitude() * (time * 0.4f);
    
         if (angle > 0.001f) {
-            body.collider.rotation = quaternion_from_axis_angle(body.motion.angular_velocity, angle).normalize();   
+            body.collider.rotation = (body.collider.rotation * quaternion_from_axis_angle(body.motion.angular_velocity, angle)).normalize() ;   
         }
 
         body.collider.translation += body.motion.linear_velocity * time;
-
         Aabb3 new_aabb = body.get_transformed_aabb();
         self.spatial_map.update(body.transformed_aabb, new_aabb, body.spatial_index)!!;
         body.transformed_aabb = new_aabb;
@@ -231,6 +230,10 @@ fn void PhysicsWorld.resolve_collision(&self, Collision collision) {
 
     if (!a.is_static()) a.apply_impulse(-normal_impulse, ra);
     if (!b.is_static()) b.apply_impulse(normal_impulse, rb);
+    // if (!b.is_static()) {
+    //     b.apply_linear_impulse(normal_impulse);
+    //     b.apply_angular_impulse(rb.cross(normal_impulse));
+    // };
 
     //Apply friction
     relative_velocity = b.motion.linear_velocity + b.motion.angular_velocity.cross(rb) - 
@@ -262,7 +265,7 @@ fn void PhysicsWorld.resolve_collision(&self, Collision collision) {
     float slop = 0.002f;
     float correction_magnitude = math::max(collision.depth - slop, 0.0f) / inverse_mass_sum * percent;
 
-    Vec3f correction = collision.normal * correction_magnitude;
+    Vec3f correction = collision.normal * collision.depth;
 
     if (!a.is_static()) {
         a.collider.translation -= correction;
