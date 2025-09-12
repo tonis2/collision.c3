@@ -19,13 +19,15 @@ struct HitInfo {
 fn float radians(float value) => value * (float)math::PI / 180;
 
 fn Quaternionf Quaternionf.mul2(q1, Quaternionf q2) {
-    float w = (q1.v.w * q2.v.w) - (q1.v.x * q2.v.x) - (q1.v.y * q2.v.y) - (q1.v.z * q2.v.z);
-    float x = (q1.v.x * q2.v.w) + (q1.v.w * q2.v.x) + (q1.v.y * q2.v.z) - (q1.v.z * q2.v.y);
-    float y = (q1.v.y * q2.v.w) + (q1.v.w * q2.v.y) + (q1.v.z * q2.v.x) - (q1.v.x * q2.v.z);
-    float z = (q1.v.z * q2.v.w) + (q1.v.w * q2.v.z) + (q1.v.x * q2.v.y) - (q1.v.y * q2.v.x);
+    
+    Vec3f q1_vec = {q1.v.x, q1.v.y, q1.v.z};
+    Vec3f q2_vec = {q2.v.x, q2.v.y, q2.v.z};
+
+    float scalar = (q1.v.w * q2.v.w - q1_vec.dot(q2_vec));
+    Vec3f new_vec = q1.v.w * q2_vec + q2.v.w * q1_vec + q1_vec.cross(q2_vec);
 
     return {
-        x, y, z, w
+        ...new_vec, scalar
     };
 }
 

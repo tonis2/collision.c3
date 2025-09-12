@@ -156,14 +156,8 @@ fn Matrix3f TransformedConvex.inertia_tensor(&self, float mass) @dynamic {
 }
 
 fn Matrix3f TransformedConvex.world_inertia_from_local(&self, Matrix3f local_inertia) @dynamic {
-    Matrix4f matrix = self.rotation.normalize().to_matrixf();
-    Matrix3f r = (Matrix3f){
-        matrix.m00, matrix.m01, matrix.m02,
-        matrix.m10, matrix.m11, matrix.m12,
-        matrix.m20, matrix.m21, matrix.m22,
-    };
-
-    return r * local_inertia * r.transpose();
+    Matrix3f world_orient = self.rotation.as_mat3();
+    return world_orient * local_inertia * world_orient.transpose();
 }
 
 fn Matrix3f ConvexPolyhedron.inertia_tensor(&self, float mass) @dynamic => MATRIX3F_IDENTITY;

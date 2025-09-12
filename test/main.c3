@@ -228,7 +228,7 @@ fn void test_helpers() {
     {
         Quaternionf value = collision::quaternion_from_axis_angle({1, 0, 0}, math::PI / 2).normalize();
         Quaternionf value2 = collision::quaternion_from_axis_angle({0, 1, 0}, math::PI / 2).normalize();
-        Quaternionf combined = (value * value2).normalize();
+        Quaternionf combined = value.mul2(value2).normalize();
         assert(math::round_to_decimals(combined.v, 2) == {0.50, 0.50, 0.50, 0.50});
     }
 

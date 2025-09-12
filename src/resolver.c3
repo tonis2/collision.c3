@@ -63,7 +63,6 @@ struct Rigidbody {
     Aabb3 aabb;
     Aabb3 transformed_aabb;
  
-
     TransformedConvex collider;
     Material material;
 
@@ -106,12 +105,8 @@ fn void? PhysicsWorld.add_body(&self, Rigidbody body) {
     body.motion.inverse_mass = !body.is_static() ? 1.0f / body.motion.mass : 0;
     body.transformed_aabb = body.get_transformed_aabb();
 
-    if (!body.is_static()) {
-        body.motion.inertia = body.aabb.scale(body.collider.scale).inertia_tensor(body.motion.mass);
-    } else {
-        body.motion.inertia = MATRIX3F_IDENTITY;
-    }
-
+    if (!body.is_static()) body.motion.inertia = body.aabb.inertia_tensor(body.motion.mass).inverse()!!;
+ 
     self.bodies.push(body);
     self.spatial_map.insert(body.transformed_aabb, spatial_index)!;
 }
@@ -125,7 +120,7 @@ fn Aabb3 Rigidbody.get_transformed_aabb(&self) => self.aabb.transform(to_matrix(
 
 fn Matrix3f Rigidbody.get_inverse_world_inertia(self) {
     if (self.is_static()) return MATRIX3F_IDENTITY;
-    return self.collider.world_inertia_from_local(self.motion.inertia.inverse()!!);
+    return self.collider.world_inertia_from_local(self.motion.inertia);
 }
 
 fn void Rigidbody.apply_linear_impulse(&self, Vec3f impulse) => self.motion.linear_velocity += impulse * self.motion.inverse_mass;
@@ -137,11 +132,8 @@ fn void Rigidbody.apply_angular_impulse(&self, Vec3f impulse) {
 
 fn void Rigidbody.apply_impulse(&self, Vec3f impulse, Vec3f point) {
     self.motion.linear_velocity += impulse * self.motion.inverse_mass;
-
-    Matrix3f inertia = self.get_inverse_world_inertia();
-    self.motion.angular_velocity += (inertia * point.cross(impulse));
+    self.apply_angular_impulse(point.cross(impulse));
 }
-
 
 fn bool Rigidbody.is_static(self) => self.motion.mass == 0;
 
@@ -150,53 +142,58 @@ fn bool Rigidbody.is_static(self) => self.motion.mass == 0;
 *>
 fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9.8f}) {
 
-    // Apply mass
+
     foreach (&body: self.bodies) {
         if (body.is_static()) continue;
 
+        body.collider.translation += body.motion.linear_velocity * time;
+
+        Vec3f axis = body.motion.angular_velocity * (time * 0.5);
+
+        body.collider.rotation += ((Quaternionf){...axis, 0}.mul2(body.collider.rotation));
+        body.collider.rotation = body.collider.rotation.normalize();
+
+        // Apply gravity
         body.apply_linear_impulse(gravity * body.motion.mass * time);
 
-        float angle = body.motion.angular_velocity.sq_magnitude() * (time * 0.4f);
-   
-        if (angle > 0.001f) {
-            body.collider.rotation = (body.collider.rotation * quaternion_from_axis_angle(body.motion.angular_velocity, angle)).normalize() ;   
-        }
-
-        body.collider.translation += body.motion.linear_velocity * time;
         Aabb3 new_aabb = body.get_transformed_aabb();
         self.spatial_map.update(body.transformed_aabb, new_aabb, body.spatial_index)!!;
         body.transformed_aabb = new_aabb;
     }
 
+    // for (uint i = 0; i < self.bodies.len(); i++) {
+    //     for (uint j = i + 1; j < self.bodies.len(); j++) {
+            
+    //     }
+    // }
+
     self.spatial_map.@get_pairs(;Pair pair) {
         Rigidbody* body_a = self.bodies.get_ref(pair.first);
         Rigidbody* body_b = self.bodies.get_ref(pair.second);
-  
+
         CollisionInfo collision_info = collision::check_collision(&body_a.collider, &body_b.collider);
-      
+    
         if (collision_info.collided) {
             collision::epa(&collision_info, &body_a.collider, &body_b.collider);
 
             if (collision_info.collided) {
-                self.collisions.push({
+                Collision collision = {
                     .a = pair.first,
                     .b = pair.second,
                     .normal = collision_info.normal,
                     .contact = collision_info.contact_points,
                     .depth = collision_info.depth,
-                });
+                };
+
+                self.collisions.push(collision);
             }
         }
     };
 
-    foreach (collision : self.collisions) {
-        self.resolve_collision(collision);
-    }
-            
+    foreach (collision: self.collisions) self.resolve_collision(collision);
+               
     self.collisions.clear();
 }
-
-const float EPSILON = 1e-6f;
 
 <*
  @require collision.a != collision.b : `Collision bodies must not reference same body`
@@ -230,25 +227,20 @@ fn void PhysicsWorld.resolve_collision(&self, Collision collision) {
 
     if (!a.is_static()) a.apply_impulse(-normal_impulse, ra);
     if (!b.is_static()) b.apply_impulse(normal_impulse, rb);
-    // if (!b.is_static()) {
-    //     b.apply_linear_impulse(normal_impulse);
-    //     b.apply_angular_impulse(rb.cross(normal_impulse));
-    // };
 
-    //Apply friction
+    // Apply friction
     relative_velocity = b.motion.linear_velocity + b.motion.angular_velocity.cross(rb) - 
                         a.motion.linear_velocity + a.motion.angular_velocity.cross(ra);
 
-    Vec3f tangent_direction = relative_velocity - relative_velocity.dot(collision.normal) * collision.normal;
+    Vec3f tangent_direction = relative_velocity - (relative_velocity.dot(collision.normal) * collision.normal);
 
-    if (tangent_direction.sq_magnitude() > EPSILON) {
+    if (tangent_direction.sq_magnitude() > 0.0001f) {
         tangent_direction = tangent_direction.normalize();
 
         inertia_a = (a.get_inverse_world_inertia() * ra.cross(collision.normal)).cross(ra);
         inertia_b = (b.get_inverse_world_inertia() * rb.cross(collision.normal)).cross(rb);
 
         float jt = -relative_velocity.dot(tangent_direction) / (inverse_mass_sum + (inertia_a + inertia_b).dot(tangent_direction));
-
         float mu = math::sqrt(a.material.static_friction * b.material.static_friction);
         float max_friction = mu * jn;
 
@@ -259,20 +251,14 @@ fn void PhysicsWorld.resolve_collision(&self, Collision collision) {
         if (!a.is_static()) a.apply_impulse(-friction_impulse, ra);
         if (!b.is_static()) b.apply_impulse(friction_impulse, rb);
     };
-    // Correction
-  
-    float percent = 0.6f;
-    float slop = 0.002f;
-    float correction_magnitude = math::max(collision.depth - slop, 0.0f) / inverse_mass_sum * percent;
+    
+    // float percent = 0.7f;
+    // float slop = 0.02f;
+    // float correction_magnitude = math::max(collision.depth - slop, 0.0f) / inverse_mass_sum * percent;
 
+    // Correction
     Vec3f correction = collision.normal * collision.depth;
 
-    if (!a.is_static()) {
-        a.collider.translation -= correction;
-    };
-
-    if (!b.is_static()) {
-        b.collider.translation += correction;
-    };
-
+    if (!a.is_static()) a.collider.translation -= correction;
+    if (!b.is_static()) b.collider.translation += correction;
 }   
