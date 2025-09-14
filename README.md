@@ -11,14 +11,14 @@ Currently contains
 * EPA (Contact resolving)
 * AABB
 * BVH for triangles (terrain collision)
+* Physics world resolver
 
 
 
 -------
 
 
-(https://raw.githubusercontent.com/tonis2/collision.c3/main/example/collider.mp4)
-
+https://github.com/user-attachments/assets/ba0e0e6e-491b-4cbb-a8d4-02cf5507c7e5
 
 
 
@@ -104,4 +104,4 @@ Basic AABB collision detecting
 ```
 
 
-Physics world resolver basic example is here 
+Physics world resolver basic example is [here](https://github.com/tonis2/collision.c3/blob/main/example/main.c3) 
