@@ -17,10 +17,8 @@ Currently contains
 
 -------
 
-[![Video](https://raw.githubusercontent.com/tonis2/collision.c3/main/example/collider.mp4)](https://github.com/tonis2/collision.c3/raw/refs/heads/main/example/collider.mp4)
+https://github.com/tonis2/collision.c3/raw/refs/heads/main/example/collider.mp4
 
-
-https://user-images.githubusercontent.com/6877923/115474571-03c75800-a23e-11eb-8096-8973aad5fa9f.mp4
 
 
 
