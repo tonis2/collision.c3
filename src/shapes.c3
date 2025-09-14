@@ -109,7 +109,7 @@ fn float Sphere.intersect(&self, Ray ray) @dynamic {
 fn Vec3f TransformedConvex.furthest_point(&self, Vec3f direction) @dynamic {
     Vec3f local_direction = direction.rotate_by_quat(self.rotation.conjugate());
     Vec3f point = self.shape.furthest_point(local_direction);
-    return point.rotate_by_quat(self.rotation) * self.scale + self.translation;
+    return (point * self.scale).rotate_by_quat(self.rotation) + self.translation;
 }
 
 fn Vec3f ConvexPolyhedron.furthest_point(&self, Vec3f direction) @dynamic {
