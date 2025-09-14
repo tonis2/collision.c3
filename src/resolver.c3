@@ -105,7 +105,7 @@ fn void? PhysicsWorld.add_body(&self, Rigidbody body) {
     body.motion.inverse_mass = !body.is_static() ? 1.0f / body.motion.mass : 0;
     body.transformed_aabb = body.get_transformed_aabb();
 
-    if (!body.is_static()) body.motion.inertia = body.aabb.inertia_tensor(body.motion.mass).inverse()!!;
+    if (!body.is_static()) body.motion.inertia = body.collider.inertia_tensor(body.motion.mass).inverse()!!;
  
     self.bodies.push(body);
     self.spatial_map.insert(body.transformed_aabb, spatial_index)!;
@@ -142,19 +142,18 @@ fn bool Rigidbody.is_static(self) => self.motion.mass == 0;
 *>
 fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9.8f}) {
 
-
     foreach (&body: self.bodies) {
         if (body.is_static()) continue;
 
         body.collider.translation += body.motion.linear_velocity * time;
 
-        Vec3f axis = body.motion.angular_velocity * (time * 0.5);
-
-        body.collider.rotation += ((Quaternionf){...axis, 0}.mul2(body.collider.rotation));
-        body.collider.rotation = body.collider.rotation.normalize();
-
         // Apply gravity
         body.apply_linear_impulse(gravity * body.motion.mass * time);
+
+        Vec3f axis = body.motion.angular_velocity * (time * 0.5);
+
+        body.collider.rotation += (Quaternionf){...axis, 0}.mul2(body.collider.rotation);
+        body.collider.rotation = body.collider.rotation.normalize();
 
         Aabb3 new_aabb = body.get_transformed_aabb();
         self.spatial_map.update(body.transformed_aabb, new_aabb, body.spatial_index)!!;
@@ -205,6 +204,7 @@ fn void PhysicsWorld.resolve_collision(&self, Collision collision) {
     // Values
     float inverse_mass_sum = a.motion.inverse_mass + b.motion.inverse_mass;
     float restitution = a.material.restitution + b.material.restitution;
+    float static_friction = a.material.static_friction * b.material.static_friction;
 
     if (inverse_mass_sum == 0) return;
 
@@ -241,8 +241,8 @@ fn void PhysicsWorld.resolve_collision(&self, Collision collision) {
         inertia_b = (b.get_inverse_world_inertia() * rb.cross(collision.normal)).cross(rb);
 
         float jt = -relative_velocity.dot(tangent_direction) / (inverse_mass_sum + (inertia_a + inertia_b).dot(tangent_direction));
-        float mu = math::sqrt(a.material.static_friction * b.material.static_friction);
-        float max_friction = mu * jn;
+     
+        float max_friction = static_friction * jn;
 
         jt = math::max(-max_friction, math::min(jt, max_friction));
 
@@ -252,7 +252,7 @@ fn void PhysicsWorld.resolve_collision(&self, Collision collision) {
         if (!b.is_static()) b.apply_impulse(friction_impulse, rb);
     };
     
-    // float percent = 0.7f;
+    // float percent = 0.4f;
     // float slop = 0.02f;
     // float correction_magnitude = math::max(collision.depth - slop, 0.0f) / inverse_mass_sum * percent;
 
