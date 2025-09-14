@@ -6,21 +6,31 @@
 
 Currently contains
 
-* SpatialHash Grid
-* GJK
-* EPA
+* SpatialHash Grid (Broad collision detection)
+* GJK (Narrow collision detection)
+* EPA (Contact resolving)
 * AABB
 * BVH for triangles (terrain collision)
 
 
-#### Examples
 
-Import the library 
+-------
+
+
+(https://raw.githubusercontent.com/tonis2/collision.c3/main/example/collider.mp4)
+
+
+
+
+
+
+#### Code examples
+
+Import the library
+
 ```
 import collision;
 ```
-
-Detect collision for vertices array with [GJK algorithm](https://en.wikipedia.org/wiki/Gilbert%E2%80%93Johnson%E2%80%93Keerthi_distance_algorithm)
 
 ```c
     
@@ -73,8 +83,6 @@ Use spatial hashmap, to optimize which meshes to detect collision on.
 
 
 Basic AABB collision detecting
-
-
 ```c
 
     Aabb3 box = {
@@ -94,3 +102,6 @@ Basic AABB collision detecting
     if (first.aabb.collides(second.aabb)) {}
 
 ```
+
+
+Physics world resolver basic example is here 
