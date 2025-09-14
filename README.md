@@ -17,9 +17,10 @@ Currently contains
 
 -------
 
-https://github.com/tonis2/collision.c3/raw/refs/heads/main/example/collider.mp4
 
-
+<p align="center">
+  <video src="examples/collider.mp4" width="500px"></video>
+</p>
 
 
 #### Code examples
