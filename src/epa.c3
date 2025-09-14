@@ -83,7 +83,7 @@ fn void SupportArray.reconstruct(self, FaceArray* faces, Vec3f new_point)
 
     foreach (edge: edges) {
         Face new_face = self.create_face(edge.first, edge.second, self.len() - 1);
-        if (new_face.normal == (Vec3f){0,0,0}) continue;
+        // if (new_face.normal == (Vec3f){0,0,0}) continue;
         faces.push(new_face);
     }
 }
@@ -113,8 +113,6 @@ fn void epa(CollisionInfo* info, ConvexShape shape_1, ConvexShape shape_2) {
     foreach (item: info.simplex) {
         vertices.push(item);
     };
-
-    
 
     FaceArray faces;
     faces.add_array({
