@@ -24,8 +24,6 @@ struct CollisionInfo {
 alias EdgeArray @private = ElasticArray{Pair, 20};
 alias FaceArray @private = ElasticArray{Face, 40};
 alias SupportArray @private = ElasticArray{SupportPoint, 40};
-alias IndexArray @private = ElasticArray{usz, 40};
-
 
 fn void EdgeArray.add_if_new(&self, Pair pair)
 {   
@@ -50,6 +48,8 @@ fn Face SupportArray.create_face(self, usz a_index, usz b_index, usz c_index)
     Vec3f normal = (b - a).cross(c - a).normalize();
     float distance = a.dot(normal);
 
+    assert(normal != (Vec3f){0,0,0});
+
     if ((-a).dot(normal) > 0) {
         normal   *= -1;
         distance *= -1;
@@ -67,24 +67,18 @@ fn Face SupportArray.create_face(self, usz a_index, usz b_index, usz c_index)
 fn void SupportArray.reconstruct(self, FaceArray* faces, Vec3f new_point)
 {
     EdgeArray edges;
-    IndexArray new_faces;
-    
-    foreach (usz i, face: faces) {
-        if (face.normal.dot(new_point - self.get(face.a).point) > 0) {
-            new_faces.push(i);
-        }
-    }
 
-    for (int i = (int)new_faces.len() - 1; i >= 0; i--) {
-        usz face_index = new_faces.get(i);
- 
-        Face face = faces.get(face_index);
-  
-        edges.add_if_new({face.a, face.b});
-        edges.add_if_new({face.b, face.c});
-        edges.add_if_new({face.c, face.a});
- 
-        faces.remove_at(face_index);
+    // Reverse loop
+    for (int i = (int)faces.len() - 1; i >= 0; i--) {
+        Face face = faces.get(i);
+
+        if (face.normal.dot(new_point - self.get(face.a).point) > 0) {
+            edges.add_if_new({face.a, face.b});
+            edges.add_if_new({face.b, face.c});
+            edges.add_if_new({face.c, face.a});
+
+            faces.remove_at(i);
+        }
     }
 
     foreach (edge: edges) {
@@ -116,7 +110,11 @@ const float EPA_TOLERANCE = 0.0001f;
 fn void epa(CollisionInfo* info, ConvexShape shape_1, ConvexShape shape_2) {
     SupportArray vertices;
 
-    foreach (item: info.simplex) vertices.push(item);
+    foreach (item: info.simplex) {
+        vertices.push(item);
+    };
+
+    
 
     FaceArray faces;
     faces.add_array({
@@ -151,7 +149,7 @@ fn void epa(CollisionInfo* info, ConvexShape shape_1, ConvexShape shape_2) {
             info.normal = closest_face.normal;
             info.depth = closest_face.distance;
 
-            Vec3f p = info.normal * info.depth;
+            Vec3f p = info.normal * -info.depth;
  
             SupportPoint a = vertices[closest_face.a];
             SupportPoint b = vertices[closest_face.b];
