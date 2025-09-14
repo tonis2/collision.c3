@@ -11,6 +11,7 @@ Currently contains
 * EPA (Contact resolving)
 * AABB
 * BVH for triangles (terrain collision)
+* Physics world resolver
 
 
 
