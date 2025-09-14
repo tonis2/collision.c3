@@ -17,7 +17,7 @@ Currently contains
 
 -------
 
-[![Video]([https://img.youtube.com/vi/_5tFXJQIzi4/0.jpg)](https://www.youtube.com/watch?v=_5tFXJQIzi4](https://raw.githubusercontent.com/tonis2/collision.c3/main/example/collider.mp4))
+[![Video](https://raw.githubusercontent.com/tonis2/collision.c3/main/example/collider.mp4)
 
 
 
