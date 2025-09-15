@@ -141,26 +141,26 @@ fn void Rigidbody.apply_impulse(&self, Vec3f impulse, Vec3f point) {
 <*
  @require self.bodies.len() > 0 : `Must have some bodies to simulate`
 *>
-fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9.8f}) {
-
-    uint step_count = 10;
-    
+fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9.8f}, uint step_count = 10) {
     for (usz i; i < step_count; i++) {
         float step_time = time / step_count;
 
         foreach (&body: self.bodies) {
             if (body.is_static) continue;
 
+            // Apply linear velocity and translation
             body.collider.translation += body.motion.linear_velocity * step_time;
+
+            // Apply angular velocity as rotation
+            Vec3f axis = body.motion.angular_velocity * (step_time * 0.5);
+            body.collider.rotation += (Quaternionf){...axis, 0}.mul2(body.collider.rotation);
+            body.collider.rotation = body.collider.rotation.normalize();
+
 
             // Apply gravity
             body.apply_linear_impulse(gravity * body.motion.mass * step_time);
 
-            Vec3f axis = body.motion.angular_velocity * (step_time * 0.5);
-
-            body.collider.rotation += (Quaternionf){...axis, 0}.mul2(body.collider.rotation);
-            body.collider.rotation = body.collider.rotation.normalize();
-
+            // Apply dampening (Wind friction ..etc)
             body.motion.angular_velocity *= math::pow(body.motion.angular_dampening, step_time);
             body.motion.linear_velocity *= math::pow(body.motion.linear_dampening, step_time);
         }
@@ -183,15 +183,14 @@ fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9
                         .depth = collision_info.depth,
                     };
 
-                    // self.collisions.push(collision);
-
-                    self.resolve_collision(collision);
+                    self.collisions.push(collision);
                 }
             }
         };
 
 
-        // foreach (collision: self.collisions) self.resolve_collision(collision);
+        foreach (collision: self.collisions) self.resolve_collision(collision);
+        self.collisions.clear();
     }
 
 
@@ -201,14 +200,6 @@ fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9
         self.spatial_map.update(body.transformed_aabb, new_aabb, body.spatial_index)!!;
         body.transformed_aabb = new_aabb;
     }
-
-    // for (uint i = 0; i < self.bodies.len(); i++) {
-    //     for (uint j = i + 1; j < self.bodies.len(); j++) {
-            
-    //     }
-    // }
-               
-    self.collisions.clear();
 }
 
 <*
@@ -236,10 +227,12 @@ fn void PhysicsWorld.resolve_collision(&self, Collision collision) {
     float impulse_force = relative_velocity.dot(collision.normal);
     if (impulse_force > 0.0f) return;
 
-    Vec3f inertia_a = (a.get_inverse_world_inertia() * ra.cross(collision.normal)).cross(ra);
-    Vec3f inertia_b = (b.get_inverse_world_inertia() * rb.cross(collision.normal)).cross(rb);
+    Vec3f total_inertia = {0,0,0};
 
-    float impulse_denominator = inverse_mass_sum + (inertia_a + inertia_b).dot(collision.normal);
+    if (!a.is_static) total_inertia += (a.get_inverse_world_inertia() * ra.cross(collision.normal)).cross(ra);
+    if (!b.is_static) total_inertia += (b.get_inverse_world_inertia() * rb.cross(collision.normal)).cross(rb);
+
+    float impulse_denominator = inverse_mass_sum + total_inertia.dot(collision.normal);
 
     float jn = -(1.0f + restitution) * impulse_force / (inverse_mass_sum + impulse_denominator);
     Vec3f normal_impulse = jn * collision.normal;
@@ -249,7 +242,7 @@ fn void PhysicsWorld.resolve_collision(&self, Collision collision) {
     if (tangent_direction.sq_magnitude() > 0.001f) {
         tangent_direction = tangent_direction.normalize();
         
-        float jt = -relative_velocity.dot(tangent_direction) / (inverse_mass_sum + (inertia_a + inertia_b).dot(tangent_direction));
+        float jt = -relative_velocity.dot(tangent_direction) / (inverse_mass_sum + total_inertia.dot(tangent_direction));
      
         float max_friction = static_friction * jn;
 
@@ -264,9 +257,9 @@ fn void PhysicsWorld.resolve_collision(&self, Collision collision) {
         if (!b.is_static) b.apply_impulse(normal_impulse, rb);
     };
     
-    float percent = 0.6f;
-    float slop = 0.02f;
-    float correction_magnitude = math::max(collision.depth - slop, 0.0f) / inverse_mass_sum * percent;
+    // float percent = 0.6f;
+    // float slop = 0.02f;
+    // float correction_magnitude = math::max(collision.depth - slop, 0.0f) / inverse_mass_sum * percent;
 
     // Correction
     Vec3f correction = collision.normal * collision.depth;
