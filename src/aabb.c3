@@ -12,7 +12,7 @@ struct Aabb3 (Printable, ConvexShape) {
 }
 
 
-fn Aabb3 aabb_from_half(Vec3f size) => {-size, size};
+fn Aabb3 aabb_from_half(Vec3f size) => {-size * 0.5, size * 0.5};
 fn Vec3f Aabb3.size(self) => self.max - self.min;
 fn usz? Aabb3.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("min %s max %s", self.min, self.max)!;
 macro bool Aabb3.equals(self, Aabb3 b) @operator(==) => self.min == b.min && self.max == b.max;
@@ -132,7 +132,6 @@ fn Aabb3 Aabb3.transform(self, Matrix4f matrix)
         matrix.m20, matrix.m21, matrix.m22,
     };
 
-
     foreach (uint i, value: new_matrix.m) {
         uint index = i % 3;
 
@@ -159,6 +158,7 @@ fn Vec3f Aabb3.furthest_point(&self, Vec3f direction) @dynamic {
     return point;
 }
 
+fn Aabb3 Aabb3.get_aabb(&self) @dynamic => *self;
 
 fn Matrix3f Aabb3.inertia_tensor(&self, float mass) @dynamic {
     Vec3f size = self.size();

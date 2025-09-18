@@ -7,6 +7,7 @@ interface ConvexShape
 {
     fn Vec3f furthest_point(Vec3f direction);
     fn Matrix3f inertia_tensor(float mass);
+    fn Aabb3 get_aabb();
 }
 
 interface RayCast
@@ -188,6 +189,30 @@ fn Matrix3f Cylinder.inertia_tensor(&self, float mass) @dynamic {
 }
 
 fn Matrix3f Capsule.inertia_tensor(&self, float mass) @dynamic => MATRIX3F_IDENTITY;
+
+fn Aabb3 TransformedConvex.get_aabb(&self) @dynamic => self.shape.get_aabb();
+
+fn Aabb3 Sphere.get_aabb(&self) @dynamic => {.min = self.center - self.radius, .max = self.center + self.radius};
+
+fn Aabb3 Capsule.get_aabb(&self) @dynamic {
+    float radius_max = math::max(self.radius_top, self.radius_bottom);
+
+    return {
+        .min = {-radius_max, 0, -radius_max},
+        .max = {radius_max, self.height, radius_max}
+    };
+}
+
+fn Aabb3 ConvexPolyhedron.get_aabb(&self) @dynamic => {};
+
+fn Aabb3 Cylinder.get_aabb(&self) @dynamic {
+    float radius_max = math::max(self.radius_top, self.radius_bottom);
+
+    return {
+        .min = {-radius_max, 0, -radius_max},
+        .max = {radius_max, self.height, radius_max}
+    };
+}
 
 
 fn Vec3f TransformedConvex.get_world_center_of_mass(&self, Vec3f center_of_mass) => center_of_mass.rotate_by_quat(self.rotation) + self.translation;

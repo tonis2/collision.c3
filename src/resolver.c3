@@ -10,6 +10,7 @@ import std::time;
 struct PhysicsWorld {
     List{Rigidbody} bodies;
     List{Collision} collisions;
+    List{GenericJoint3D} constraints;
 
     SpatialHash3D spatial_map;
     List{BVHNode} bvh_nodes;
@@ -75,6 +76,7 @@ fn void PhysicsWorld.free(&self) {
     self.collisions.free();
     self.spatial_map.free();
     self.bvh_nodes.free();
+    self.constraints.free();
 }
 
 struct PhysicsWorldConfig {
@@ -98,11 +100,15 @@ fn Rigidbody* PhysicsWorld.find_body(self, uint id) {
    return null;
 }
 
+fn void? PhysicsWorld.add_constraint(&self, GenericJoint3D body) => self.constraints.push(body);
 
 fn void? PhysicsWorld.add_body(&self, Rigidbody body) {
     uint spatial_index = (uint)self.bodies.len();
     body.spatial_index = spatial_index;
     body.motion.inverse_mass = !body.is_static ? 1.0f / body.motion.mass : 0;
+
+    body.aabb = body.collider.get_aabb();
+    
     body.transformed_aabb = body.get_transformed_aabb();
 
     if (!body.is_static) body.motion.inertia = body.collider.inertia_tensor(body.motion.mass).inverse()!!;
@@ -156,9 +162,8 @@ fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9
             body.collider.rotation += (Quaternionf){...axis, 0}.mul2(body.collider.rotation);
             body.collider.rotation = body.collider.rotation.normalize();
 
-
             // Apply gravity
-            body.apply_linear_impulse(gravity * body.motion.mass * step_time);
+            body.apply_linear_impulse(gravity * body.motion.gravity_factor * body.motion.mass * step_time);
 
             // Apply dampening (Wind friction ..etc)
             body.motion.angular_velocity *= math::pow(body.motion.angular_dampening, step_time);
@@ -193,7 +198,6 @@ fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9
         self.collisions.clear();
     }
 
-
     foreach (&body: self.bodies) {
         if (body.is_static) continue;
         Aabb3 new_aabb = body.get_transformed_aabb();
@@ -221,20 +225,20 @@ fn void PhysicsWorld.resolve_collision(&self, Collision collision) {
 
     Vec3f relative_velocity;
 
-    if (!b.is_static) relative_velocity += b.motion.linear_velocity + b.motion.angular_velocity.cross(rb);
     if (!a.is_static) relative_velocity -= a.motion.linear_velocity + a.motion.angular_velocity.cross(ra);
+    if (!b.is_static) relative_velocity += b.motion.linear_velocity + b.motion.angular_velocity.cross(rb);
 
     float impulse_force = relative_velocity.dot(collision.normal);
     if (impulse_force > 0.0f) return;
 
-    Vec3f total_inertia = {0,0,0};
+    Vec3f total_inertia;
 
     if (!a.is_static) total_inertia += (a.get_inverse_world_inertia() * ra.cross(collision.normal)).cross(ra);
     if (!b.is_static) total_inertia += (b.get_inverse_world_inertia() * rb.cross(collision.normal)).cross(rb);
 
     float impulse_denominator = inverse_mass_sum + total_inertia.dot(collision.normal);
 
-    float jn = -(1.0f + restitution) * impulse_force / (inverse_mass_sum + impulse_denominator);
+    float jn = -(1.0f + restitution) * impulse_force / impulse_denominator;
     Vec3f normal_impulse = jn * collision.normal;
 
     Vec3f tangent_direction = relative_velocity - collision.normal * relative_velocity.dot(collision.normal);
@@ -266,4 +270,10 @@ fn void PhysicsWorld.resolve_collision(&self, Collision collision) {
 
     if (!a.is_static) a.collider.translation -= correction;
     if (!b.is_static) b.collider.translation += correction;
-}   
+}
+
+
+
+fn void PhysicsWorld.resolve_constraint(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9.8f}, uint step_count = 10) {
+
+}

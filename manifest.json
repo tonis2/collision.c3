@@ -1,6 +1,16 @@
 {
   "provides" : "collision",
-  "sources": ["src/aabb.c3", "src/epa.c3", "src/gjk.c3", "src/helpers.c3", "src/shapes.c3", "src/spatial_hash.c3", "src/bvh.c3", "src/resolver.c3"],
+  "sources": [
+    "src/aabb.c3", 
+    "src/epa.c3",
+    "src/gjk.c3",
+    "src/helpers.c3",
+    "src/shapes.c3",
+    "src/spatial_hash.c3",
+    "src/bvh.c3",
+    "src/resolver.c3",
+    "src/constraint.c3"
+  ],
   "targets" : {
     "macos-x64" : {
     },

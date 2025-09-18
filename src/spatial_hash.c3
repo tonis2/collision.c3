@@ -62,7 +62,7 @@ fn void? SpatialHash3D.insert(&self, Aabb3 box, usz id) {
     }
 }
 
-alias CellIDs = ElasticArray{int, 24};
+alias CellIDs = ElasticArray{int, 100};
 
 fn void? SpatialHash3D.update(&self, Aabb3 old_box, Aabb3 new_box, usz entity) {
     if (old_box == new_box) return;
