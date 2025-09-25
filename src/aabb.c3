@@ -13,13 +13,14 @@ struct Aabb3 (Printable, ConvexShape) {
 
 
 fn Aabb3 aabb_from_half(Vec3f size) => {-size * 0.5, size * 0.5};
-fn Vec3f Aabb3.size(self) => self.max - self.min;
-fn usz? Aabb3.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("min %s max %s", self.min, self.max)!;
-macro bool Aabb3.equals(self, Aabb3 b) @operator(==) => self.min == b.min && self.max == b.max;
 
-fn bool Aabb3.is_empty(self) {
-    return self.max.xyz == (Vec3f){0,0,0};
-}
+fn Vec3f Aabb3.size(self) => self.max - self.min;
+
+fn usz? Aabb3.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("min %s max %s", self.min, self.max)!;
+
+fn bool Aabb3.equals(self, Aabb3 b) @operator(==) => self.min == b.min && self.max == b.max;
+
+fn bool Aabb3.is_empty(self) => self.size().sq_magnitude() == 0;
 
 fn bool Aabb3.intersectsX(self, Aabb3 target) {
     return self.min.x < target.min.x && self.max.x > target.max.x;
@@ -163,13 +164,13 @@ fn Aabb3 Aabb3.get_aabb(&self) @dynamic => *self;
 fn Matrix3f Aabb3.inertia_tensor(&self, float mass) @dynamic {
     Vec3f size = self.size();
 
-    float w2 = size.x * size.x;
-    float h2 = size.y * size.y;
-    float d2 = size.z * size.z;
+    float x2 = size.x * size.x;
+    float y2 = size.y * size.y;
+    float z2 = size.z * size.z;
 
-    float ix = (mass / 12.0f) * (h2 + d2);
-    float iy = (mass / 12.0f) * (w2 + d2);
-    float iz = (mass / 12.0f) * (w2 + h2);
+    float ix = (1 / 6.0f) * mass * (y2 + z2);
+    float iy = (1 / 6.0f) * mass * (x2 + z2);
+    float iz = (1 / 6.0f) * mass * (x2 + y2);
 
     return {
         ix, 0, 0,

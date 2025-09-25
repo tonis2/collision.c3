@@ -77,7 +77,7 @@ fn Vec3f Vec3f.barycentric(self, Vec3f a, Vec3f b, Vec3f c) {
 
     float denom = d00 * d11 - d01 * d01;
 
-    float inv_den = 1.0f / denom;
+    float inv_den = 1.0f / math::max(denom, 0.1f);
     float u = (d11 * d20 - d01 * d21) * inv_den;
     float w = (d00 * d21 - d01 * d20) * inv_den;
 

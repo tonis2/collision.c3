@@ -13,16 +13,18 @@ enum Axis : const int {
    EMPTY = -1,
 }
 
-enum LimitType : const uint  {
+enum LimitType : uint  {
     LINEAR,
     ANGULAR
 }
 
 alias Limits = ElasticArray{Limit, 6};
 
+alias Jacobian = Vec3f[6];
+
 struct Limit {
     LimitType type;
-    Axis[3] axes;
+    Vec3f axes;
     float min;
     float max;
     float stiffness;
@@ -35,7 +37,6 @@ struct GenericJoint3D {
    Vec3f anchor_a;
    Vec3f anchor_b;
 
-   Quaternionf target_orientation;
-   Vec3f linear_impulse;
-   Vec3f angular_impulse;
+   uint body_a;
+   uint body_b;
 }

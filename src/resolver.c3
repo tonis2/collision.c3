@@ -47,8 +47,8 @@ struct Motion {
     float angular_dampening;
 
     Vec3f mass_center;
-    Vec3f inertia_diagonal;
-    Quaternionf inertia_orientation;
+    //Vec3f inertia_diagonal;
+    //Quaternionf inertia_orientation;
     Matrix3f inertia;
 
     Vec3f linear_velocity;
@@ -105,13 +105,16 @@ fn void? PhysicsWorld.add_constraint(&self, GenericJoint3D body) => self.constra
 fn void? PhysicsWorld.add_body(&self, Rigidbody body) {
     uint spatial_index = (uint)self.bodies.len();
     body.spatial_index = spatial_index;
+
+    body.is_static = body.motion.mass == 0;
+
     body.motion.inverse_mass = !body.is_static ? 1.0f / body.motion.mass : 0;
 
     body.aabb = body.collider.get_aabb();
     
     body.transformed_aabb = body.get_transformed_aabb();
 
-    if (!body.is_static) body.motion.inertia = body.collider.inertia_tensor(body.motion.mass).inverse()!!;
+    // if (!body.is_static) body.motion.inertia = body.collider.inertia_tensor(body.motion.mass).inverse()!!;
 
     if (body.motion.linear_dampening == 0) body.motion.linear_dampening = 1;
     if (body.motion.angular_dampening == 0) body.motion.angular_dampening = 1;
@@ -144,6 +147,9 @@ fn void Rigidbody.apply_impulse(&self, Vec3f impulse, Vec3f point) {
     self.apply_angular_impulse(point.cross(impulse));
 }
 
+
+fn Vec3f Rigidbody.local_to_world(self, Vec3f local) => self.collider.translation + local.rotate_by_quat(self.collider.rotation);
+
 <*
  @require self.bodies.len() > 0 : `Must have some bodies to simulate`
 *>
@@ -168,6 +174,55 @@ fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9
             // Apply dampening (Wind friction ..etc)
             body.motion.angular_velocity *= math::pow(body.motion.angular_dampening, step_time);
             body.motion.linear_velocity *= math::pow(body.motion.linear_dampening, step_time);
+        }
+
+        foreach (&joint: self.constraints) {
+            // Rigidbody* a = self.find_body(joint.body_a);
+            // Rigidbody* b = self.find_body(joint.body_b);
+
+            // Vec3f rA = a.local_to_world(joint.anchor_a);
+            // Vec3f rB = b.local_to_world(joint.anchor_b);
+
+            // Vec3f d = rA - rB;
+
+            //io::printfn("%s", d);
+
+            // io::printfn("%s %s", world_anchor_a, world_anchor_b);
+
+            // Quaternionf world_frame_a = joint.frame_a * a.collider.rotation;
+            // Quaternionf world_frame_b = joint.frame_b * b.collider.rotation;
+
+            // Vec3f rA = world_anchor_a - a.collider.translation;
+            // Vec3f rB = world_anchor_b - b.collider.translation;
+
+
+            // Jacobian jacobian;
+
+            // // for (usz i; i < joint.limints.len() * 2; i+= 2) {
+            // //     Vec3f limit = limit.axes.rotate_by_quat(joint.frame_b);
+            // //     if (limit.type == LINEAR) {
+            // //         jacobian[i] = limit.transpose();
+            // //         jacobian[i + 1] = ;
+            // //     }
+            // // }
+
+            // foreach (limit: joint.limits) {
+            //     b.collider.translation += rB * limit.axes.rotate_by_quat(joint.frame_b);
+            //     a.collider.translation += rA * limit.axes.rotate_by_quat(joint.frame_a);
+            // }
+            // Vec3f rA = joint.anchor_a;
+            // Vec3f rB = joint.anchor_b;
+
+            // Vec3f world_a = rA;
+            // Vec3f world_b = rB;
+
+            // if (!a.is_static) world_a = a.collider.translation.rotate_by_quat(joint.frame_a) - rA;
+            // if (!b.is_static) world_b = b.collider.translation.rotate_by_quat(joint.frame_b) - rB;
+
+
+            // io::printfn("%s", rB.z);
+
+        
         }
 
         self.spatial_map.@get_pairs(;Pair pair) {
@@ -229,7 +284,7 @@ fn void PhysicsWorld.resolve_collision(&self, Collision collision) {
     if (!b.is_static) relative_velocity += b.motion.linear_velocity + b.motion.angular_velocity.cross(rb);
 
     float impulse_force = relative_velocity.dot(collision.normal);
-    if (impulse_force > 0.0f) return;
+    if (impulse_force > 0.0001f) return;
 
     Vec3f total_inertia;
 
@@ -243,7 +298,7 @@ fn void PhysicsWorld.resolve_collision(&self, Collision collision) {
 
     Vec3f tangent_direction = relative_velocity - collision.normal * relative_velocity.dot(collision.normal);
 
-    if (tangent_direction.sq_magnitude() > 0.001f) {
+    if (tangent_direction.sq_magnitude() > 0.0001f) {
         tangent_direction = tangent_direction.normalize();
         
         float jt = -relative_velocity.dot(tangent_direction) / (inverse_mass_sum + total_inertia.dot(tangent_direction));
@@ -273,7 +328,3 @@ fn void PhysicsWorld.resolve_collision(&self, Collision collision) {
 }
 
 
-
-fn void PhysicsWorld.resolve_constraint(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9.8f}, uint step_count = 10) {
-
-}

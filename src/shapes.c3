@@ -147,6 +147,7 @@ fn Matrix3f TransformedConvex.inertia_tensor(&self, float mass) @dynamic {
     Matrix3f local_inertia = self.shape.inertia_tensor(mass);
 
     Matrix4f matrix = self.rotation.normalize().to_matrixf();
+    
     Matrix3f r = (Matrix3f){
         matrix.m00, matrix.m01, matrix.m02,
         matrix.m10, matrix.m11, matrix.m12,
