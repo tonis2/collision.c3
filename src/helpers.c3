@@ -57,9 +57,9 @@ fn Quaternionf quaternion_from_axis_angle(Vec3f axis, float angle) {
 
 fn void Vec3f.set(&self, Vec3f new) => mem::copy(self, &new, Vec3f.sizeof, 0);
 
-fn Vec3f Vec3f.rotate_by_quat(&self, Quaternionf q) {
-    Quaternionf p = {self.x, self.y, self.z, 0};
-    Quaternionf result = q.mul2(p).mul2(q.conjugate()); 
+fn Vec3f Quaternionf.rotate_vec(self, Vec3f translation) @operator(*) {
+    Quaternionf p = {translation.x, translation.y, translation.z, 0};
+    Quaternionf result = self.mul2(p).mul2(self.conjugate()); 
     return {result.v.x, result.v.y, result.v.z};
 }
 

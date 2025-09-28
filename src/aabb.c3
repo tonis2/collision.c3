@@ -168,9 +168,9 @@ fn Matrix3f Aabb3.inertia_tensor(&self, float mass) @dynamic {
     float y2 = size.y * size.y;
     float z2 = size.z * size.z;
 
-    float ix = (1 / 6.0f) * mass * (y2 + z2);
-    float iy = (1 / 6.0f) * mass * (x2 + z2);
-    float iz = (1 / 6.0f) * mass * (x2 + y2);
+    float ix = (1 / 12.0f) * mass * (y2 + z2);
+    float iy = (1 / 12.0f) * mass * (x2 + z2);
+    float iz = (1 / 12.0f) * mass * (x2 + y2);
 
     return {
         ix, 0, 0,

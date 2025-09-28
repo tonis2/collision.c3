@@ -147,8 +147,14 @@ fn void Rigidbody.apply_impulse(&self, Vec3f impulse, Vec3f point) {
     self.apply_angular_impulse(point.cross(impulse));
 }
 
+fn Vec3f Rigidbody.get_intertia(self, Vec3f point, Vec3f normal) {
+    return (self.get_inverse_world_inertia() * point.cross(normal)).cross(point);
+}
 
-fn Vec3f Rigidbody.local_to_world(self, Vec3f local) => self.collider.translation + local.rotate_by_quat(self.collider.rotation);
+fn Vec3f Rigidbody.relative_velocity(self, Vec3f point) {
+    return self.motion.linear_velocity + self.motion.angular_velocity.cross(point);
+}
+
 
 <*
  @require self.bodies.len() > 0 : `Must have some bodies to simulate`
@@ -176,55 +182,46 @@ fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9
             body.motion.linear_velocity *= math::pow(body.motion.linear_dampening, step_time);
         }
 
+        // Apply constraints
         foreach (&joint: self.constraints) {
-            // Rigidbody* a = self.find_body(joint.body_a);
-            // Rigidbody* b = self.find_body(joint.body_b);
+            Rigidbody* a = self.find_body(joint.body_a);
+            Rigidbody* b = self.find_body(joint.body_b);
 
-            // Vec3f rA = a.local_to_world(joint.anchor_a);
-            // Vec3f rB = b.local_to_world(joint.anchor_b);
+            float inverse_mass_sum = a.motion.inverse_mass + b.motion.inverse_mass;
 
-            // Vec3f d = rA - rB;
+            Vec3f rA = a.collider.rotation * joint.anchor_a;
+            Vec3f rB = b.collider.rotation * joint.anchor_b;
 
-            //io::printfn("%s", d);
+            Vec3f world_a = a.collider.translation + rA;
+            Vec3f world_b = b.collider.translation + rB;
 
-            // io::printfn("%s %s", world_anchor_a, world_anchor_b);
+            Vec3f relative_velocity;
 
-            // Quaternionf world_frame_a = joint.frame_a * a.collider.rotation;
-            // Quaternionf world_frame_b = joint.frame_b * b.collider.rotation;
+            if (!a.is_static) relative_velocity -= a.relative_velocity(joint.anchor_a);
+            if (!b.is_static) relative_velocity += b.relative_velocity(joint.anchor_b);
 
-            // Vec3f rA = world_anchor_a - a.collider.translation;
-            // Vec3f rB = world_anchor_b - b.collider.translation;
+            foreach (limit: joint.limits) {
+                Vec3f normal = limit.axes;
+            
+                Vec3f term_a = a.get_intertia(rA, normal);
+                Vec3f term_b = b.get_intertia(rB, normal);
 
+                float effective_mass = inverse_mass_sum + (term_a + term_b).dot(normal);
+                if (effective_mass < 0.00001f) return;
 
-            // Jacobian jacobian;
+                float contact_velocity = relative_velocity.dot(normal);
+                float position_error = (world_b - world_a).dot(normal);
 
-            // // for (usz i; i < joint.limints.len() * 2; i+= 2) {
-            // //     Vec3f limit = limit.axes.rotate_by_quat(joint.frame_b);
-            // //     if (limit.type == LINEAR) {
-            // //         jacobian[i] = limit.transpose();
-            // //         jacobian[i + 1] = ;
-            // //     }
-            // // }
+                float j = -(position_error + contact_velocity) / effective_mass;
 
-            // foreach (limit: joint.limits) {
-            //     b.collider.translation += rB * limit.axes.rotate_by_quat(joint.frame_b);
-            //     a.collider.translation += rA * limit.axes.rotate_by_quat(joint.frame_a);
-            // }
-            // Vec3f rA = joint.anchor_a;
-            // Vec3f rB = joint.anchor_b;
-
-            // Vec3f world_a = rA;
-            // Vec3f world_b = rB;
-
-            // if (!a.is_static) world_a = a.collider.translation.rotate_by_quat(joint.frame_a) - rA;
-            // if (!b.is_static) world_b = b.collider.translation.rotate_by_quat(joint.frame_b) - rB;
-
-
-            // io::printfn("%s", rB.z);
-
-        
+                Vec3f impulse = j * normal;
+             
+                if (!a.is_static) a.apply_impulse(-impulse, rA);
+                if (!b.is_static) b.apply_impulse(impulse, rB);
+            }
         }
 
+        // Check spatial map, for broadphase collision and do narrow phase for detected pairs
         self.spatial_map.@get_pairs(;Pair pair) {
             Rigidbody* body_a = self.bodies.get_ref(pair.first);
             Rigidbody* body_b = self.bodies.get_ref(pair.second);
@@ -280,16 +277,16 @@ fn void PhysicsWorld.resolve_collision(&self, Collision collision) {
 
     Vec3f relative_velocity;
 
-    if (!a.is_static) relative_velocity -= a.motion.linear_velocity + a.motion.angular_velocity.cross(ra);
-    if (!b.is_static) relative_velocity += b.motion.linear_velocity + b.motion.angular_velocity.cross(rb);
+    if (!a.is_static) relative_velocity -= a.relative_velocity(ra);
+    if (!b.is_static) relative_velocity += b.relative_velocity(rb);
 
     float impulse_force = relative_velocity.dot(collision.normal);
     if (impulse_force > 0.0001f) return;
 
     Vec3f total_inertia;
 
-    if (!a.is_static) total_inertia += (a.get_inverse_world_inertia() * ra.cross(collision.normal)).cross(ra);
-    if (!b.is_static) total_inertia += (b.get_inverse_world_inertia() * rb.cross(collision.normal)).cross(rb);
+    if (!a.is_static) total_inertia += a.get_intertia(ra, collision.normal);
+    if (!b.is_static) total_inertia += b.get_intertia(rb, collision.normal);
 
     float impulse_denominator = inverse_mass_sum + total_inertia.dot(collision.normal);
 
