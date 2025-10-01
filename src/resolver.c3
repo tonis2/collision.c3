@@ -100,7 +100,8 @@ fn Rigidbody* PhysicsWorld.find_body(self, uint id) {
    return null;
 }
 
-fn void? PhysicsWorld.add_constraint(&self, GenericJoint3D body) => self.constraints.push(body);
+
+fn void? PhysicsWorld.add_constraint(&self, GenericJoint3D joint) => self.constraints.push(joint);
 
 fn void? PhysicsWorld.add_body(&self, Rigidbody body) {
     uint spatial_index = (uint)self.bodies.len();
@@ -160,17 +161,33 @@ fn Vec3f Rigidbody.relative_velocity(self, Vec3f point) {
  @require self.bodies.len() > 0 : `Must have some bodies to simulate`
 *>
 fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9.8f}, uint step_count = 10) {
+
+
+    // Warm start joints
+    foreach (&joint: self.constraints) {
+        Rigidbody* a = self.find_body(joint.body_a);
+        Rigidbody* b = self.find_body(joint.body_b);
+
+        Vec3f rA = a.collider.rotation * joint.anchor_a;
+        Vec3f rB = b.collider.rotation * joint.anchor_b;
+
+        if (!a.is_static) a.apply_impulse(-joint.accumulated_linear_impulse, rA);
+        if (!b.is_static) b.apply_impulse(joint.accumulated_linear_impulse, rB);
+    }
+
+
     for (usz i; i < step_count; i++) {
         float step_time = time / step_count;
 
         foreach (&body: self.bodies) {
             if (body.is_static) continue;
-
+            
             // Apply linear velocity and translation
             body.collider.translation += body.motion.linear_velocity * step_time;
 
             // Apply angular velocity as rotation
             Vec3f axis = body.motion.angular_velocity * (step_time * 0.5);
+
             body.collider.rotation += (Quaternionf){...axis, 0}.mul2(body.collider.rotation);
             body.collider.rotation = body.collider.rotation.normalize();
 
@@ -187,6 +204,8 @@ fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9
             Rigidbody* a = self.find_body(joint.body_a);
             Rigidbody* b = self.find_body(joint.body_b);
 
+            assert(a != null || b != null, "Joint bodies are not added to physics world");
+            
             float inverse_mass_sum = a.motion.inverse_mass + b.motion.inverse_mass;
 
             Vec3f rA = a.collider.rotation * joint.anchor_a;
@@ -197,12 +216,12 @@ fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9
 
             Vec3f relative_velocity;
 
-            if (!a.is_static) relative_velocity -= a.relative_velocity(joint.anchor_a);
-            if (!b.is_static) relative_velocity += b.relative_velocity(joint.anchor_b);
+            if (!a.is_static) relative_velocity -= a.relative_velocity(rA);
+            if (!b.is_static) relative_velocity += b.relative_velocity(rB);
 
             foreach (limit: joint.limits) {
                 Vec3f normal = limit.axes;
-            
+           
                 Vec3f term_a = a.get_intertia(rA, normal);
                 Vec3f term_b = b.get_intertia(rB, normal);
 
@@ -212,12 +231,16 @@ fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9
                 float contact_velocity = relative_velocity.dot(normal);
                 float position_error = (world_b - world_a).dot(normal);
 
-                float j = -(position_error + contact_velocity) / effective_mass;
+                float bias = (0.2f * step_time) * position_error;
 
+                float j = -(bias + contact_velocity) / effective_mass;
+        
                 Vec3f impulse = j * normal;
-             
+
                 if (!a.is_static) a.apply_impulse(-impulse, rA);
                 if (!b.is_static) b.apply_impulse(impulse, rB);
+
+                joint.accumulated_linear_impulse += impulse;
             }
         }
 
@@ -245,7 +268,6 @@ fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9
             }
         };
 
-
         foreach (collision: self.collisions) self.resolve_collision(collision);
         self.collisions.clear();
     }
@@ -272,29 +294,29 @@ fn void PhysicsWorld.resolve_collision(&self, Collision collision) {
 
     if (inverse_mass_sum == 0) return;
 
-    Vec3f ra = collision.contact[0] - a.collider.translation;
-    Vec3f rb = collision.contact[1] - b.collider.translation;
+    Vec3f rA = collision.contact[0] - a.collider.translation;
+    Vec3f rB = collision.contact[1] - b.collider.translation;
 
     Vec3f relative_velocity;
 
-    if (!a.is_static) relative_velocity -= a.relative_velocity(ra);
-    if (!b.is_static) relative_velocity += b.relative_velocity(rb);
+    if (!a.is_static) relative_velocity -= a.relative_velocity(rA);
+    if (!b.is_static) relative_velocity += b.relative_velocity(rB);
 
     float impulse_force = relative_velocity.dot(collision.normal);
     if (impulse_force > 0.0001f) return;
 
     Vec3f total_inertia;
 
-    if (!a.is_static) total_inertia += a.get_intertia(ra, collision.normal);
-    if (!b.is_static) total_inertia += b.get_intertia(rb, collision.normal);
+    if (!a.is_static) total_inertia += a.get_intertia(rA, collision.normal);
+    if (!b.is_static) total_inertia += b.get_intertia(rB, collision.normal);
 
     float impulse_denominator = inverse_mass_sum + total_inertia.dot(collision.normal);
 
     float jn = -(1.0f + restitution) * impulse_force / impulse_denominator;
     Vec3f normal_impulse = jn * collision.normal;
 
-    Vec3f tangent_direction = relative_velocity - collision.normal * relative_velocity.dot(collision.normal);
-
+    Vec3f tangent_direction = relative_velocity - relative_velocity.dot(collision.normal) * collision.normal;
+    
     if (tangent_direction.sq_magnitude() > 0.0001f) {
         tangent_direction = tangent_direction.normalize();
         
@@ -302,15 +324,15 @@ fn void PhysicsWorld.resolve_collision(&self, Collision collision) {
      
         float max_friction = static_friction * jn;
 
-        jt = math::max(-max_friction, math::min(jt, max_friction));
+        jt = math::clamp(jt, -max_friction, max_friction);
 
         Vec3f friction_impulse = jt * tangent_direction;
 
-        if (!a.is_static) a.apply_impulse(-(friction_impulse + normal_impulse), ra);
-        if (!b.is_static) b.apply_impulse(friction_impulse + normal_impulse, rb);
+        if (!a.is_static) a.apply_impulse(-(friction_impulse + normal_impulse), rA);
+        if (!b.is_static) b.apply_impulse(friction_impulse + normal_impulse, rB);
     } else {
-        if (!a.is_static) a.apply_impulse(-normal_impulse, ra);
-        if (!b.is_static) b.apply_impulse(normal_impulse, rb);
+        if (!a.is_static) a.apply_impulse(-normal_impulse, rA);
+        if (!b.is_static) b.apply_impulse(normal_impulse, rB);
     };
     
     // float percent = 0.6f;

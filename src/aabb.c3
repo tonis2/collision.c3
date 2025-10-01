@@ -162,15 +162,11 @@ fn Vec3f Aabb3.furthest_point(&self, Vec3f direction) @dynamic {
 fn Aabb3 Aabb3.get_aabb(&self) @dynamic => *self;
 
 fn Matrix3f Aabb3.inertia_tensor(&self, float mass) @dynamic {
-    Vec3f size = self.size();
+    Vec3f size = self.size() * 2;
 
-    float x2 = size.x * size.x;
-    float y2 = size.y * size.y;
-    float z2 = size.z * size.z;
-
-    float ix = (1 / 12.0f) * mass * (y2 + z2);
-    float iy = (1 / 12.0f) * mass * (x2 + z2);
-    float iz = (1 / 12.0f) * mass * (x2 + y2);
+    float ix = (1 / 12.0f) * mass * (size.y + size.z);
+    float iy = (1 / 12.0f) * mass * (size.x + size.z);
+    float iz = (1 / 12.0f) * mass * (size.x + size.y);
 
     return {
         ix, 0, 0,

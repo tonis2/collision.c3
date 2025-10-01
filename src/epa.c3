@@ -48,7 +48,7 @@ fn Face SupportArray.create_face(self, usz a_index, usz b_index, usz c_index)
     Vec3f normal = (b - a).cross(c - a).normalize();
     float distance = a.dot(normal);
 
-    assert(normal != (Vec3f){0,0,0});
+    // assert(normal != (Vec3f){0,0,0});
 
     if ((-a).dot(normal) > 0) {
         normal   *= -1;
@@ -83,7 +83,7 @@ fn void SupportArray.reconstruct(self, FaceArray* faces, Vec3f new_point)
 
     foreach (edge: edges) {
         Face new_face = self.create_face(edge.first, edge.second, self.len() - 1);
-        // if (new_face.normal == (Vec3f){0,0,0}) continue;
+        if (new_face.normal == (Vec3f){0,0,0}) continue;
         faces.push(new_face);
     }
 }
