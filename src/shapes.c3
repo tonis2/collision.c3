@@ -189,8 +189,22 @@ fn Matrix3f Cylinder.inertia_tensor(&self, float mass) @dynamic {
     };
 }
 
-fn Matrix3f Capsule.inertia_tensor(&self, float mass) @dynamic => MATRIX3F_IDENTITY;
+fn Matrix3f Capsule.inertia_tensor(&self, float mass) @dynamic {
+    float r2 = self.radius_bottom * self.radius_top;
+    float h2 = self.height * self.height;
 
+    float ix = (mass / 12.0f) * (3 * r2 + h2);
+    float iy = (mass / 2.0f) * r2;
+    float iz = (mass / 12.0f) * (3 * r2 + h2);
+
+    return {
+        ix, 0, 0,
+        0,  iy, 0,
+        0, 0,  iz
+    };
+}
+
+fn Aabb3 TransformedConvex.get_transformed_aabb(&self) @dynamic => self.shape.get_aabb().transform(to_matrix(self.translation, self.scale, self.rotation));
 fn Aabb3 TransformedConvex.get_aabb(&self) @dynamic => self.shape.get_aabb();
 
 fn Aabb3 Sphere.get_aabb(&self) @dynamic => {.min = self.center - self.radius, .max = self.center + self.radius};
@@ -204,8 +218,6 @@ fn Aabb3 Capsule.get_aabb(&self) @dynamic {
     };
 }
 
-fn Aabb3 ConvexPolyhedron.get_aabb(&self) @dynamic => {};
-
 fn Aabb3 Cylinder.get_aabb(&self) @dynamic {
     float radius_max = math::max(self.radius_top, self.radius_bottom);
 
@@ -215,5 +227,7 @@ fn Aabb3 Cylinder.get_aabb(&self) @dynamic {
     };
 }
 
+
+fn Aabb3 ConvexPolyhedron.get_aabb(&self) @dynamic => {};
 
 fn Vec3f TransformedConvex.get_world_center_of_mass(&self, Vec3f center_of_mass) => self.rotation * center_of_mass + self.translation;

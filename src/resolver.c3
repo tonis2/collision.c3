@@ -103,6 +103,10 @@ fn Rigidbody* PhysicsWorld.find_body(self, uint id) {
 
 fn void? PhysicsWorld.add_constraint(&self, GenericJoint3D joint) => self.constraints.push(joint);
 
+
+<*
+ @require body.collider.shape != null : `Added rigid body must have collision shape`
+*>
 fn void? PhysicsWorld.add_body(&self, Rigidbody body) {
     uint spatial_index = (uint)self.bodies.len();
     body.spatial_index = spatial_index;
@@ -113,8 +117,7 @@ fn void? PhysicsWorld.add_body(&self, Rigidbody body) {
 
     body.aabb = body.collider.get_aabb();
     
-    body.transformed_aabb = body.get_transformed_aabb();
-
+    body.transformed_aabb = body.collider.get_transformed_aabb();
     // if (!body.is_static) body.motion.inertia = body.collider.inertia_tensor(body.motion.mass).inverse()!!;
 
     if (body.motion.linear_dampening == 0) body.motion.linear_dampening = 1;
@@ -129,7 +132,7 @@ fn void? PhysicsWorld.add_bvh_node(&self, Rigidbody body, Aabb3 aabb) {
     self.spatial_map.insert(aabb, body.id)!;
 }
 
-fn Aabb3 Rigidbody.get_transformed_aabb(&self) => self.aabb.transform(to_matrix(self.collider.translation, self.collider.scale, self.collider.rotation));
+fn Aabb3 Rigidbody.get_transformed_aabb(&self) => self.aabb.transform(to_matrix(self.collider.translation, {1,1,1}, self.collider.rotation));
 
 fn Matrix3f Rigidbody.get_inverse_world_inertia(self) {
     if (self.is_static) return MATRIX3F_IDENTITY;
@@ -168,35 +171,39 @@ fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9
         Rigidbody* a = self.find_body(joint.body_a);
         Rigidbody* b = self.find_body(joint.body_b);
 
-        Vec3f rA = a.collider.rotation * joint.anchor_a;
-        Vec3f rB = b.collider.rotation * joint.anchor_b;
+        assert(a != null || b != null, "Joint bodies are not added to physics world");
 
-        if (!a.is_static) a.apply_impulse(-joint.accumulated_linear_impulse, rA);
-        if (!b.is_static) b.apply_impulse(joint.accumulated_linear_impulse, rB);
+        if (!a.is_static) a.apply_impulse(-joint.accumulated_linear_impulse, a.collider.rotation * joint.anchor_a);
+        if (!b.is_static) b.apply_impulse(joint.accumulated_linear_impulse, b.collider.rotation * joint.anchor_b);
+
+        if (!a.is_static) a.apply_angular_impulse(-joint.accumulated_angular_impulse);
+        if (!b.is_static) b.apply_angular_impulse(joint.accumulated_angular_impulse);
     }
 
 
     for (usz i; i < step_count; i++) {
-        float step_time = time / step_count;
+        float time_step = time / step_count;
 
         foreach (&body: self.bodies) {
             if (body.is_static) continue;
             
             // Apply linear velocity and translation
-            body.collider.translation += body.motion.linear_velocity * step_time;
+            body.collider.translation += body.motion.linear_velocity * time_step;
 
             // Apply angular velocity as rotation
-            Vec3f axis = body.motion.angular_velocity * (step_time * 0.5);
+            Vec3f axis = body.motion.angular_velocity * (time_step * 0.5);
 
-            body.collider.rotation += (Quaternionf){...axis, 0}.mul2(body.collider.rotation);
-            body.collider.rotation = body.collider.rotation.normalize();
+            if (axis != {0,0,0}) {
+                body.collider.rotation += (Quaternionf){...axis, 0}.mul2(body.collider.rotation);
+                body.collider.rotation = body.collider.rotation.normalize();
+            }
 
             // Apply gravity
-            body.apply_linear_impulse(gravity * body.motion.gravity_factor * body.motion.mass * step_time);
+            body.apply_linear_impulse(gravity * body.motion.gravity_factor * body.motion.mass * time_step);
 
             // Apply dampening (Wind friction ..etc)
-            body.motion.angular_velocity *= math::pow(body.motion.angular_dampening, step_time);
-            body.motion.linear_velocity *= math::pow(body.motion.linear_dampening, step_time);
+            body.motion.angular_velocity *= math::pow(body.motion.angular_dampening, time_step);
+            body.motion.linear_velocity *= math::pow(body.motion.linear_dampening, time_step);
         }
 
         // Apply constraints
@@ -205,42 +212,99 @@ fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9
             Rigidbody* b = self.find_body(joint.body_b);
 
             assert(a != null || b != null, "Joint bodies are not added to physics world");
-            
+        
             float inverse_mass_sum = a.motion.inverse_mass + b.motion.inverse_mass;
 
-            Vec3f rA = a.collider.rotation * joint.anchor_a;
-            Vec3f rB = b.collider.rotation * joint.anchor_b;
+            Vec3f rA = joint.anchor_a;
+            Vec3f rB = joint.anchor_b;
 
-            Vec3f world_a = a.collider.translation + rA;
-            Vec3f world_b = b.collider.translation + rB;
+            if (!a.is_static) rA = a.collider.rotation * rA;
+            if (!b.is_static) rB = b.collider.rotation * rB;
+
+            Vec3f worldspace_joint;
+
+            if (!a.is_static) worldspace_joint -= a.collider.translation + rA;
+            if (!a.is_static) worldspace_joint += b.collider.translation + rB;
 
             Vec3f relative_velocity;
 
             if (!a.is_static) relative_velocity -= a.relative_velocity(rA);
             if (!b.is_static) relative_velocity += b.relative_velocity(rB);
 
-            foreach (limit: joint.limits) {
-                Vec3f normal = limit.axes;
-           
-                Vec3f term_a = a.get_intertia(rA, normal);
-                Vec3f term_b = b.get_intertia(rB, normal);
+            float correction = 1f;
 
-                float effective_mass = inverse_mass_sum + (term_a + term_b).dot(normal);
-                if (effective_mass < 0.00001f) return;
+            // Linear limits resolving
+            if (!joint.linear_limits.is_empty()) {
 
-                float contact_velocity = relative_velocity.dot(normal);
-                float position_error = (world_b - world_a).dot(normal);
+                foreach (limit: joint.linear_limits) {
+                    Vec3f normal = limit.axes;
 
-                float bias = (0.2f * step_time) * position_error;
+                    Vec3f total_inertia;
 
-                float j = -(bias + contact_velocity) / effective_mass;
-        
-                Vec3f impulse = j * normal;
+                    if (!a.is_static) total_inertia += a.get_intertia(rA, normal);
+                    if (!b.is_static) total_inertia += b.get_intertia(rB, normal);
 
-                if (!a.is_static) a.apply_impulse(-impulse, rA);
-                if (!b.is_static) b.apply_impulse(impulse, rB);
+                    float effective_mass = inverse_mass_sum + total_inertia.dot(normal);
+                    if (effective_mass < 0.00001f) return;
 
-                joint.accumulated_linear_impulse += impulse;
+                    float contact_velocity = relative_velocity.dot(normal);
+                    float position_error = worldspace_joint.dot(normal);
+
+                    float bias = time_step * position_error;
+
+                    float j = -(bias + contact_velocity) / effective_mass;
+            
+                    Vec3f impulse = j * normal;
+
+                    if (!a.is_static) a.apply_impulse(-impulse, rA);
+                    if (!b.is_static) b.apply_impulse(impulse, rB);
+
+                    joint.accumulated_linear_impulse += impulse;
+                }
+            }
+
+            // Angular limits resolving
+            if (!joint.angular_limits.is_empty()) {
+                
+                Quaternionf rotation_a = a.collider.rotation;
+                Quaternionf rotation_b = b.collider.rotation;
+
+                Quaternionf relative_orientation = rotation_a.conjugate() * rotation_b;
+                Vec3f total_axis = relative_orientation.v.xyz;
+                float total_angle = relative_orientation.angle();
+
+                foreach LIMITS: (limit: joint.angular_limits) {
+                    float position_error = 0.0f;
+                    Vec3f normal = limit.axes;
+
+                    float current_angle = total_axis.dot(normal) * total_angle;
+
+                    if (current_angle > limit.max) {
+                        position_error = current_angle - limit.max;
+                    } else if (current_angle < limit.min) {
+                        position_error = current_angle - limit.min;
+                    } else {
+                        continue LIMITS;
+                    }
+
+                    float effective_mass = 0;
+
+                    if (!a.is_static) effective_mass += normal.dot(a.get_inverse_world_inertia() * normal);
+                    if (!b.is_static) effective_mass += normal.dot(b.get_inverse_world_inertia() * normal);
+                    if (effective_mass < 0.00001f) return;
+
+                    float angular_velocity = (b.motion.angular_velocity - a.motion.angular_velocity).dot(normal);
+
+                    float bias = time_step * position_error;
+                    float j = -(angular_velocity + bias) / effective_mass;
+
+                    Vec3f angular_impulse = j * normal;
+
+                    joint.accumulated_angular_impulse += angular_impulse;
+
+                    if (!a.is_static) a.apply_angular_impulse(-angular_impulse);
+                    if (!b.is_static) b.apply_angular_impulse(angular_impulse);
+                }   
             }
         }
 
@@ -273,7 +337,7 @@ fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9
     }
 
     foreach (&body: self.bodies) {
-        if (body.is_static) continue;
+        if (body.is_static || body.motion.linear_velocity.sq_magnitude() < 0.1f) continue;
         Aabb3 new_aabb = body.get_transformed_aabb();
         self.spatial_map.update(body.transformed_aabb, new_aabb, body.spatial_index)!!;
         body.transformed_aabb = new_aabb;

@@ -55,6 +55,8 @@ fn Quaternionf quaternion_from_axis_angle(Vec3f axis, float angle) {
     };
 }
 
+fn float Quaternionf.angle(self) => 2 * math::acos(self.v.w);
+
 fn void Vec3f.set(&self, Vec3f new) => mem::copy(self, &new, Vec3f.sizeof, 0);
 
 fn Vec3f Quaternionf.rotate_vec(self, Vec3f translation) @operator(*) {
