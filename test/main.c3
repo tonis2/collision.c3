@@ -194,7 +194,7 @@ fn void test_bvh() {
 fn void test_helpers() {
     {
         Vec3f position = {1, 3, 2};
-        position = position.rotate_by_quat(QUATERNIONF_IDENTITY);
+        position = QUATERNIONF_IDENTITY * position;
         assert(position == position);
     }
 
@@ -233,6 +233,6 @@ fn void test_helpers() {
     }
 
     Quaternionf rotation = collision::quaternion_from_axis_angle({0.0f, 1.0f, 0.0f}, collision::radians(90));
-    Vec3f rotate_point = (Vec3f){1, 0, 0}.rotate_by_quat(rotation);
+    Vec3f rotate_point = rotation * (Vec3f){1, 0, 0};
     assert(math::round_to_decimals(rotate_point, 2) == (Vec3f){0, 0, -1.0});
 }
