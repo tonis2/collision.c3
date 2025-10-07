@@ -101,7 +101,9 @@ fn Rigidbody* PhysicsWorld.find_body(self, uint id) {
 }
 
 
-fn void? PhysicsWorld.add_constraint(&self, GenericJoint3D joint) => self.constraints.push(joint);
+fn void? PhysicsWorld.add_constraint(&self, GenericJoint3D joint) {
+    self.constraints.push(joint);
+}
 
 
 <*
@@ -176,8 +178,8 @@ fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9
         if (!a.is_static) a.apply_impulse(-joint.accumulated_linear_impulse, a.collider.rotation * joint.anchor_a);
         if (!b.is_static) b.apply_impulse(joint.accumulated_linear_impulse, b.collider.rotation * joint.anchor_b);
 
-        if (!a.is_static) a.apply_angular_impulse(-joint.accumulated_angular_impulse);
-        if (!b.is_static) b.apply_angular_impulse(joint.accumulated_angular_impulse);
+        // if (!a.is_static) a.apply_angular_impulse(-joint.accumulated_angular_impulse);
+        // if (!b.is_static) b.apply_angular_impulse(joint.accumulated_angular_impulse);
     }
 
 
@@ -231,8 +233,6 @@ fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9
             if (!a.is_static) relative_velocity -= a.relative_velocity(rA);
             if (!b.is_static) relative_velocity += b.relative_velocity(rB);
 
-            float correction = 1f;
-
             // Linear limits resolving
             if (!joint.linear_limits.is_empty()) {
 
@@ -269,7 +269,7 @@ fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9
                 Quaternionf rotation_a = a.collider.rotation;
                 Quaternionf rotation_b = b.collider.rotation;
 
-                Quaternionf relative_orientation = rotation_a.conjugate() * rotation_b;
+                Quaternionf relative_orientation = (rotation_b * rotation_a).normalize();
                 Vec3f total_axis = relative_orientation.v.xyz;
                 float total_angle = relative_orientation.angle();
 
@@ -298,9 +298,11 @@ fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9
                     float bias = time_step * position_error;
                     float j = -(angular_velocity + bias) / effective_mass;
 
-                    Vec3f angular_impulse = j * normal;
+                    // float oldAccumulated = joint.accumulated_angular_impulse;
+                    // joint.accumulated_angular_impulse = math::max(0.0f, oldAccumulated + j);
+                    // float impulseToApply = joint.accumulated_angular_impulse - oldAccumulated;
 
-                    joint.accumulated_angular_impulse += angular_impulse;
+                    Vec3f angular_impulse = j * normal;
 
                     if (!a.is_static) a.apply_angular_impulse(-angular_impulse);
                     if (!b.is_static) b.apply_angular_impulse(angular_impulse);
