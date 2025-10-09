@@ -199,7 +199,7 @@ fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9
             Vec3f axis = body.motion.angular_velocity * (time_step * 0.5);
 
             if (axis != {0,0,0}) {
-                body.collider.rotation = (body.collider.rotation + (Quaternionf){...axis, 0}.mul2(body.collider.rotation)).normalize();
+                body.collider.rotation = (body.collider.rotation + (Quaternionf){...axis, 0} * body.collider.rotation).normalize();
             }
 
             // Apply gravity
@@ -273,7 +273,7 @@ fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9
 
                 Quaternionf relative_orientation = (rotation_b * rotation_a);
                 Vec3f total_axis = relative_orientation.v.xyz;
-                float total_angle = relative_orientation.angle();
+                float total_angle = relative_orientation.to_angle();
 
                 foreach LIMITS: (limit: joint.angular_limits) {
                     float position_error = 0.0f;

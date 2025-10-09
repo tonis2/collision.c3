@@ -16,22 +16,6 @@ struct HitInfo {
     Vec3f normal;
 }
 
-fn float radians(float value) => value * (float)math::PI / 180;
-
-fn Quaternionf Quaternionf.mul2(q1, Quaternionf q2) {
-    
-    Vec3f q1_vec = {q1.v.x, q1.v.y, q1.v.z};
-    Vec3f q2_vec = {q2.v.x, q2.v.y, q2.v.z};
-
-    float scalar = (q1.v.w * q2.v.w - q1_vec.dot(q2_vec));
-    Vec3f new_vec = q1.v.w * q2_vec + q2.v.w * q1_vec + q1_vec.cross(q2_vec);
-
-    return {
-        ...new_vec, scalar
-    };
-}
-
-fn Quaternionf Quaternionf.conjugate(&self) => {-self.v.x, -self.v.y, -self.v.z, self.v.w};
 
 fn Matrix3f Quaternionf.as_mat3(self) {
     Matrix4f matrix = self.to_matrixf();
@@ -42,54 +26,7 @@ fn Matrix3f Quaternionf.as_mat3(self) {
     };
 }
 
-fn Quaternionf quaternion_from_axis_angle(Vec3f axis, float angle) {
-    Vec3f normal_axis = axis.normalize();
-    float half_angle = angle * 0.5;
-    float sin_half = math::sin(half_angle);
-   
-    return {
-        normal_axis.x * sin_half,
-        normal_axis.y * sin_half,
-        normal_axis.z * sin_half,
-        math::cos(half_angle)
-    };
-}
-
-fn float Quaternionf.angle(self) => 2 * math::acos(self.v.w);
-
 fn void Vec3f.set(&self, Vec3f new) => mem::copy(self, &new, Vec3f.sizeof, 0);
-
-fn Vec3f Quaternionf.rotate_vec(self, Vec3f translation) @operator(*) {
-    Quaternionf p = {translation.x, translation.y, translation.z, 0};
-    Quaternionf result = self.mul2(p).mul2(self.conjugate()); 
-    return {result.v.x, result.v.y, result.v.z};
-}
-
-fn Vec3f Vec3f.barycentric(self, Vec3f a, Vec3f b, Vec3f c) {
-    Vec3f v0 = b - a;
-    Vec3f v1 = c - a;
-    Vec3f v2 = self - a;
-
-    // Solve for coefficients a,b in v2 = a*v0 + b*v1 (in triangle plane)
-    float d00 = v0.dot(v0);
-    float d01 = v0.dot(v1);
-    float d11 = v1.dot(v1);
-    float d20 = v2.dot(v0);
-    float d21 = v2.dot(v1);
-
-    float denom = d00 * d11 - d01 * d01;
-
-    float inv_den = 1.0f / math::max(denom, 0.1f);
-    float u = (d11 * d20 - d01 * d21) * inv_den;
-    float w = (d00 * d21 - d01 * d20) * inv_den;
-
-    // barycentric weights relative to A,B,C:
-    return {
-        1.0f - u - w,
-        u,
-        w,
-    };
-}
 
 fn bool Triangle.intersect_ray(&self, Ray ray, HitInfo* info) {
     const float EPSILON = 1e-6f;
