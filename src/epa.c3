@@ -115,7 +115,7 @@ fn void epa(CollisionInfo* info, ConvexShape shape_1, ConvexShape shape_2) {
     };
 
     FaceArray faces;
-    faces.add_array({
+    faces.push_all({
         vertices.create_face(0, 1, 2),
         vertices.create_face(0, 3, 1),
         vertices.create_face(0, 2, 3),

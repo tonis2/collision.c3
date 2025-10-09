@@ -35,7 +35,7 @@ fn void BVHNode.build_recursive(&self, Triangle[] triangles) {
     }
 
     if (triangles.len <= MAX_TRIS_PER_LEAF) {
-        self.triangles.add_array(triangles);
+        self.triangles.push_all(triangles);
         return;
     }
     
@@ -69,8 +69,8 @@ fn void BVHNode.build_recursive(&self, Triangle[] triangles) {
         uint half = triangles.len / 2;
         left.clear();
         right.clear();
-        left.add_array(triangles[0..half]);
-        right.add_array(triangles[half..triangles.len - 1]);
+        left.push_all(triangles[0..half]);
+        right.push_all(triangles[half..triangles.len - 1]);
     }
 
     self.left = mem::new(BVHNode, (BVHNode){});
