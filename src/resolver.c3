@@ -5,15 +5,22 @@ import std::io;
 import std::math;
 import std::collections::list;
 import std::time;
+import std::collections::map;
+
+alias CollisionFilter = HashMap{uint, bool};
+alias RigidBodyMap = LinkedHashMap{usz, Rigidbody};
+alias RigidBodyIterator = LinkedHashMapValueIterator{usz, Rigidbody};
 
 
 struct PhysicsWorld {
-    List{Rigidbody} bodies;
+    RigidBodyMap bodies;
     List{Collision} collisions;
     List{GenericJoint3D} constraints;
 
     SpatialHash3D spatial_map;
     List{BVHNode} bvh_nodes;
+
+    CollisionFilter filters;
 }
 
 struct Collision {
@@ -58,7 +65,6 @@ struct Motion {
 struct Rigidbody {
     int bvh_node;
     uint id;
-    uint spatial_index;
 
     Aabb3 aabb;
     Aabb3 transformed_aabb;
@@ -77,6 +83,7 @@ fn void PhysicsWorld.free(&self) {
     self.spatial_map.free();
     self.bvh_nodes.free();
     self.constraints.free();
+    self.filters.free();
 }
 
 struct PhysicsWorldConfig {
@@ -92,27 +99,20 @@ fn PhysicsWorld create_world(PhysicsWorldConfig config) {
 <*
  @require self.bodies.len() > 0 : `Must have rigid bodies`
 *>
-fn Rigidbody* PhysicsWorld.find_body(self, uint id) {
-   foreach (&body: self.bodies) {
-     if (body.id == id) return body;
-   }
-
-   return null;
-}
-
+fn Rigidbody*? PhysicsWorld.find_body(self, usz id) => self.bodies.get_ref(id);
 
 fn void? PhysicsWorld.add_constraint(&self, GenericJoint3D joint) {
+    if (joint.collides == false) {
+        self.filters.set(joint.body_a + joint.body_b, false);
+    }
+
     self.constraints.push(joint);
 }
-
 
 <*
  @require body.collider.shape != null : `Added rigid body must have collision shape`
 *>
 fn void? PhysicsWorld.add_body(&self, Rigidbody body) {
-    uint spatial_index = (uint)self.bodies.len();
-    body.spatial_index = spatial_index;
-
     body.is_static = body.motion.mass == 0;
 
     body.motion.inverse_mass = !body.is_static ? 1.0f / body.motion.mass : 0;
@@ -124,15 +124,15 @@ fn void? PhysicsWorld.add_body(&self, Rigidbody body) {
 
     if (body.motion.linear_dampening == 0) body.motion.linear_dampening = 1;
     if (body.motion.angular_dampening == 0) body.motion.angular_dampening = 1;
- 
-    self.bodies.push(body);
-    self.spatial_map.insert(body.transformed_aabb, spatial_index)!;
+    
+    self.bodies.set(body.id, body);
+    self.spatial_map.insert(body.transformed_aabb, body.id)!;
 }
 
-fn void? PhysicsWorld.add_bvh_node(&self, Rigidbody body, Aabb3 aabb) {
-    self.bodies.push(body);
-    self.spatial_map.insert(aabb, body.id)!;
-}
+// fn void? PhysicsWorld.add_bvh_node(&self, Rigidbody body, Aabb3 aabb) {
+//     self.bodies.push(body);
+//     self.spatial_map.insert(aabb, body.id)!;
+// }
 
 fn Aabb3 Rigidbody.get_transformed_aabb(&self) => self.aabb.transform(to_matrix(self.collider.translation, {1,1,1}, self.collider.rotation));
 
@@ -161,19 +161,22 @@ fn Vec3f Rigidbody.relative_velocity(self, Vec3f point) {
     return self.motion.linear_velocity + self.motion.angular_velocity.cross(point);
 }
 
+fn bool Rigidbody.is_sleeping(self) {
+    return self.motion.linear_velocity.sq_magnitude() < 0.01f && self.motion.angular_velocity.sq_magnitude() < 0.01f;
+}
+
 
 <*
  @require self.bodies.len() > 0 : `Must have some bodies to simulate`
 *>
 fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9.8f}, uint step_count = 10) {
 
+    RigidBodyIterator rigid_bodies = self.bodies.value_iter();
 
     // Warm start joints
     foreach (&joint: self.constraints) {
-        Rigidbody* a = self.find_body(joint.body_a);
-        Rigidbody* b = self.find_body(joint.body_b);
-
-        assert(a != null || b != null, "Joint bodies are not added to physics world");
+        Rigidbody* a = self.find_body(joint.body_a)!!;
+        Rigidbody* b = self.find_body(joint.body_b)!!;
 
         if (!a.is_static) a.apply_impulse(-joint.accumulated_linear_impulse, a.collider.rotation * joint.anchor_a);
         if (!b.is_static) b.apply_impulse(joint.accumulated_linear_impulse, b.collider.rotation * joint.anchor_b);
@@ -182,13 +185,13 @@ fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9
         // if (!b.is_static) b.apply_angular_impulse(joint.accumulated_angular_impulse);
     }
 
-
     for (usz i; i < step_count; i++) {
         float time_step = time / step_count;
 
-        foreach (&body: self.bodies) {
+        while (rigid_bodies.next()) {
+            Rigidbody* body = rigid_bodies.get()!!;
+
             if (body.is_static) continue;
-            
             // Apply linear velocity and translation
             body.collider.translation += body.motion.linear_velocity * time_step;
 
@@ -196,8 +199,7 @@ fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9
             Vec3f axis = body.motion.angular_velocity * (time_step * 0.5);
 
             if (axis != {0,0,0}) {
-                body.collider.rotation += (Quaternionf){...axis, 0}.mul2(body.collider.rotation);
-                body.collider.rotation = body.collider.rotation.normalize();
+                body.collider.rotation = (body.collider.rotation + (Quaternionf){...axis, 0}.mul2(body.collider.rotation)).normalize();
             }
 
             // Apply gravity
@@ -208,12 +210,12 @@ fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9
             body.motion.linear_velocity *= math::pow(body.motion.linear_dampening, time_step);
         }
 
+        rigid_bodies.started = false;
+
         // Apply constraints
         foreach (&joint: self.constraints) {
-            Rigidbody* a = self.find_body(joint.body_a);
-            Rigidbody* b = self.find_body(joint.body_b);
-
-            assert(a != null || b != null, "Joint bodies are not added to physics world");
+            Rigidbody* a = self.find_body(joint.body_a)!!;
+            Rigidbody* b = self.find_body(joint.body_b)!!;
         
             float inverse_mass_sum = a.motion.inverse_mass + b.motion.inverse_mass;
 
@@ -250,7 +252,7 @@ fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9
                     float contact_velocity = relative_velocity.dot(normal);
                     float position_error = worldspace_joint.dot(normal);
 
-                    float bias = time_step * position_error;
+                    float bias = time_step * position_error * 0.02f;
 
                     float j = -(bias + contact_velocity) / effective_mass;
             
@@ -269,7 +271,7 @@ fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9
                 Quaternionf rotation_a = a.collider.rotation;
                 Quaternionf rotation_b = b.collider.rotation;
 
-                Quaternionf relative_orientation = (rotation_b * rotation_a).normalize();
+                Quaternionf relative_orientation = (rotation_b * rotation_a);
                 Vec3f total_axis = relative_orientation.v.xyz;
                 float total_angle = relative_orientation.angle();
 
@@ -295,7 +297,7 @@ fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9
 
                     float angular_velocity = (b.motion.angular_velocity - a.motion.angular_velocity).dot(normal);
 
-                    float bias = time_step * position_error;
+                    float bias = time_step * position_error * 0.02f;
                     float j = -(angular_velocity + bias) / effective_mass;
 
                     // float oldAccumulated = joint.accumulated_angular_impulse;
@@ -312,24 +314,26 @@ fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9
 
         // Check spatial map, for broadphase collision and do narrow phase for detected pairs
         self.spatial_map.@get_pairs(;Pair pair) {
-            Rigidbody* body_a = self.bodies.get_ref(pair.first);
-            Rigidbody* body_b = self.bodies.get_ref(pair.second);
+            Rigidbody* body_a = self.find_body(pair.first)!!;
+            Rigidbody* body_b = self.find_body(pair.second)!!;
 
-            CollisionInfo collision_info = collision::check_collision(&body_a.collider, &body_b.collider);
-        
-            if (collision_info.collided) {
-                collision::epa(&collision_info, &body_a.collider, &body_b.collider);
+            if (body_a.transformed_aabb.collides(body_b.transformed_aabb)) {
+                CollisionInfo collision_info = collision::check_collision(&body_a.collider, &body_b.collider);
 
-                if (collision_info.collided) {
-                    Collision collision = {
-                        .a = pair.first,
-                        .b = pair.second,
-                        .normal = collision_info.normal,
-                        .contact = collision_info.contact_points,
-                        .depth = collision_info.depth,
-                    };
+                if (collision_info.collided && self.filters.has_key((uint)(pair.first + pair.second)) == false) {
+                    collision::epa(&collision_info, &body_a.collider, &body_b.collider);
+                    
+                    if (collision_info.collided) {
+                        Collision collision = {
+                            .a = pair.first,
+                            .b = pair.second,
+                            .normal = collision_info.normal,
+                            .contact = collision_info.contact_points,
+                            .depth = collision_info.depth,
+                        };
 
-                    self.collisions.push(collision);
+                        self.collisions.push(collision);
+                    }
                 }
             }
         };
@@ -338,20 +342,24 @@ fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9
         self.collisions.clear();
     }
 
-    foreach (&body: self.bodies) {
-        if (body.is_static || body.motion.linear_velocity.sq_magnitude() < 0.1f) continue;
-        Aabb3 new_aabb = body.get_transformed_aabb();
-        self.spatial_map.update(body.transformed_aabb, new_aabb, body.spatial_index)!!;
-        body.transformed_aabb = new_aabb;
-    }
+    while (rigid_bodies.next()) {
+        Rigidbody* body = rigid_bodies.get()!!;
+        // Skip updating AABB when bodies are not in motion
+        if (!body.is_static || !body.is_sleeping()) {
+            
+            Aabb3 new_aabb = body.get_transformed_aabb();
+            self.spatial_map.update(body.transformed_aabb, new_aabb, body.id)!!;
+            body.transformed_aabb = new_aabb;
+        };
+    };
 }
 
 <*
  @require collision.a != collision.b : `Collision bodies must not reference same body`
 *>
 fn void PhysicsWorld.resolve_collision(&self, Collision collision) {
-    Rigidbody* a = self.bodies.get_ref(collision.a);
-    Rigidbody* b = self.bodies.get_ref(collision.b);
+    Rigidbody* a = self.find_body(collision.a)!!;
+    Rigidbody* b = self.find_body(collision.b)!!;
 
     // Values
     float inverse_mass_sum = a.motion.inverse_mass + b.motion.inverse_mass;
