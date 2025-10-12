@@ -16,9 +16,8 @@ fn void test_physics() {
         {1.0, 1.0, 1.0}
     };
 
-    Matrix4f matrix = MATRIX4F_IDENTITY.translate({1, 5, 1}).scale({3.0, 1.0, 1.0});
-
-    aabb = aabb.transform(matrix);
+    aabb = aabb.transform(translation: {1, 5, 1}, scale: {3.0, 1.0, 1.0}, rotation: {0,0,0,1});
+    
     assert(aabb.min == {-2, 4, 0});
     assert(aabb.max == {4, 6, 2});
 

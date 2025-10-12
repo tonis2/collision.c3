@@ -19,6 +19,8 @@ struct SpatialHash3D {
     HashMap{usz, bool} unique_map;
 }
 
+fn usz? GridCoord.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s %s %s", self.x, self.y, self.z)!;
+
 fn bool GridCoord.equals(&self, GridCoord other) => self.x == other.x && self.y == other.y && self.z == other.z;
 
 fn int GridCoord.hash(&self) {
@@ -62,7 +64,7 @@ fn void? SpatialHash3D.insert(&self, Aabb3 box, usz id) {
     }
 }
 
-alias CellIDs = ElasticArray{int, 100};
+alias CellIDs = ElasticArray{int, 200};
 
 fn void? SpatialHash3D.update(&self, Aabb3 old_box, Aabb3 new_box, usz entity) {
     if (old_box == new_box) return;

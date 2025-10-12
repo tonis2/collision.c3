@@ -204,7 +204,7 @@ fn Matrix3f Capsule.inertia_tensor(&self, float mass) @dynamic {
     };
 }
 
-fn Aabb3 TransformedConvex.get_transformed_aabb(&self) @dynamic => self.shape.get_aabb().transform(to_matrix(self.translation, self.scale, self.rotation));
+fn Aabb3 TransformedConvex.get_transformed_aabb(&self) @dynamic => self.shape.get_aabb().transform(self.translation, self.scale, self.rotation);
 fn Aabb3 TransformedConvex.get_aabb(&self) @dynamic => self.shape.get_aabb();
 
 fn Aabb3 Sphere.get_aabb(&self) @dynamic => {.min = self.center - self.radius, .max = self.center + self.radius};

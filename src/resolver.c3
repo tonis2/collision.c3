@@ -114,12 +114,15 @@ fn void? PhysicsWorld.add_constraint(&self, GenericJoint3D joint) {
 *>
 fn void? PhysicsWorld.add_body(&self, Rigidbody body) {
     body.is_static = body.motion.mass == 0;
-
     body.motion.inverse_mass = !body.is_static ? 1.0f / body.motion.mass : 0;
-
     body.aabb = body.collider.get_aabb();
+
+    if (body.is_static) {
+        body.transformed_aabb = body.get_transformed_aabb();
+    } else {
+        body.transformed_aabb = body.get_transformed_aabb();
+    }
     
-    body.transformed_aabb = body.collider.get_transformed_aabb();
     // if (!body.is_static) body.motion.inertia = body.collider.inertia_tensor(body.motion.mass).inverse()!!;
 
     if (body.motion.linear_dampening == 0) body.motion.linear_dampening = 1;
@@ -134,7 +137,9 @@ fn void? PhysicsWorld.add_body(&self, Rigidbody body) {
 //     self.spatial_map.insert(aabb, body.id)!;
 // }
 
-fn Aabb3 Rigidbody.get_transformed_aabb(&self) => self.aabb.transform(to_matrix(self.collider.translation, {1,1,1}, self.collider.rotation));
+fn Aabb3 Rigidbody.get_transformed_aabb(&self) {
+    return self.aabb.transform(self.collider.translation, self.collider.scale, self.collider.rotation, skip_rotation: self.id == 3);
+}
 
 fn Matrix3f Rigidbody.get_inverse_world_inertia(self) {
     if (self.is_static) return MATRIX3F_IDENTITY;
@@ -162,9 +167,8 @@ fn Vec3f Rigidbody.relative_velocity(self, Vec3f point) {
 }
 
 fn bool Rigidbody.is_sleeping(self) {
-    return self.motion.linear_velocity.sq_magnitude() < 0.01f && self.motion.angular_velocity.sq_magnitude() < 0.01f;
+    return self.motion.linear_velocity.sq_magnitude() < 0.001f && self.motion.angular_velocity.sq_magnitude() < 0.001f;
 }
-
 
 <*
  @require self.bodies.len() > 0 : `Must have some bodies to simulate`
@@ -203,7 +207,7 @@ fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9
             }
 
             // Apply gravity
-            body.apply_linear_impulse(gravity * body.motion.gravity_factor * body.motion.mass * time_step);
+            //body.apply_linear_impulse(gravity * body.motion.gravity_factor * body.motion.mass * time_step);
 
             // Apply dampening (Wind friction ..etc)
             body.motion.angular_velocity *= math::pow(body.motion.angular_dampening, time_step);
@@ -211,6 +215,35 @@ fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9
         }
 
         rigid_bodies.started = false;
+
+        // Check spatial map, for broadphase collision and do narrow phase for detected pairs
+        self.spatial_map.@get_pairs(;Pair pair) {
+            Rigidbody* body_a = self.find_body(pair.first)!!;
+            Rigidbody* body_b = self.find_body(pair.second)!!;
+
+            if (true) {
+                CollisionInfo collision_info = collision::check_collision(&body_a.collider, &body_b.collider);
+
+                if (collision_info.collided && self.filters.has_key((uint)(pair.first + pair.second)) == false) {
+                    collision::epa(&collision_info, &body_a.collider, &body_b.collider);
+                    
+                    if (collision_info.collided) {
+                        Collision collision = {
+                            .a = pair.first,
+                            .b = pair.second,
+                            .normal = collision_info.normal,
+                            .contact = collision_info.contact_points,
+                            .depth = collision_info.depth,
+                        };
+
+                        self.collisions.push(collision);
+                    }
+                }
+            }
+        };
+
+        foreach (collision: self.collisions) self.resolve_collision(collision);
+        self.collisions.clear();
 
         // Apply constraints
         foreach (&joint: self.constraints) {
@@ -252,7 +285,7 @@ fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9
                     float contact_velocity = relative_velocity.dot(normal);
                     float position_error = worldspace_joint.dot(normal);
 
-                    float bias = time_step * position_error * 0.02f;
+                    float bias = time_step * position_error;
 
                     float j = -(bias + contact_velocity) / effective_mass;
             
@@ -311,42 +344,12 @@ fn void PhysicsWorld.run_step(&self, float time, Vec3f gravity = {0.0f, 0.0f, -9
                 }   
             }
         }
-
-        // Check spatial map, for broadphase collision and do narrow phase for detected pairs
-        self.spatial_map.@get_pairs(;Pair pair) {
-            Rigidbody* body_a = self.find_body(pair.first)!!;
-            Rigidbody* body_b = self.find_body(pair.second)!!;
-
-            if (body_a.transformed_aabb.collides(body_b.transformed_aabb)) {
-                CollisionInfo collision_info = collision::check_collision(&body_a.collider, &body_b.collider);
-
-                if (collision_info.collided && self.filters.has_key((uint)(pair.first + pair.second)) == false) {
-                    collision::epa(&collision_info, &body_a.collider, &body_b.collider);
-                    
-                    if (collision_info.collided) {
-                        Collision collision = {
-                            .a = pair.first,
-                            .b = pair.second,
-                            .normal = collision_info.normal,
-                            .contact = collision_info.contact_points,
-                            .depth = collision_info.depth,
-                        };
-
-                        self.collisions.push(collision);
-                    }
-                }
-            }
-        };
-
-        foreach (collision: self.collisions) self.resolve_collision(collision);
-        self.collisions.clear();
     }
 
     while (rigid_bodies.next()) {
         Rigidbody* body = rigid_bodies.get()!!;
         // Skip updating AABB when bodies are not in motion
         if (!body.is_static || !body.is_sleeping()) {
-            
             Aabb3 new_aabb = body.get_transformed_aabb();
             self.spatial_map.update(body.transformed_aabb, new_aabb, body.id)!!;
             body.transformed_aabb = new_aabb;

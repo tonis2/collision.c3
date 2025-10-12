@@ -15,15 +15,29 @@ struct Aabb3 (Printable, ConvexShape) {
 fn Aabb3 aabb_from_half(Vec3f size) => {-size * 0.5, size * 0.5};
 
 fn Vec3f Aabb3.size(self) => self.max - self.min;
+fn Vec3f Aabb3.extent(self) => (self.max - self.min) * 0.5f;
+fn Vec3f Aabb3.center(self) => (self.min + self.max) * 0.5f;
 
-fn usz? Aabb3.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("min %s max %s", self.min, self.max)!;
+fn usz? Aabb3.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s\n%s", self.min, self.max)!;
 
 fn bool Aabb3.equals(self, Aabb3 b) @operator(==) => self.min == b.min && self.max == b.max;
+
+fn Aabb3 Aabb3.add(self, Vec3f value) @operator(+) {
+    return {
+        .min = self.min + value,
+        .max = self.max + value
+    };
+}
 
 fn bool Aabb3.is_empty(self) => self.size().sq_magnitude() == 0;
 
 fn bool Aabb3.intersectsX(self, Aabb3 target) {
     return self.min.x < target.min.x && self.max.x > target.max.x;
+}
+
+fn void Aabb3.fix(&self) {
+    self.min = {math::min(self.min.x, self.max.x), math::min(self.min.y, self.max.y), math::min(self.min.z, self.max.z)};
+    self.max = {math::max(self.min.x, self.max.x), math::max(self.min.y, self.max.y), math::max(self.min.z, self.max.z)};
 }
 
 fn bool Aabb3.intersectsY(self, Aabb3 target) {
@@ -66,22 +80,31 @@ fn void Aabb3.expand_by_point(&self, Vec3f point) {
     self.expand_min(point);
 }
 
-fn Vec3f Aabb3.center(self) {
+fn Aabb3 Aabb3.scale(self, Vec3f scale) @operator(*) {
+    Vec3f center = self.center();
+    Vec3f half_size = self.extent();
+
     return {
-        (self.min.x + self.max.x) * (float)0.5,
-        (self.min.y + self.max.y) * (float)0.5,
-        (self.min.z + self.max.z) * (float)0.5
+        center - half_size,
+        center + half_size
     };
 }
 
-fn Aabb3 Aabb3.scale(self, Vec3f scale) {
-    Vec3f center = (self.min + self.max) * 0.5f;
-    Vec3f halfExtents = (self.max - self.min) * 0.5f;
-    Vec3f newHalfExtents = halfExtents * scale;
+fn Aabb3 Aabb3.transform(self, Vec3f translation = {0, 0, 0}, Vec3f scale = {1, 1, 1}, Quaternionf rotation = {0, 0, 0, 1}, bool skip_rotation = false)
+{
+    Aabb3 aabb = self + translation;
+    Vec3f center = aabb.center();
+
+    Vec3f extent;
+    if (!skip_rotation) {
+        extent = math::abs(rotation * (aabb.extent() * scale));
+    } else {
+        extent = aabb.extent() * scale;
+    }
 
     return {
-        center - newHalfExtents,
-        center + newHalfExtents
+        .min = center - extent,
+        .max = center + extent,
     };
 }
 
@@ -118,35 +141,6 @@ fn bool Aabb3.intersect_ray(&self, Ray ray, HitInfo* info = null) {
     }
     if (info != null) info.depth = tmin;
     return true;
-}
-
-fn Aabb3 Aabb3.transform(self, Matrix4f matrix)
-{
-    Vec3f transform = (Vec3f){matrix.m03, matrix.m13, matrix.m23};
-
-    Vec3f b_min = transform;
-    Vec3f b_max = transform;
-
-    Matrix3f new_matrix = {
-        matrix.m00, matrix.m01, matrix.m02,
-        matrix.m10, matrix.m11, matrix.m12,
-        matrix.m20, matrix.m21, matrix.m22,
-    };
-
-    foreach (uint i, value: new_matrix.m) {
-        uint index = i % 3;
-
-        float a = value * self.min[index];
-        float b = value * self.max[index];
-
-        b_min[index] += math::min(a, b);
-        b_max[index] += math::max(a, b);
-    }
-    
-    return {
-        b_min,
-        b_max
-    };
 }
 
 fn Vec3f Aabb3.furthest_point(&self, Vec3f direction) @dynamic {
