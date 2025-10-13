@@ -23,12 +23,11 @@ fn usz? GridCoord.to_format(&self, Formatter* formatter) @dynamic => formatter.p
 
 fn bool GridCoord.equals(&self, GridCoord other) => self.x == other.x && self.y == other.y && self.z == other.z;
 
-fn int GridCoord.hash(&self) {    
-    int hash = 17;
-    hash = hash * 23 + self.x;
-    hash = hash * 23 + self.y;
-    hash = hash * 23 + self.z;
-    return hash;
+fn int GridCoord.hash(&self) {
+    int ux = (self.x.hash() << 1) ^ (self.x.hash() >> 31);
+    int uy = (self.y.hash() << 1) ^ (self.y.hash() >> 31);
+    int uz = (self.z.hash() << 1) ^ (self.z.hash() >> 31);
+    return ux + uy + uz;
 }
 
 fn void SpatialHash3D.free(&self) {

@@ -3,11 +3,20 @@ module collision;
 import std::math;
 import std::io;
 
+enum ShapeType {
+    SPHERE,
+    CAPSULE,
+    CYLINDER,
+    BOX,
+    CONVEX,
+}
+
 interface ConvexShape
 {
     fn Vec3f furthest_point(Vec3f direction);
     fn Matrix3f inertia_tensor(float mass);
     fn Aabb3 get_aabb();
+    fn ShapeType get_type();
 }
 
 interface RayCast
@@ -203,6 +212,12 @@ fn Matrix3f Capsule.inertia_tensor(&self, float mass) @dynamic {
         0, 0,  iz
     };
 }
+
+fn ShapeType ConvexPolyhedron.get_type(&self) @dynamic => ShapeType.CONVEX;
+fn ShapeType TransformedConvex.get_type(&self) @dynamic => self.shape.get_type();
+fn ShapeType Sphere.get_type(&self) @dynamic => ShapeType.SPHERE;
+fn ShapeType Capsule.get_type(&self) @dynamic => ShapeType.CAPSULE;
+fn ShapeType Cylinder.get_type(&self) @dynamic => ShapeType.CYLINDER;
 
 fn Aabb3 TransformedConvex.get_transformed_aabb(&self) @dynamic => self.shape.get_aabb().transform(self.translation, self.scale, self.rotation);
 fn Aabb3 TransformedConvex.get_aabb(&self) @dynamic => self.shape.get_aabb();

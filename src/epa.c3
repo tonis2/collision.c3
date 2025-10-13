@@ -21,12 +21,12 @@ struct CollisionInfo {
     bool collided;
 }
 
-alias EdgeArray @private = ElasticArray{Pair, 20};
-alias FaceArray @private = ElasticArray{Face, 40};
-alias SupportArray @private = ElasticArray{SupportPoint, 40};
+alias EdgeArray @private = ElasticArray{Pair, 60};
+alias FaceArray @private = ElasticArray{Face, 60};
+alias SupportArray @private = ElasticArray{SupportPoint, 60};
 
 fn void EdgeArray.add_if_new(&self, Pair pair)
-{   
+{
     // Reverse search
     for (int i = (int)self.len() - 1; i >= 0; i--) {
         Pair edge = self.get(i);
@@ -83,7 +83,7 @@ fn void SupportArray.reconstruct(self, FaceArray* faces, Vec3f new_point)
 
     foreach (edge: edges) {
         Face new_face = self.create_face(edge.first, edge.second, self.len() - 1);
-        if (new_face.normal == (Vec3f){0,0,0}) continue;
+        // if (new_face.normal.sq_magnitude() < 0.01f) continue;
         faces.push(new_face);
     }
 }

@@ -155,6 +155,8 @@ fn Vec3f Aabb3.furthest_point(&self, Vec3f direction) @dynamic {
 
 fn Aabb3 Aabb3.get_aabb(&self) @dynamic => *self;
 
+fn ShapeType Aabb3.get_type(&self) @dynamic => ShapeType.BOX;
+
 fn Matrix3f Aabb3.inertia_tensor(&self, float mass) @dynamic {
     Vec3f size = self.size() * 2;
 
