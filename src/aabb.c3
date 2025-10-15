@@ -49,12 +49,11 @@ fn bool Aabb3.intersectsZ(self, Aabb3 target) {
 }
 
 fn bool Aabb3.collides(self, Aabb3 target) {
-    return self.min.x <= target.max.x &&
-           self.max.x >= target.min.x &&
-           self.min.y <= target.max.y &&
-           self.max.y >= target.min.y &&
-           self.min.z <= target.max.z &&
-           self.max.z >= target.min.z;
+    bool overlapX = (self.max.x >= target.min.x) && (self.min.x <= target.max.x);
+    bool overlapY = (self.max.y >= target.min.y) && (self.min.y <= target.max.y);
+    bool overlapZ = (self.max.z >= target.min.z) && (self.min.z <= target.max.z);
+
+    return overlapX && overlapY && overlapZ;
 }
 
 fn bool Aabb3.contains_point(self, Vec3f point) {
@@ -90,22 +89,39 @@ fn Aabb3 Aabb3.scale(self, Vec3f scale) @operator(*) {
     };
 }
 
+fn Vec3f[8] Aabb3.corners(self) {
+    return {
+        self.min,
+        {self.max.x, self.min.y, self.min.z},
+        {self.min.x, self.max.y, self.min.z},
+        {self.min.x, self.min.y, self.max.z},
+        {self.max.x, self.max.y, self.min.z},
+        {self.max.x, self.min.y, self.max.z},
+        {self.min.x, self.max.y, self.max.z},
+        self.max
+    };
+}
+
+
 fn Aabb3 Aabb3.transform(self, Vec3f translation = {0, 0, 0}, Vec3f scale = {1, 1, 1}, Quaternionf rotation = {0, 0, 0, 1}, bool skip_rotation = false)
 {
-    Aabb3 aabb = self + translation;
-    Vec3f center = aabb.center();
+    Vec3f[8] corners = self.corners();
+    Vec3f transformed_corner = rotation * (corners[0] * scale) + translation;
+    Vec3f new_min = transformed_corner;
+    Vec3f new_max = transformed_corner;
 
-    Vec3f extent;
-    if (!skip_rotation) {
-        extent = math::abs(rotation * (aabb.extent() * scale));
-    } else {
-        extent = aabb.extent() * scale;
+    foreach (corner: corners) {
+        Vec3f point = rotation * (corner * scale) + translation;
+        new_min.x = math::min(point.x, new_min.x);
+        new_min.y = math::min(point.y, new_min.y);
+        new_min.z = math::min(point.z, new_min.z);
+
+        new_max.x = math::max(point.x, new_max.x);
+        new_max.y = math::max(point.y, new_max.y);
+        new_max.z = math::max(point.z, new_max.z);
     }
-
-    return {
-        .min = center - extent,
-        .max = center + extent,
-    };
+    
+    return {new_min, new_max};
 }
 
 fn Aabb3 Aabb3.child_bounds(self, uint index) {

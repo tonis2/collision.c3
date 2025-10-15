@@ -7,7 +7,6 @@ alias Vec2f @private = float[<2>];
 alias Vec3f @private = float[<3>];
 alias Vec4f @private = float[<4>];
 
-
 fn usz? Vec3f.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s,%s,%s", self.x, self.y, self.z)!;
 
 struct HitInfo {

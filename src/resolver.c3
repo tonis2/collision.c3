@@ -8,6 +8,7 @@ import std::time;
 import std::collections::map;
 
 alias CollisionFilter = HashMap{uint, bool};
+alias CollisionCache = HashMap{uint, Collision};
 alias RigidBodyMap = LinkedHashMap{usz, Rigidbody};
 alias RigidBodyIterator = LinkedHashMapValueIterator{usz, Rigidbody};
 
@@ -15,7 +16,9 @@ alias RigidBodyIterator = LinkedHashMapValueIterator{usz, Rigidbody};
 struct PhysicsWorld {
     RigidBodyMap bodies;
     List{Collision} collisions;
+    List{Collision} collision_cache;
     List{GenericJoint3D} constraints;
+    CollisionCache collision_cache;
 
     SpatialHash3D spatial_map;
     List{BVHNode} bvh_nodes;
@@ -37,6 +40,8 @@ enum PhysicsCombine {
     MAXIMUM,
     MULTIPLY
 }
+
+fn usz contact_id (usz a, usz b) => (usz)(a.hash() + b.hash()); 
 
 struct Material {
     float static_friction;
@@ -77,6 +82,10 @@ struct Rigidbody {
     bool is_static;
 }
 
+struct PhysicsWorldConfig {
+    float cell_size;
+}
+
 fn void PhysicsWorld.free(&self) {
     self.bodies.free();
     self.collisions.free();
@@ -84,10 +93,7 @@ fn void PhysicsWorld.free(&self) {
     self.bvh_nodes.free();
     self.constraints.free();
     self.filters.free();
-}
-
-struct PhysicsWorldConfig {
-    float cell_size;
+    self.collision_cache.free();
 }
 
 fn PhysicsWorld create_world(PhysicsWorldConfig config) {
@@ -109,6 +115,11 @@ fn void? PhysicsWorld.add_constraint(&self, GenericJoint3D joint) {
     self.constraints.push(joint);
 }
 
+fn Aabb3 Rigidbody.get_transformed_aabb(&self, float scale_multiply = 1) {
+    bool skip_rotation = self.collider.get_type() == ShapeType.SPHERE;
+    return self.aabb.transform(translation: self.collider.translation, scale: self.collider.scale, rotation: self.collider.rotation, skip_rotation: skip_rotation);
+} 
+
 <*
  @require body.collider.shape != null : `Added rigid body must have collision shape`
 *>
@@ -118,15 +129,13 @@ fn void? PhysicsWorld.add_body(&self, Rigidbody body) {
     body.aabb = body.collider.get_aabb();
     body.sleeping = false;
 
-    body.transformed_aabb = body.aabb.transform(body.collider.translation, body.collider.scale, body.collider.rotation);
+    body.transformed_aabb = body.get_transformed_aabb();
     if (!body.is_static) body.motion.inertia = body.aabb.inertia_tensor(body.motion.mass).inverse()!!;
-    
-    // if (!body.is_static) body.motion.inertia = body.collider.inertia_tensor(body.motion.mass).inverse()!!;
 
     if (body.motion.linear_dampening == 0) body.motion.linear_dampening = 1;
     if (body.motion.angular_dampening == 0) body.motion.angular_dampening = 1;
 
-    if (!body.is_static) body.apply_linear_impulse(gravity * body.motion.gravity_factor * body.motion.mass * 0.02f);
+    // if (!body.is_static) body.apply_linear_impulse(gravity * body.motion.gravity_factor * body.motion.mass * 0.02f);
     
     self.bodies.set(body.id, body);
     self.spatial_map.insert(body.transformed_aabb, body.id)!;
@@ -214,7 +223,6 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
             body.motion.angular_velocity *= math::pow(body.motion.angular_dampening, time_step);
             body.motion.linear_velocity *= math::pow(body.motion.linear_dampening, time_step);
         }
-
         // Reset rigid body iterator !
         rigid_bodies.started = false;
 
@@ -223,10 +231,13 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
             Rigidbody* body_a = self.find_body(pair.first)!!;
             Rigidbody* body_b = self.find_body(pair.second)!!;
 
-            if (true) {
+            // Check if aabb boxes collide first
+            if (body_a.transformed_aabb.collides(body_b.transformed_aabb)) {
+                // Check collision with GJK algorithm
                 CollisionInfo collision_info = collision::check_collision(&body_a.collider, &body_b.collider);
 
                 if (collision_info.collided && self.filters.has_key((uint)(pair.first + pair.second)) == false) {
+                    // Get contact points with EPA
                     collision::epa(&collision_info, &body_a.collider, &body_b.collider);
                     
                     if (collision_info.collided) {
@@ -238,6 +249,7 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
                             .depth = collision_info.depth,
                         };
 
+                        self.collision_cache.set(pair.hash(), collision);
                         self.collisions.push(collision);
                     }
                 }
@@ -246,6 +258,7 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
 
         foreach (collision: self.collisions) self.resolve_collision(collision);
         self.collisions.clear();
+        self.collision_cache.clear();
 
         // Apply constraints
         foreach (&joint: self.constraints) {
@@ -351,28 +364,26 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
     while (rigid_bodies.next()) {
         Rigidbody* body = rigid_bodies.get()!!;
         if (!body.is_static) {
-            Aabb3 new_aabb;
-
             bool rotating = body.is_rotating();
             bool moving = body.is_moving();
 
-            bool skip_rotation = body.collider.get_type() == ShapeType.SPHERE;
-
-            // Skip updating AABB when bodies are not in motion
-            if (moving || rotating) {
-                new_aabb = body.aabb.transform(body.collider.translation, body.collider.scale, body.collider.rotation, skip_rotation: skip_rotation);
+            if (rotating || moving) {
+                Aabb3 new_aabb;
+                new_aabb = body.get_transformed_aabb();
+                self.spatial_map.update(body.transformed_aabb, new_aabb, body.id)!!;
+                body.transformed_aabb = new_aabb;
             }
-
+            
             // if (moving == false && rotating == false) {
             //     body.sleeping = true;
             // };
-
-            self.spatial_map.update(body.transformed_aabb, new_aabb, body.id)!!;
-            body.transformed_aabb = new_aabb;
         };
     };
 }
 
+<*
+ @require collision.a != collision.b : `Collision bodies should not be same index`
+*>
 fn void PhysicsWorld.resolve_collision(&self, Collision collision) {
     Rigidbody* a = self.find_body(collision.a)!!;
     Rigidbody* b = self.find_body(collision.b)!!;
@@ -429,16 +440,11 @@ fn void PhysicsWorld.resolve_collision(&self, Collision collision) {
         if (!b.is_static) b.apply_impulse(normal_impulse, rB);
     };
     
-    // float percent = 0.4f;
-    // float slop = 0.08f;
-    // float correction_magnitude = math::max(collision.depth - slop, 0.0f) / inverse_mass_sum * percent;
+    float percent = 0.4f;
+    float slop = 0.02f;
+    float correction_magnitude = math::max(collision.depth - slop, 0.0f) / inverse_mass_sum * percent;
 
-    // if (collision.depth > slop) {
-    //     // Correction
-     
-    // }
-
-    Vec3f correction = collision.normal * collision.depth;
+    Vec3f correction = collision.normal * correction_magnitude;
 
     if (!a.is_static) a.collider.translation -= correction;
     if (!b.is_static) b.collider.translation += correction;

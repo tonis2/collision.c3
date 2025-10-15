@@ -83,7 +83,7 @@ fn void SupportArray.reconstruct(self, FaceArray* faces, Vec3f new_point)
 
     foreach (edge: edges) {
         Face new_face = self.create_face(edge.first, edge.second, self.len() - 1);
-        // if (new_face.normal.sq_magnitude() < 0.01f) continue;
+        if (new_face.normal.sq_magnitude() < 0.01f) continue;
         faces.push(new_face);
     }
 }
@@ -105,7 +105,7 @@ const uint EPA_MAX_ITER = 16;
 const float EPA_TOLERANCE = 0.0001f;
 
 <*
- @require info.simplex.len() > 3 : `Collision simplex should have 4 values`
+ @require info.simplex.len() > 3 : `Simplex data must have enough points`
 *>
 fn void epa(CollisionInfo* info, ConvexShape shape_1, ConvexShape shape_2) {
     SupportArray vertices;

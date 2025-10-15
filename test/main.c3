@@ -32,9 +32,9 @@ fn void test_physics() {
 
     foreach (usz i, item: boxes) spatial_map.insert(item, i)!!;
 
-    // spatial_map.@get_pairs(;Pair pair) { 
-    //     assert(pair.first == 0 && pair.second == 1);
-    //  };
+    spatial_map.@get_pairs(;Pair pair) { 
+        assert(pair.first == 0 && pair.second == 1);
+     };
 
     Vec3f[] cube = {
         {-0.5, -0.5, -0.5}, {0.5, -0.5, -0.5}, {0.5, 0.5, -0.5}, {-0.5, 0.5, -0.5},

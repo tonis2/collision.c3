@@ -121,6 +121,8 @@ macro void SpatialHash3D.@get_pairs(&self; @callback(Pair pair)) {
                 usz a = cells[i];
                 usz b = cells[j];
 
+                if (a == b) continue;
+                
                 Pair pair = {math::min(a, b), math::max(a, b)};
                 usz pair_hash = pair.hash();
 
