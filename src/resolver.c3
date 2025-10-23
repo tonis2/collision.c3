@@ -228,6 +228,7 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
 
         // Check spatial map, for broadphase collision and do narrow phase for detected pairs
         self.spatial_map.@get_pairs(;Pair pair) {
+
             Rigidbody* body_a = self.find_body(pair.first)!!;
             Rigidbody* body_b = self.find_body(pair.second)!!;
 

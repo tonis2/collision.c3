@@ -31,28 +31,15 @@ fn Aabb3 Aabb3.add(self, Vec3f value) @operator(+) {
 
 fn bool Aabb3.is_empty(self) => self.size().sq_magnitude() == 0;
 
-fn bool Aabb3.intersectsX(self, Aabb3 target) {
-    return self.min.x < target.min.x && self.max.x > target.max.x;
-}
-
 fn void Aabb3.fix(&self) {
     self.min = {math::min(self.min.x, self.max.x), math::min(self.min.y, self.max.y), math::min(self.min.z, self.max.z)};
     self.max = {math::max(self.min.x, self.max.x), math::max(self.min.y, self.max.y), math::max(self.min.z, self.max.z)};
-}
-
-fn bool Aabb3.intersectsY(self, Aabb3 target) {
-    return self.min.y < target.min.y && self.max.y > target.max.y;
-}
-
-fn bool Aabb3.intersectsZ(self, Aabb3 target) {
-    return self.min.z < target.min.z && self.max.z > target.max.z;
 }
 
 fn bool Aabb3.collides(self, Aabb3 target) {
     bool overlapX = (self.max.x >= target.min.x) && (self.min.x <= target.max.x);
     bool overlapY = (self.max.y >= target.min.y) && (self.min.y <= target.max.y);
     bool overlapZ = (self.max.z >= target.min.z) && (self.min.z <= target.max.z);
-
     return overlapX && overlapY && overlapZ;
 }
 
@@ -106,9 +93,8 @@ fn Vec3f[8] Aabb3.corners(self) {
 fn Aabb3 Aabb3.transform(self, Vec3f translation = {0, 0, 0}, Vec3f scale = {1, 1, 1}, Quaternionf rotation = {0, 0, 0, 1}, bool skip_rotation = false)
 {
     Vec3f[8] corners = self.corners();
-    Vec3f transformed_corner = rotation * (corners[0] * scale) + translation;
-    Vec3f new_min = transformed_corner;
-    Vec3f new_max = transformed_corner;
+    Vec3f new_min = rotation * (corners[0] * scale) + translation;
+    Vec3f new_max = rotation * (corners[7] * scale) + translation;
 
     foreach (corner: corners) {
         Vec3f point = rotation * (corner * scale) + translation;

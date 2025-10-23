@@ -8,11 +8,28 @@ alias Vec3f @private = float[<3>];
 alias Vec4f @private = float[<4>];
 
 fn usz? Vec3f.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s,%s,%s", self.x, self.y, self.z)!;
+fn usz? Vec4f.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s,%s,%s,%s", self.x, self.y, self.z, self.w)!;
+
+fn usz Vec3f.hash(&self) {
+    usz hash = 17;
+    hash = (usz)(hash * 23f + self.x);
+    hash = (usz)(hash * 23f + self.y);
+    hash = (usz)(hash * 23f + self.z);
+    return hash;
+}
+
+macro bool Vec3f.equals(self, Vec3f b) => self == b;
 
 struct HitInfo {
     bool hits;
     float depth;
     Vec3f normal;
+}
+
+struct Face @private {
+    usz a,b,c;
+    Vec3f normal;
+    float distance;
 }
 
 fn float radians(float value) => value * (float)math::PI / 180;
@@ -193,4 +210,3 @@ struct Pair (Printable) {
 fn usz? Pair.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s, %s", self.first, self.second)!;
 macro bool Pair.equals(self, Pair b) @operator(==) => self.first == b.first && self.second == b.second;
 macro uint Pair.hash(Pair self) => builtin::@generic_hash(self.first) | builtin::@generic_hash(self.second);
-

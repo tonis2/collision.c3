@@ -7,12 +7,6 @@ import std::collections::map;
 import std::io;
 import std::os;
 
-struct Face @private {
-    usz a,b,c;
-    Vec3f normal;
-    float distance;
-}
-
 struct CollisionInfo {
     Simplex simplex;
     Vec3f normal;

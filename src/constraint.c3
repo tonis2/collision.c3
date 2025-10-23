@@ -13,14 +13,7 @@ enum Axis : const int {
    EMPTY = -1,
 }
 
-enum LimitType : uint  {
-    LINEAR,
-    ANGULAR
-}
-
 alias Limits = ElasticArray{Limit, 3};
-
-alias Jacobian = Vec3f[6];
 
 struct Limit {
     Vec3f axes;

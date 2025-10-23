@@ -7,27 +7,12 @@ import std::collections::elastic_array;
 import std::collections::map;
 
 alias CellList = List{usz};
-alias SpatialMap = HashMap{int, CellList};
-
-struct GridCoord {
-    int x, y, z;
-}
+alias SpatialMap = HashMap{usz, CellList};
 
 struct SpatialHash3D {
-    double cell_size;
+    float cell_size;
     SpatialMap table;
     HashMap{usz, bool} unique_map;
-}
-
-fn usz? GridCoord.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s %s %s", self.x, self.y, self.z)!;
-
-fn bool GridCoord.equals(&self, GridCoord other) => self.x == other.x && self.y == other.y && self.z == other.z;
-
-fn int GridCoord.hash(&self) {
-    int ux = (self.x.hash() << 1) ^ (self.x.hash() >> 31);
-    int uy = (self.y.hash() << 1) ^ (self.y.hash() >> 31);
-    int uz = (self.z.hash() << 1) ^ (self.z.hash() >> 31);
-    return ux + uy + uz;
 }
 
 fn void SpatialHash3D.free(&self) {
@@ -38,22 +23,22 @@ fn void SpatialHash3D.free(&self) {
     self.unique_map.free();
 }
 
-fn GridCoord SpatialHash3D.world_to_grid(&self, Vec3f pos) {
-    return (GridCoord) {
-        (int)(math::floor(pos.x / self.cell_size)),
-        (int)(math::floor(pos.y / self.cell_size)),
-        (int)(math::floor(pos.z / self.cell_size)),
+fn Vec3f SpatialHash3D.world_to_grid(&self, Vec3f pos) {
+    return (Vec3f) {
+        math::floor(pos.x / self.cell_size),
+        math::floor(pos.y / self.cell_size),
+        math::floor(pos.z / self.cell_size),
     };
 }
 
 fn void? SpatialHash3D.insert(&self, Aabb3 box, usz id) {
-    GridCoord min_cell = self.world_to_grid(box.min);
-    GridCoord max_cell = self.world_to_grid(box.max);
+    Vec3f min_cell = self.world_to_grid(box.min);
+    Vec3f max_cell = self.world_to_grid(box.max);
 
-    for (int x = min_cell.x; x <= max_cell.x; ++x) {
-        for (int y = min_cell.y; y <= max_cell.y; ++y) {
-            for (int z = min_cell.z; z <= max_cell.z; ++z) {
-                int cell_id = self.world_to_grid({x, y, z}).hash();
+    for (float x = min_cell.x; x <= max_cell.x; ++x) {
+        for (float y = min_cell.y; y <= max_cell.y; ++y) {
+            for (float z = min_cell.z; z <= max_cell.z; ++z) {
+                usz cell_id = self.world_to_grid({x, y, z}).hash();
                 if (!self.table.has_key(cell_id)) {
                     self.table.set(cell_id, {});
                 };
@@ -64,32 +49,32 @@ fn void? SpatialHash3D.insert(&self, Aabb3 box, usz id) {
     }
 }
 
-alias CellIDs = ElasticArray{int, 200};
+alias CellIDs = ElasticArray{usz, 200};
 
 fn void? SpatialHash3D.update(&self, Aabb3 old_box, Aabb3 new_box, usz entity) {
     if (old_box == new_box) return;
 
-    GridCoord new_min_cell = self.world_to_grid(new_box.min);
-    GridCoord new_max_cell = self.world_to_grid(new_box.max);
+    Vec3f new_min_cell = self.world_to_grid(new_box.min);
+    Vec3f new_max_cell = self.world_to_grid(new_box.max);
 
-    GridCoord old_min_cell = self.world_to_grid(old_box.min);
-    GridCoord old_max_cell = self.world_to_grid(old_box.max);
+    Vec3f old_min_cell = self.world_to_grid(old_box.min);
+    Vec3f old_max_cell = self.world_to_grid(old_box.max);
 
     CellIDs old_ids, new_ids;
     
-    for (int x = old_min_cell.x; x <= old_max_cell.x; ++x) {
-        for (int y = old_min_cell.y; y <= old_max_cell.y; ++y) {
-            for (int z = old_min_cell.z; z <= old_max_cell.z; ++z) {
-                int cell_id = self.world_to_grid({x, y, z}).hash();
+    for (float x = old_min_cell.x; x <= old_max_cell.x; ++x) {
+        for (float y = old_min_cell.y; y <= old_max_cell.y; ++y) {
+            for (float z = old_min_cell.z; z <= old_max_cell.z; ++z) {
+                usz cell_id = self.world_to_grid({x, y, z}).hash();
                 old_ids.push(cell_id);
             }
         }
     }
 
-    for (int x = new_min_cell.x; x <= new_max_cell.x; ++x) {
-        for (int y = new_min_cell.y; y <= new_max_cell.y; ++y) {
-            for (int z = new_min_cell.z; z <= new_max_cell.z; ++z) {
-                int cell_id = self.world_to_grid({x, y, z}).hash();
+    for (float x = new_min_cell.x; x <= new_max_cell.x; ++x) {
+        for (float y = new_min_cell.y; y <= new_max_cell.y; ++y) {
+            for (float z = new_min_cell.z; z <= new_max_cell.z; ++z) {
+                usz cell_id = self.world_to_grid({x, y, z}).hash();
                 new_ids.push(cell_id);      
             }
         }
@@ -138,8 +123,8 @@ macro void SpatialHash3D.@get_pairs(&self; @callback(Pair pair)) {
 }
 
 macro void SpatialHash3D.@get_pairs_in_region(&self, Vec3f min, Vec3f max ; @callback(Pair pair)) {
-    GridCoord min_cell = self.world_to_grid(box.min);
-    GridCoord max_cell = self.world_to_grid(box.max);
+    Vec3f min_cell = self.world_to_grid(box.min);
+    Vec3f max_cell = self.world_to_grid(box.max);
 
     for (int x = min_cell.x; x <= max_cell.x; ++x) {
         for (int y = min_cell.y; y <= max_cell.y; ++y) {
@@ -167,7 +152,7 @@ macro void SpatialHash3D.@get_pairs_in_region(&self, Vec3f min, Vec3f max ; @cal
     self.unique_map.clear();
 }
 
-macro void SpatialHash3D.@get_neighbor_cells(&self, GridCoord cell; @callback(Vec3f position)) {
+macro void SpatialHash3D.@get_neighbor_cells(&self, Vec3f cell; @callback(Vec3f position)) {
     for (int dx = -1; dx <= 1; ++dx) {
         for (int dy = -1; dy <= 1; ++dy) {
             for (int dz = -1; dz <= 1; ++dz) {
@@ -178,7 +163,7 @@ macro void SpatialHash3D.@get_neighbor_cells(&self, GridCoord cell; @callback(Ve
 }
 
 macro void SpatialHash3D.@get_nearby_objects(&self, Vec3f pos; @callback(usz id)) {
-    GridCoord cell = self.world_to_grid(pos);
+    Vec3f cell = self.world_to_grid(pos);
 
     self.@get_neighbor_cells(cell; Vec3f position) {
         int cell_id = self.world_to_grid({position.x, position.y, position.z}).hash();

@@ -82,8 +82,9 @@ fn void test_physics() {
     };
 
     assert(!collision::check_collision(&transformed_shape_1, &transformed_shape_2).collided);
+    assert(!collision::check_collision(&transformed_shape_5, &transformed_shape_6).collided);
     // assert(collision::check_collision(&transformed_shape_3, &transformed_shape_4).collided);
-    // assert(!collision::check_collision(&transformed_shape_5, &transformed_shape_6).collided);
+
     
     //CollisionInfo epa_result = epa(collision_result.simplex, &shape_1, &shape_2);
 
@@ -105,15 +106,16 @@ fn void test_ray() {
 
 
 fn void test_aabb() {
-    // Aabb3 box = collision:: ({1,1,1});     
-    // Matrix3f local_invertia = box.get_local_intertia(1.0);
-    // Matrix3f result = {
-    //     1.5, 0, 0,
-    //     0, 1.5, 0,
-    //     0, 0, 1.5
-    // };
+    Aabb3 box = collision::aabb_from_half({1,1,1});     
+    Matrix3f intertia = box.inertia_tensor(3.0);
 
-    // assert(local_invertia == result);
+    Matrix3f result = {
+        1, 0, 0,
+        0, 1, 0,
+        0, 0, 1
+    };
+
+    assert(intertia == result);
 }
 
 
