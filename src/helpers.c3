@@ -7,8 +7,15 @@ alias Vec2f @private = float[<2>];
 alias Vec3f @private = float[<3>];
 alias Vec4f @private = float[<4>];
 
+alias Vec2 @private = double[<2>];
+alias Vec3 @private = double[<3>];
+alias Vec4 @private = double[<4>];
+
 fn usz? Vec3f.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s,%s,%s", self.x, self.y, self.z)!;
 fn usz? Vec4f.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s,%s,%s,%s", self.x, self.y, self.z, self.w)!;
+
+fn usz? Vec3.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s,%s,%s", self.x, self.y, self.z)!;
+fn usz? Vec4.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s,%s,%s,%s", self.x, self.y, self.z, self.w)!;
 
 fn usz Vec3f.hash(&self) {
     usz hash = 17;
@@ -20,6 +27,7 @@ fn usz Vec3f.hash(&self) {
 
 macro bool Vec3f.equals(self, Vec3f b) => self == b;
 
+
 struct HitInfo {
     bool hits;
     float depth;
@@ -30,6 +38,15 @@ struct Face @private {
     usz a,b,c;
     Vec3f normal;
     float distance;
+}
+
+macro bool Face.equals(self, Face second) => self.a == second.a && self.b == second.b && self.c == second.c;
+fn bool Face.contains_edge(self, Pair pair) {
+    usz u = pair.first;
+    usz v = pair.second;
+
+    return (self.a == u && self.b == v) || (self.b == u && self.c == v) || (self.c == u && self.a == v) ||
+           (self.a == v && self.b == u) || (self.b == v && self.c == u) || (self.c == v && self.a == u);
 }
 
 fn float radians(float value) => value * (float)math::PI / 180;
@@ -209,4 +226,4 @@ struct Pair (Printable) {
 
 fn usz? Pair.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s, %s", self.first, self.second)!;
 macro bool Pair.equals(self, Pair b) @operator(==) => self.first == b.first && self.second == b.second;
-macro uint Pair.hash(Pair self) => builtin::@generic_hash(self.first) | builtin::@generic_hash(self.second);
+macro uint Pair.hash(Pair self) => builtin::@generic_hash(self.first) + builtin::@generic_hash(self.second);
