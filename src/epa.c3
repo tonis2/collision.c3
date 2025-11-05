@@ -147,7 +147,7 @@ fn void epa(CollisionInfo* info, ConvexShape shape_1, ConvexShape shape_2) {
             SupportPoint b = vertices[closest_face.b];
             SupportPoint c = vertices[closest_face.c];
 
-            Vec3f bary = p.barycentric(a.point, b.point, c.point);
+            Vec3f bary = p.barycenter(a.point, b.point, c.point);
 
             Vec3f[2] support_a = {a.a, a.b};
             Vec3f[2] support_b = {b.a, b.b};
