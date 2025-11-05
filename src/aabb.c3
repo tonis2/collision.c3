@@ -1,4 +1,5 @@
-module collision;
+
+module collision{Type};
 
 import std::math;
 import std::io;
@@ -6,23 +7,23 @@ import std::collections::list;
 import std::collections::elastic_array;
 import std::collections::map;
 
+
 struct Aabb3 (Printable, ConvexShape) {
-    Vec3f min;
-    Vec3f max;
+    Vec3 min;
+    Vec3 max;
 }
 
+fn Aabb3 aabb_from_half(Vec3 size) => {-size * 0.5, size * 0.5};
 
-fn Aabb3 aabb_from_half(Vec3f size) => {-size * 0.5, size * 0.5};
-
-fn Vec3f Aabb3.size(self) => self.max - self.min;
-fn Vec3f Aabb3.extent(self) => (self.max - self.min) * 0.5f;
-fn Vec3f Aabb3.center(self) => (self.min + self.max) * 0.5f;
+fn Vec3 Aabb3.size(self) => self.max - self.min;
+fn Vec3 Aabb3.extent(self) => (self.max - self.min) * 0.5f;
+fn Vec3 Aabb3.center(self) => (self.min + self.max) * 0.5f;
 
 fn usz? Aabb3.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s\n%s", self.min, self.max)!;
 
 fn bool Aabb3.equals(self, Aabb3 b) @operator(==) => self.min == b.min && self.max == b.max;
 
-fn Aabb3 Aabb3.add(self, Vec3f value) @operator(+) {
+fn Aabb3 Aabb3.add(self, Vec3 value) @operator(+) {
     return {
         .min = self.min + value,
         .max = self.max + value
@@ -43,32 +44,32 @@ fn bool Aabb3.collides(self, Aabb3 target) {
     return overlapX && overlapY && overlapZ;
 }
 
-fn bool Aabb3.contains_point(self, Vec3f point) {
+fn bool Aabb3.contains_point(self, Vec3 point) {
     return (point.x >= self.min.x && point.x <= self.max.x) &&
            (point.y >= self.min.y && point.y <= self.max.y) &&
            (point.z >= self.min.z && point.z <= self.max.z);
 }
 
-fn void Aabb3.expand_min(&self, Vec3f point) {
+fn void Aabb3.expand_min(&self, Vec3 point) {
     self.min.x = math::min(self.min.x, point.x);
     self.min.y = math::min(self.min.y, point.y);
     self.min.z = math::min(self.min.z, point.z);
 }
 
-fn void Aabb3.expand_max(&self, Vec3f point) {
+fn void Aabb3.expand_max(&self, Vec3 point) {
     self.max.x = math::max(self.max.x, point.x);
     self.max.y = math::max(self.max.y, point.y);
     self.max.z = math::max(self.max.z, point.z);
 }
 
-fn void Aabb3.expand_by_point(&self, Vec3f point) {
+fn void Aabb3.expand_by_point(&self, Vec3 point) {
     self.expand_max(point);
     self.expand_min(point);
 }
 
-fn Aabb3 Aabb3.scale(self, Vec3f scale) @operator(*) {
-    Vec3f center = self.center();
-    Vec3f half_size = self.extent();
+fn Aabb3 Aabb3.scale(self, Vec3 scale) @operator(*) {
+    Vec3 center = self.center();
+    Vec3 half_size = self.extent();
 
     return {
         center - half_size,
@@ -76,7 +77,7 @@ fn Aabb3 Aabb3.scale(self, Vec3f scale) @operator(*) {
     };
 }
 
-fn Vec3f[8] Aabb3.corners(self) {
+fn Vec3[8] Aabb3.corners(self) {
     return {
         self.min,
         {self.max.x, self.min.y, self.min.z},
@@ -90,14 +91,14 @@ fn Vec3f[8] Aabb3.corners(self) {
 }
 
 
-fn Aabb3 Aabb3.transform(self, Vec3f translation = {0, 0, 0}, Vec3f scale = {1, 1, 1}, Quaternionf rotation = {0, 0, 0, 1}, bool skip_rotation = false)
+fn Aabb3 Aabb3.transform(self, Vec3 translation = {0, 0, 0}, Vec3 scale = {1, 1, 1}, QuaternionNumber{Type} rotation = {0, 0, 0, 1}, bool skip_rotation = false)
 {
-    Vec3f[8] corners = self.corners();
-    Vec3f new_min = rotation * (corners[0] * scale) + translation;
-    Vec3f new_max = rotation * (corners[7] * scale) + translation;
+    Vec3[8] corners = self.corners();
+    Vec3 new_min = rotation * (corners[0] * scale) + translation;
+    Vec3 new_max = rotation * (corners[7] * scale) + translation;
 
     foreach (corner: corners) {
-        Vec3f point = rotation * (corner * scale) + translation;
+        Vec3 point = rotation * (corner * scale) + translation;
         new_min.x = math::min(point.x, new_min.x);
         new_min.y = math::min(point.y, new_min.y);
         new_min.z = math::min(point.z, new_min.z);
@@ -111,9 +112,9 @@ fn Aabb3 Aabb3.transform(self, Vec3f translation = {0, 0, 0}, Vec3f scale = {1, 
 }
 
 fn Aabb3 Aabb3.child_bounds(self, uint index) {
-    Vec3f c = self.center();
-    Vec3f newMin = self.min;
-    Vec3f newMax = self.max;
+    Vec3 c = self.center();
+    Vec3 newMin = self.min;
+    Vec3 newMax = self.max;
 
     if (index & 1) {newMin.x = c.x;} else {newMax.x = c.x;}
     if (index & 2) {newMin.y = c.y;} else {newMax.y = c.y;}
@@ -123,8 +124,8 @@ fn Aabb3 Aabb3.child_bounds(self, uint index) {
 }
 
 fn bool Aabb3.intersect_ray(&self, Ray ray, HitInfo* info = null) {
-    float tmin = 0.0;
-    float tmax = float.max;
+    Type tmin = 0.0;
+    Type tmax = Type.max;
 
     for (uint i = 0; i < 3; ++i) {
         if (math::abs(ray.direction[i]) < 1e-6) {
@@ -132,9 +133,9 @@ fn bool Aabb3.intersect_ray(&self, Ray ray, HitInfo* info = null) {
                 return false; // Parallel and outside the box
             }
         } else {
-            float ood = 1.0 / ray.direction[i];
-            float t1 = (self.min[i] - ray.origin[i]) * ood;
-            float t2 = (self.max[i] - ray.origin[i]) * ood;
+            Type ood = 1.0 / ray.direction[i];
+            Type t1 = (self.min[i] - ray.origin[i]) * ood;
+            Type t2 = (self.max[i] - ray.origin[i]) * ood;
             if (t1 > t2) @swap(t1, t2);
             tmin = math::max(tmin, t1);
             tmax = math::min(tmax, t2);
@@ -145,8 +146,8 @@ fn bool Aabb3.intersect_ray(&self, Ray ray, HitInfo* info = null) {
     return true;
 }
 
-fn Vec3f Aabb3.furthest_point(&self, Vec3f direction) @dynamic {
-    Vec3f point = {
+fn Vec3 Aabb3.furthest_point(&self, Vec3 direction) @dynamic {
+    Vec3 point = {
         (direction.x > 0) ? self.max.x : self.min.x,
         (direction.y > 0) ? self.max.y : self.min.y,
         (direction.z > 0) ? self.max.z : self.min.z
@@ -159,12 +160,12 @@ fn Aabb3 Aabb3.get_aabb(&self) @dynamic => *self;
 
 fn ShapeType Aabb3.get_type(&self) @dynamic => ShapeType.BOX;
 
-fn Matrix3f Aabb3.inertia_tensor(&self, float mass) @dynamic {
-    Vec3f size = self.size() * 2;
+fn Matrix3 Aabb3.inertia_tensor(&self, Type mass) @dynamic {
+    Vec3 size = self.size() * (Type)2;
 
-    float ix = (1 / 12.0f) * mass * (size.y + size.z);
-    float iy = (1 / 12.0f) * mass * (size.x + size.z);
-    float iz = (1 / 12.0f) * mass * (size.x + size.y);
+    Type ix = (Type)(1 / 12.0) * mass * (size.y + size.z);
+    Type iy = (Type)(1 / 12.0) * mass * (size.x + size.z);
+    Type iz = (Type)(1 / 12.0) * mass * (size.x + size.y);
 
     return {
         ix, 0, 0,

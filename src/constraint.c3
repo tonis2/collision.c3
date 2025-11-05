@@ -1,4 +1,4 @@
-module collision;
+module collision{Type};
 
 import std::collections::elastic_array;
 import std::io;
@@ -16,7 +16,7 @@ enum Axis : const int {
 alias Limits = ElasticArray{Limit, 3};
 
 struct Limit {
-    Vec3f axes;
+    Vec3 axes;
     float min;
     float max;
     float stiffness;
@@ -29,20 +29,20 @@ struct GenericJoint3D {
 
    bool collides;
 
-   Vec3f anchor_a;
-   Vec3f anchor_b;
+   Vec3 anchor_a;
+   Vec3 anchor_b;
 
    uint body_a;
    uint body_b;
 
-   Vec3f accumulated_linear_impulse;
+   Vec3 accumulated_linear_impulse;
    float accumulated_angular_impulse;
 }
 
-fn void GenericJoint3D.limit_linear(&self, Vec3f axes, float min = 0, float max = 0) {
+fn void GenericJoint3D.limit_linear(&self, Vec3 axes, float min = 0, float max = 0) {
     foreach (index, axis: axes) {
         if (axis > 0) {
-            Vec3f normal = {0, 0, 0};
+            Vec3 normal = {0, 0, 0};
             normal[index] = axis;
             self.linear_limits.push({
                 .min = min,
@@ -53,10 +53,10 @@ fn void GenericJoint3D.limit_linear(&self, Vec3f axes, float min = 0, float max 
     }
 }
 
-fn void GenericJoint3D.limit_angular(&self, Vec3f axes, float min = 0, float max = 0) {
+fn void GenericJoint3D.limit_angular(&self, Vec3 axes, float min = 0, float max = 0) {
     foreach (index, axis: axes) {
         if (axis > 0) {
-            Vec3f normal = {0, 0, 0};
+            Vec3 normal = {0, 0, 0};
             normal[index] = axis;
             self.angular_limits.push({
                 .min = min,

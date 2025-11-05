@@ -1,4 +1,4 @@
-module collision;
+module collision{Type};
 
 import std::collections::elastic_array;
 import std::io;
@@ -24,7 +24,6 @@ struct QuickHull {
     List{HullFace} faces;
     List{Vec3} result;
 }
-
 
 struct HullFace @local {
     Vertex v;
