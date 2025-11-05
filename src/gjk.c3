@@ -8,9 +8,9 @@ const usz GJK_MAX_ITERATION = 30;
 alias Simplex = ElasticArray{SupportPoint, 4};
 
 struct SupportPoint {
-    Vec3f point;  // A - B
-    Vec3f a;
-    Vec3f b;
+    Vec3 point;  // A - B
+    Vec3 a;
+    Vec3 b;
 }
 
 <*
@@ -28,17 +28,17 @@ fn void Simplex.push_start(&self, SupportPoint point)
     self.size = math::min((usz)(self.size + 1), (usz)4);
 }
 
-fn bool same_direction(Vec3f direction, Vec3f ao) => direction.dot(ao) > 0;
+fn bool same_direction(Vec3 direction, Vec3 ao) => direction.dot(ao) > 0;
 
 // Handles the line case (2 points in simplex)
-fn bool line_case(Simplex* simplex, Vec3f* direction) @private {
+fn bool line_case(Simplex* simplex, Vec3* direction) @private {
     SupportPoint a_support = simplex.get(0);
     SupportPoint b_support = simplex.get(1);
 
-    Vec3f a = a_support.point;
-    Vec3f b = b_support.point;
-    Vec3f ab = b - a;
-    Vec3f ao = -a;
+    Vec3 a = a_support.point;
+    Vec3 b = b_support.point;
+    Vec3 ab = b - a;
+    Vec3 ao = -a;
 
     if (same_direction(ab, ao)) {
         direction.set(ab.cross(ao).cross(ab));
@@ -52,20 +52,20 @@ fn bool line_case(Simplex* simplex, Vec3f* direction) @private {
 
 
 // Handles the triangle case (3 points in simplex)
-fn bool triangle_case(Simplex* simplex, Vec3f* direction) @private {
+fn bool triangle_case(Simplex* simplex, Vec3* direction) @private {
     SupportPoint a_support = simplex.get(0);
     SupportPoint b_support = simplex.get(1);
     SupportPoint c_support = simplex.get(2);
 
-    Vec3f a = a_support.point;
-    Vec3f b = b_support.point;
-    Vec3f c = c_support.point;
+    Vec3 a = a_support.point;
+    Vec3 b = b_support.point;
+    Vec3 c = c_support.point;
 
-    Vec3f ab = b - a;
-    Vec3f ac = c - a;
-    Vec3f ao = -a;
+    Vec3 ab = b - a;
+    Vec3 ac = c - a;
+    Vec3 ao = -a;
 
-    Vec3f abc = ab.cross(ac);
+    Vec3 abc = ab.cross(ac);
 
     if (same_direction(abc.cross(ac), ao)) {
         if (same_direction(ac, ao)) {
@@ -91,25 +91,25 @@ fn bool triangle_case(Simplex* simplex, Vec3f* direction) @private {
 }
 
 // Handles the tetrahedron case (4 points in simplex)
-fn bool tetrahedron_case(Simplex* simplex, Vec3f* direction) {
+fn bool tetrahedron_case(Simplex* simplex, Vec3* direction) {
     SupportPoint a_support = simplex.get(0);
     SupportPoint b_support = simplex.get(1);
     SupportPoint c_support = simplex.get(2);
     SupportPoint d_support = simplex.get(3);
 
-    Vec3f a = a_support.point;
-    Vec3f b = b_support.point;
-    Vec3f c = c_support.point;
-    Vec3f d = d_support.point;
+    Vec3 a = a_support.point;
+    Vec3 b = b_support.point;
+    Vec3 c = c_support.point;
+    Vec3 d = d_support.point;
 
-    Vec3f ab = b - a;
-    Vec3f ac = c - a;
-    Vec3f ad = d - a;
-    Vec3f ao = -a;
+    Vec3 ab = b - a;
+    Vec3 ac = c - a;
+    Vec3 ad = d - a;
+    Vec3 ao = -a;
 
-    Vec3f abc = ab.cross(ac);
-    Vec3f acd = ac.cross(ad);
-    Vec3f adb = ad.cross(ab);
+    Vec3 abc = ab.cross(ac);
+    Vec3 acd = ac.cross(ad);
+    Vec3 adb = ad.cross(ab);
 
     if (same_direction(abc, ao)) {
         simplex.replace_array({ a_support, b_support, c_support });
@@ -127,7 +127,7 @@ fn bool tetrahedron_case(Simplex* simplex, Vec3f* direction) {
     return true; // Origin is inside tetrahedron
 }
 
-fn bool next_simplex(Simplex* simplex, Vec3f* direction) {
+fn bool next_simplex(Simplex* simplex, Vec3* direction) {
     switch (simplex.len()) {
         case 2: return line_case(simplex, direction);
         case 3: return triangle_case(simplex, direction);
@@ -140,13 +140,13 @@ fn bool next_simplex(Simplex* simplex, Vec3f* direction) {
 // GJK algorithm to find, if shapes collide
 fn CollisionInfo check_collision(ConvexShape shape_1, ConvexShape shape_2) {
     // Initial direction (arbitrary)
-    Vec3f direction = {1, 0, 0};
+    Vec3 direction = {1, 0, 0};
     
     Simplex simplex;
     {
-        Vec3f a_support = shape_1.furthest_point(direction);
-        Vec3f b_support = shape_2.furthest_point(-direction);
-        Vec3f point = a_support - b_support;
+        Vec3 a_support = shape_1.furthest_point(direction);
+        Vec3 b_support = shape_2.furthest_point(-direction);
+        Vec3 point = a_support - b_support;
 
         // Initial simplex point
         simplex.push_start({
@@ -162,9 +162,9 @@ fn CollisionInfo check_collision(ConvexShape shape_1, ConvexShape shape_2) {
     // Main GJK loop
     for (usz i = 0; i < GJK_MAX_ITERATION; ++i) {
         // Get new support point
-        Vec3f a_support = shape_1.furthest_point(direction);
-        Vec3f b_support = shape_2.furthest_point(-direction);
-        Vec3f mikowski_difference = a_support - b_support;
+        Vec3 a_support = shape_1.furthest_point(direction);
+        Vec3 b_support = shape_2.furthest_point(-direction);
+        Vec3 mikowski_difference = a_support - b_support;
     
         // If we didn't reach the origin, no collision
         if (mikowski_difference.dot(direction) <= 0) {

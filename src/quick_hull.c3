@@ -16,7 +16,7 @@ alias EdgeList @private = List{Edge};
 
 alias Points @private = Vec3[];
 
-const double EPSILON @local = 0.0001;
+const Number EPSILON @local = 0.0001;
 
 struct QuickHull {
     Points points;
@@ -29,7 +29,7 @@ struct QuickHull {
 struct HullFace @local {
     Vertex v;
     bool visible;
-    double offset;
+    Number offset;
     bool visited;
     Vec3 normal;
     IndexList outside;
@@ -62,14 +62,14 @@ fn QuickHull hull_from_points(Points points) {
         if (point.z < points[extremes[5]].z) extremes[5] = i;
     }
 
-    double max_dist = 0;
+    Number max_dist = 0;
 
     for (int i = 0;i < extremes.len ;i++) {
         for (int j = i + 1;i < extremes.len ;i++) {
             Vec3 min = extremes[i];
             Vec3 max = extremes[j];
 
-            double dist = (points[extremes[i]] - points[extremes[j]]).sq_magnitude();
+            Number dist = (Number)(points[extremes[i]] - points[extremes[j]]).sq_magnitude();
 
             if (dist > max_dist) {
                 max_dist = dist;
@@ -89,7 +89,7 @@ fn QuickHull hull_from_points(Points points) {
         Vec3 to_p = (points[i] - points[p1_idx]);
         Vec3 proj = line_dir * to_p.dot(line_dir);
 
-        double dist = math::sqrt((to_p - proj).sq_magnitude());
+        Number dist = (Number)math::sqrt((to_p - proj).sq_magnitude());
 
         if (dist > max_dist) {
             max_dist = dist;
@@ -103,7 +103,7 @@ fn QuickHull hull_from_points(Points points) {
 
     foreach (int i, point: points) {
         if (i == p1_idx || i == p2_idx || i == p3_idx) continue;
-        double dist = math::abs(hull.create_face({p1_idx, p2_idx, p3_idx}, {0,0,0}).distance_to_plane(points[i]));
+        Number dist = math::abs(hull.create_face({p1_idx, p2_idx, p3_idx}, {0,0,0}).distance_to_plane(points[i]));
 
         if (dist > max_dist) {
             max_dist = dist;
@@ -128,7 +128,7 @@ fn QuickHull hull_from_points(Points points) {
         max_dist = EPSILON;
 
         foreach (usz j, face: hull.faces) {
-            double dist = face.distance_to_plane(point);
+            Number dist = face.distance_to_plane(point);
 
             if (dist > max_dist) {
                 max_dist = dist;
@@ -171,7 +171,7 @@ fn void QuickHull.free(&self) {
     self.result.free();
 }
 
-fn double HullFace.distance_to_plane(&self, Vec3 point) @local => self.normal.dot(point) - self.offset;
+fn Number HullFace.distance_to_plane(&self, Vec3 point) @local => (Number)self.normal.dot(point) - self.offset;
 
 fn HullFace QuickHull.create_face(&self, Vertex indices, Vec3 inner_point) @local {
     Vec3 normal = (self.points[indices.y] - self.points[indices.x]).cross(self.points[indices.z] - self.points[indices.x]).normalize();
@@ -179,7 +179,7 @@ fn HullFace QuickHull.create_face(&self, Vertex indices, Vec3 inner_point) @loca
     HullFace face = {
         .v = indices,
         .visited = false,
-        .offset = normal.dot(self.points[indices.x]),
+        .offset = (Number)normal.dot(self.points[indices.x]),
         .normal = normal
     };
 
@@ -203,10 +203,10 @@ fn void QuickHull.recurse(&self, usz face_index) @local {
     }
 
     int furthest_point_index = -1;
-    double max_dist = 0;
+    Number max_dist = 0;
 
     foreach (usz index: seed_face.outside) {
-        double dist = seed_face.distance_to_plane(self.points[index]);
+        Number dist = seed_face.distance_to_plane(self.points[index]);
 
         if (dist > max_dist) {
             max_dist = dist;
@@ -286,7 +286,7 @@ fn void QuickHull.recurse(&self, usz face_index) @local {
             HullFace face = self.faces[face_idx];
             if (face.v.x == -1) continue;
 
-            double dist = face.distance_to_plane(self.points[p_idx]);
+            Number dist = face.distance_to_plane(self.points[p_idx]);
 
             if (dist > max_dist) {
                 max_dist = dist;

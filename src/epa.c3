@@ -9,9 +9,9 @@ import std::os;
 
 struct CollisionInfo {
     Simplex simplex;
-    Vec3f normal;
-    Vec3f[2] contact_points;
-    float depth;
+    Vec3 normal;
+    Vec3[2] contact_points;
+    Number depth;
     bool collided;
 }
 
@@ -35,14 +35,14 @@ fn void EdgeArray.add_if_new(&self, Pair pair)
 
 fn Face SupportArray.create_face(self, usz a_index, usz b_index, usz c_index)
 {
-    Vec3f a = self.get(a_index).point;
-    Vec3f b = self.get(b_index).point;
-    Vec3f c = self.get(c_index).point;
+    Vec3 a = self.get(a_index).point;
+    Vec3 b = self.get(b_index).point;
+    Vec3 c = self.get(c_index).point;
 
-    Vec3f normal = (b - a).cross(c - a).normalize();
-    float distance = a.dot(normal);
+    Vec3 normal = (b - a).cross(c - a).normalize();
+    Number distance = a.dot(normal);
 
-    // assert(normal != (Vec3f){0,0,0});
+    // assert(normal != (Vec3){0,0,0});
 
     if ((-a).dot(normal) > 0) {
         normal   *= -1;
@@ -58,7 +58,7 @@ fn Face SupportArray.create_face(self, usz a_index, usz b_index, usz c_index)
     };
 }
 
-fn void SupportArray.reconstruct(self, FaceArray* faces, Vec3f new_point)
+fn void SupportArray.reconstruct(self, FaceArray* faces, Vec3 new_point)
 {
     EdgeArray edges;
 
@@ -82,7 +82,7 @@ fn void SupportArray.reconstruct(self, FaceArray* faces, Vec3f new_point)
     }
 }
 
-fn uint Face[].get_closest(self, float min_distance = float.max) {
+fn uint Face[].get_closest(self, Number min_distance = Number.max) {
     uint closest = 0;
 
     foreach (uint i, face: self) {
@@ -96,7 +96,7 @@ fn uint Face[].get_closest(self, float min_distance = float.max) {
 }
 
 const uint EPA_MAX_ITER = 16;
-const float EPA_TOLERANCE = 0.0001f;
+const Number EPA_TOLERANCE = 0.0001f;
 
 <*
  @require info.simplex.len() > 3 : `Simplex data must have enough points`
@@ -123,9 +123,9 @@ fn void epa(CollisionInfo* info, ConvexShape shape_1, ConvexShape shape_2) {
     for (int i = 0; i < EPA_MAX_ITER; ++i) {
         closest_face = faces[closest_face_index];
 
-        Vec3f face_normal = closest_face.normal;
-        Vec3f a_support = shape_1.furthest_point(face_normal);
-        Vec3f b_support = shape_2.furthest_point(-face_normal);
+        Vec3 face_normal = closest_face.normal;
+        Vec3 a_support = shape_1.furthest_point(face_normal);
+        Vec3 b_support = shape_2.furthest_point(-face_normal);
 
         SupportPoint support_point = {
             .a = a_support,
@@ -133,7 +133,7 @@ fn void epa(CollisionInfo* info, ConvexShape shape_1, ConvexShape shape_2) {
             .point = a_support - b_support
         };
 
-        float support_distance = face_normal.dot(support_point.point);
+        Number support_distance = face_normal.dot(support_point.point);
 
         if (support_distance - closest_face.distance < EPA_TOLERANCE) {
           
@@ -141,17 +141,17 @@ fn void epa(CollisionInfo* info, ConvexShape shape_1, ConvexShape shape_2) {
             info.normal = closest_face.normal;
             info.depth = closest_face.distance;
 
-            Vec3f p = info.normal * -info.depth;
+            Vec3 p = info.normal * -info.depth;
  
             SupportPoint a = vertices[closest_face.a];
             SupportPoint b = vertices[closest_face.b];
             SupportPoint c = vertices[closest_face.c];
 
-            Vec3f bary = p.barycenter(a.point, b.point, c.point);
+            Vec3 bary = p.barycenter(a.point, b.point, c.point);
 
-            Vec3f[2] support_a = {a.a, a.b};
-            Vec3f[2] support_b = {b.a, b.b};
-            Vec3f[2] support_c = {c.a, c.b};
+            Vec3[2] support_a = {a.a, a.b};
+            Vec3[2] support_b = {b.a, b.b};
+            Vec3[2] support_c = {c.a, c.b};
 
             info.contact_points = {
                 support_a[0] * bary.x + support_b[0] * bary.y + support_c[0] * bary.z,

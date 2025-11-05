@@ -29,9 +29,9 @@ struct PhysicsWorld {
 struct Collision {
     usz a;
     usz b;
-    Vec3f normal;
-    Vec3f[2] contact;
-    float depth;
+    Vec3 normal;
+    Vec3[2] contact;
+    Number depth;
 }
 
 enum PhysicsCombine {
@@ -44,27 +44,27 @@ enum PhysicsCombine {
 fn usz contact_id (usz a, usz b) => (usz)(a.hash() + b.hash()); 
 
 struct Material {
-    float static_friction;
-    float dynamic_friction;
-    float restitution;
+    Number static_friction;
+    Number dynamic_friction;
+    Number restitution;
     PhysicsCombine friction_combine;
     PhysicsCombine restitution_combine;
 }
 
 struct Motion {
-    float mass;
-    float inverse_mass;
-    float gravity_factor;
-    float linear_dampening;
-    float angular_dampening;
+    Number mass;
+    Number inverse_mass;
+    Number gravity_factor;
+    Number linear_dampening;
+    Number angular_dampening;
 
-    Vec3f mass_center;
-    //Vec3f inertia_diagonal;
+    Vec3 mass_center;
+    //Vec3 inertia_diagonal;
     //Quaternionf inertia_orientation;
     Matrix3f inertia;
 
-    Vec3f linear_velocity;
-    Vec3f angular_velocity;
+    Vec3 linear_velocity;
+    Vec3 angular_velocity;
 }
 
 struct Rigidbody {
@@ -83,7 +83,7 @@ struct Rigidbody {
 }
 
 struct PhysicsWorldConfig {
-    float cell_size;
+    Number cell_size;
 }
 
 fn void PhysicsWorld.free(&self) {
@@ -115,8 +115,8 @@ fn void? PhysicsWorld.add_constraint(&self, GenericJoint3D joint) {
     self.constraints.push(joint);
 }
 
-fn Aabb3 Rigidbody.get_transformed_aabb(&self, float scale_multiply = 1) {
-    bool skip_rotation = self.collider.get_type() == ShapeType.SPHERE;
+fn Aabb3 Rigidbody.get_transformed_aabb(&self, Number scale_multiply = 1) {
+    bool skip_rotation = self.collider.get_Number() == ShapeNumber.SPHERE;
     return self.aabb.transform(translation: self.collider.translation, scale: self.collider.scale, rotation: self.collider.rotation, skip_rotation: skip_rotation);
 } 
 
@@ -151,23 +151,23 @@ fn Matrix3f Rigidbody.get_inverse_world_inertia(self) {
     return self.collider.world_inertia_from_local(self.motion.inertia);
 }
 
-fn void Rigidbody.apply_linear_impulse(&self, Vec3f impulse) => self.motion.linear_velocity += impulse * self.motion.inverse_mass;
+fn void Rigidbody.apply_linear_impulse(&self, Vec3 impulse) => self.motion.linear_velocity += impulse * self.motion.inverse_mass;
 
-fn void Rigidbody.apply_angular_impulse(&self, Vec3f impulse) {
+fn void Rigidbody.apply_angular_impulse(&self, Vec3 impulse) {
     Matrix3f inertia = self.get_inverse_world_inertia();
     self.motion.angular_velocity += inertia * impulse;
 }
 
-fn void Rigidbody.apply_impulse(&self, Vec3f impulse, Vec3f point) {
+fn void Rigidbody.apply_impulse(&self, Vec3 impulse, Vec3 point) {
     self.motion.linear_velocity += impulse * self.motion.inverse_mass;
     self.apply_angular_impulse(point.cross(impulse));
 }
 
-fn Vec3f Rigidbody.get_intertia(self, Vec3f point, Vec3f normal) {
+fn Vec3 Rigidbody.get_intertia(self, Vec3 point, Vec3 normal) {
     return (self.get_inverse_world_inertia() * point.cross(normal)).cross(point);
 }
 
-fn Vec3f Rigidbody.relative_velocity(self, Vec3f point) {
+fn Vec3 Rigidbody.relative_velocity(self, Vec3 point) {
     return self.motion.linear_velocity + self.motion.angular_velocity.cross(point);
 }
 
@@ -177,12 +177,12 @@ fn bool Rigidbody.is_moving(self) => self.motion.linear_velocity.sq_magnitude() 
 fn bool Rigidbody.is_sleeping(self) => self.sleeping;
 
 
-Vec3f gravity @private = {0.0f, 0.0f, -9.8f};
+Vec3 gravity @private = {0.0f, 0.0f, -9.8f};
 
 <*
  @require self.bodies.len() > 0 : `Must have some bodies to simulate`
 *>
-fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
+fn void PhysicsWorld.run_step(&self, Number time, uint step_count = 15) {
 
     RigidBodyIterator rigid_bodies = self.bodies.value_iter();
 
@@ -199,7 +199,7 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
     }
 
     for (usz i; i < step_count; i++) {
-        float time_step = time / step_count;
+        Number time_step = time / step_count;
 
         while (rigid_bodies.next()) {
             Rigidbody* body = rigid_bodies.get()!!;
@@ -209,7 +209,7 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
             body.collider.translation += body.motion.linear_velocity * time_step;
 
             // Apply angular velocity as rotation
-            Vec3f axis = body.motion.angular_velocity * (time_step * 0.5);
+            Vec3 axis = body.motion.angular_velocity * (time_step * 0.5);
 
             if (axis != {0,0,0}) {
                 body.collider.rotation = (body.collider.rotation + (Quaternionf){...axis, 0} * body.collider.rotation).normalize();
@@ -266,20 +266,20 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
             Rigidbody* a = self.find_body(joint.body_a)!!;
             Rigidbody* b = self.find_body(joint.body_b)!!;
         
-            float inverse_mass_sum = a.motion.inverse_mass + b.motion.inverse_mass;
+            Number inverse_mass_sum = a.motion.inverse_mass + b.motion.inverse_mass;
 
-            Vec3f rA = joint.anchor_a;
-            Vec3f rB = joint.anchor_b;
+            Vec3 rA = joint.anchor_a;
+            Vec3 rB = joint.anchor_b;
 
             if (!a.is_static) rA = a.collider.rotation * rA;
             if (!b.is_static) rB = b.collider.rotation * rB;
 
-            Vec3f worldspace_joint;
+            Vec3 worldspace_joint;
 
             if (!a.is_static) worldspace_joint -= a.collider.translation + rA;
             if (!a.is_static) worldspace_joint += b.collider.translation + rB;
 
-            Vec3f relative_velocity;
+            Vec3 relative_velocity;
 
             if (!a.is_static) relative_velocity -= a.relative_velocity(rA);
             if (!b.is_static) relative_velocity += b.relative_velocity(rB);
@@ -288,24 +288,24 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
             if (!joint.linear_limits.is_empty()) {
 
                 foreach (limit: joint.linear_limits) {
-                    Vec3f normal = limit.axes;
+                    Vec3 normal = limit.axes;
 
-                    Vec3f total_inertia;
+                    Vec3 total_inertia;
 
                     if (!a.is_static) total_inertia += a.get_intertia(rA, normal);
                     if (!b.is_static) total_inertia += b.get_intertia(rB, normal);
 
-                    float effective_mass = inverse_mass_sum + total_inertia.dot(normal);
+                    Number effective_mass = inverse_mass_sum + total_inertia.dot(normal);
                     if (effective_mass < 0.00001f) return;
 
-                    float contact_velocity = relative_velocity.dot(normal);
-                    float position_error = worldspace_joint.dot(normal);
+                    Number contact_velocity = relative_velocity.dot(normal);
+                    Number position_error = worldspace_joint.dot(normal);
 
-                    float bias = time_step * position_error;
+                    Number bias = time_step * position_error;
 
-                    float j = -(bias + contact_velocity) / effective_mass;
+                    Number j = -(bias + contact_velocity) / effective_mass;
             
-                    Vec3f impulse = j * normal;
+                    Vec3 impulse = j * normal;
 
                     if (!a.is_static) a.apply_impulse(-impulse, rA);
                     if (!b.is_static) b.apply_impulse(impulse, rB);
@@ -321,14 +321,14 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
                 Quaternionf rotation_b = b.collider.rotation;
 
                 Quaternionf relative_orientation = (rotation_b * rotation_a);
-                Vec3f total_axis = relative_orientation.v.xyz;
-                float total_angle = relative_orientation.to_angle();
+                Vec3 total_axis = relative_orientation.v.xyz;
+                Number total_angle = relative_orientation.to_angle();
 
                 foreach LIMITS: (limit: joint.angular_limits) {
-                    float position_error = 0.0f;
-                    Vec3f normal = limit.axes;
+                    Number position_error = 0.0f;
+                    Vec3 normal = limit.axes;
 
-                    float current_angle = total_axis.dot(normal) * total_angle;
+                    Number current_angle = total_axis.dot(normal) * total_angle;
 
                     if (current_angle > limit.max) {
                         position_error = current_angle - limit.max;
@@ -338,22 +338,22 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
                         continue LIMITS;
                     }
 
-                    float effective_mass = 0;
+                    Number effective_mass = 0;
 
                     if (!a.is_static) effective_mass += normal.dot(a.get_inverse_world_inertia() * normal);
                     if (!b.is_static) effective_mass += normal.dot(b.get_inverse_world_inertia() * normal);
                     if (effective_mass < 0.00001f) return;
 
-                    float angular_velocity = (b.motion.angular_velocity - a.motion.angular_velocity).dot(normal);
+                    Number angular_velocity = (b.motion.angular_velocity - a.motion.angular_velocity).dot(normal);
 
-                    float bias = time_step * position_error * 0.02f;
-                    float j = -(angular_velocity + bias) / effective_mass;
+                    Number bias = time_step * position_error * 0.02f;
+                    Number j = -(angular_velocity + bias) / effective_mass;
 
-                    // float oldAccumulated = joint.accumulated_angular_impulse;
+                    // Number oldAccumulated = joint.accumulated_angular_impulse;
                     // joint.accumulated_angular_impulse = math::max(0.0f, oldAccumulated + j);
-                    // float impulseToApply = joint.accumulated_angular_impulse - oldAccumulated;
+                    // Number impulseToApply = joint.accumulated_angular_impulse - oldAccumulated;
 
-                    Vec3f angular_impulse = j * normal;
+                    Vec3 angular_impulse = j * normal;
 
                     if (!a.is_static) a.apply_angular_impulse(-angular_impulse);
                     if (!b.is_static) b.apply_angular_impulse(angular_impulse);
@@ -390,49 +390,49 @@ fn void PhysicsWorld.resolve_collision(&self, Collision collision) {
     Rigidbody* b = self.find_body(collision.b)!!;
 
     // Values
-    float inverse_mass_sum = a.motion.inverse_mass + b.motion.inverse_mass;
-    float restitution = a.material.restitution + b.material.restitution;
-    float static_friction = math::sqrt(a.material.static_friction * b.material.static_friction);
+    Number inverse_mass_sum = a.motion.inverse_mass + b.motion.inverse_mass;
+    Number restitution = a.material.restitution + b.material.restitution;
+    Number static_friction = math::sqrt(a.material.static_friction * b.material.static_friction);
 
     if (inverse_mass_sum == 0) return;
 
-    Vec3f rA = collision.contact[0] - a.collider.translation;
-    Vec3f rB = collision.contact[1] - b.collider.translation;
+    Vec3 rA = collision.contact[0] - a.collider.translation;
+    Vec3 rB = collision.contact[1] - b.collider.translation;
 
-    Vec3f relative_velocity;
+    Vec3 relative_velocity;
 
     if (!a.is_static) relative_velocity -= a.relative_velocity(rA);
     if (!b.is_static) relative_velocity += b.relative_velocity(rB);
 
-    float impulse_force = relative_velocity.dot(collision.normal);
+    Number impulse_force = relative_velocity.dot(collision.normal);
     if (impulse_force > 0.0001f) return;
 
-    Vec3f total_inertia;
+    Vec3 total_inertia;
 
     if (!a.is_static) total_inertia += a.get_intertia(rA, collision.normal);
     if (!b.is_static) total_inertia += b.get_intertia(rB, collision.normal);
 
-    float impulse_denominator = inverse_mass_sum + total_inertia.dot(collision.normal);
+    Number impulse_denominator = inverse_mass_sum + total_inertia.dot(collision.normal);
 
-    float jn = -(1.0f + restitution) * impulse_force / impulse_denominator;
-    Vec3f normal_impulse = jn * collision.normal;
+    Number jn = -(1.0f + restitution) * impulse_force / impulse_denominator;
+    Vec3 normal_impulse = jn * collision.normal;
 
-    Vec3f tangent_direction = relative_velocity - relative_velocity.dot(collision.normal) * collision.normal;
+    Vec3 tangent_direction = relative_velocity - relative_velocity.dot(collision.normal) * collision.normal;
     
     if (tangent_direction.sq_magnitude() > 0.001f) {
         tangent_direction = tangent_direction.normalize();
 
-        Vec3f friction_inertia = {0,0,0};
+        Vec3 friction_inertia = {0,0,0};
         if (!a.is_static) friction_inertia += a.get_intertia(rA, tangent_direction);
         if (!b.is_static) friction_inertia += b.get_intertia(rB, tangent_direction);
             
-        float jt = -relative_velocity.dot(tangent_direction) / (inverse_mass_sum + friction_inertia.dot(tangent_direction));
+        Number jt = -relative_velocity.dot(tangent_direction) / (inverse_mass_sum + friction_inertia.dot(tangent_direction));
      
-        float max_friction = static_friction * jn;
+        Number max_friction = static_friction * jn;
 
         jt = math::clamp(jt, -max_friction, max_friction);
 
-        Vec3f friction_impulse = jt * tangent_direction;
+        Vec3 friction_impulse = jt * tangent_direction;
 
         if (!a.is_static) a.apply_impulse(-(friction_impulse + normal_impulse), rA);
         if (!b.is_static) b.apply_impulse(friction_impulse + normal_impulse, rB);
@@ -441,11 +441,11 @@ fn void PhysicsWorld.resolve_collision(&self, Collision collision) {
         if (!b.is_static) b.apply_impulse(normal_impulse, rB);
     };
     
-    float percent = 0.4f;
-    float slop = 0.02f;
-    float correction_magnitude = math::max(collision.depth - slop, 0.0f) / inverse_mass_sum * percent;
+    Number percent = 0.4f;
+    Number slop = 0.02f;
+    Number correction_magnitude = math::max(collision.depth - slop, 0.0f) / inverse_mass_sum * percent;
 
-    Vec3f correction = collision.normal * correction_magnitude;
+    Vec3 correction = collision.normal * correction_magnitude;
 
     if (!a.is_static) a.collider.translation -= correction;
     if (!b.is_static) b.collider.translation += correction;

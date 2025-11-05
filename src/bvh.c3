@@ -39,13 +39,13 @@ fn void BVHNode.build_recursive(&self, Triangle[] triangles) {
         return;
     }
     
-    Vec3f extent = self.box.max - self.box.min;
+    Vec3 extent = self.box.max - self.box.min;
     uint axis = 0;
 
     if (extent.y > extent.x) axis = 1;
     if (extent.z > extent[axis]) axis = 2;
 
-    float split_pos = self.box.min[axis] + extent[axis] * 0.5;
+    Number split_pos = self.box.min[axis] + extent[axis] * 0.5;
 
     List{Triangle} left;
     List{Triangle} right;
@@ -56,7 +56,7 @@ fn void BVHNode.build_recursive(&self, Triangle[] triangles) {
     }
 
     foreach (triangle: triangles) {
-        Vec3f centroid = (triangle.v0 + triangle.v1 + triangle.v2) / 3.0;
+        Vec3 centroid = (triangle.v0 + triangle.v1 + triangle.v2) / 3.0;
         if (centroid[axis] < split_pos) {
             left.push(triangle);
         } else {
