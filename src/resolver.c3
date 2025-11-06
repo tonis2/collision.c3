@@ -115,8 +115,8 @@ fn void? PhysicsWorld.add_constraint(&self, GenericJoint3D joint) {
     self.constraints.push(joint);
 }
 
-fn Aabb3 Rigidbody.get_transformed_aabb(&self, Number scale_multiply = 1) {
-    bool skip_rotation = self.collider.get_Number() == ShapeNumber.SPHERE;
+fn Aabb3 Rigidbody.get_transformed_aabb(&self) {
+    bool skip_rotation = self.collider.get_type() == ShapeType.SPHERE;
     return self.aabb.transform(translation: self.collider.translation, scale: self.collider.scale, rotation: self.collider.rotation, skip_rotation: skip_rotation);
 } 
 

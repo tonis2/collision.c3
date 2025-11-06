@@ -3,7 +3,7 @@ module collision;
 import std::math;
 import std::io;
 
-enum ShapeNumber {
+enum ShapeType {
     SPHERE,
     CAPSULE,
     CYLINDER,
@@ -16,7 +16,7 @@ interface ConvexShape
     fn Vec3 furthest_point(Vec3 direction);
     fn Matrix3f inertia_tensor(Number mass);
     fn Aabb3 get_aabb();
-    fn ShapeNumber get_Number();
+    fn ShapeType get_type();
 }
 
 interface RayCast
@@ -213,11 +213,11 @@ fn Matrix3f Capsule.inertia_tensor(&self, Number mass) @dynamic {
     };
 }
 
-fn ShapeNumber ConvexPolyhedron.get_Number(&self) @dynamic => ShapeNumber.CONVEX;
-fn ShapeNumber TransformedConvex.get_Number(&self) @dynamic => self.shape.get_Number();
-fn ShapeNumber Sphere.get_Number(&self) @dynamic => ShapeNumber.SPHERE;
-fn ShapeNumber Capsule.get_Number(&self) @dynamic => ShapeNumber.CAPSULE;
-fn ShapeNumber Cylinder.get_Number(&self) @dynamic => ShapeNumber.CYLINDER;
+fn ShapeType ConvexPolyhedron.get_type(&self) @dynamic => ShapeType.CONVEX;
+fn ShapeType TransformedConvex.get_type(&self) @dynamic => self.shape.get_type();
+fn ShapeType Sphere.get_type(&self) @dynamic => ShapeType.SPHERE;
+fn ShapeType Capsule.get_type(&self) @dynamic => ShapeType.CAPSULE;
+fn ShapeType Cylinder.get_type(&self) @dynamic => ShapeType.CYLINDER;
 
 fn Aabb3 TransformedConvex.get_transformed_aabb(&self) @dynamic => self.shape.get_aabb().transform(self.translation, self.scale, self.rotation);
 fn Aabb3 TransformedConvex.get_aabb(&self) @dynamic => self.shape.get_aabb();

@@ -18,10 +18,8 @@ fn void test_physics() {
 
     aabb = aabb.transform(translation: {1, 5, 1}, scale: {3.0, 1.0, 1.0}, rotation: {0,0,0,1});
 
-        
-    // assert(aabb.min == {-2, 4, 0});
-    //assert(aabb.max == {4, 6, 2});
-
+    assert(aabb.min == {-2, 4, 0});
+    assert(aabb.max == {4, 6, 2});
 
     SpatialHash3D spatial_map = { .cell_size = 1.0 };
     defer spatial_map.free();
@@ -84,8 +82,8 @@ fn void test_physics() {
     };
 
     assert(!collision::check_collision(&transformed_shape_1, &transformed_shape_2).collided);
-    // assert(!collision::check_collision(&transformed_shape_5, &transformed_shape_6).collided);
-    // assert(collision::check_collision(&transformed_shape_3, &transformed_shape_4).collided);
+    assert(!collision::check_collision(&transformed_shape_5, &transformed_shape_6).collided);
+    //assert(collision::check_collision(&transformed_shape_3, &transformed_shape_4).collided);
 
     
     //CollisionInfo epa_result = epa(collision_result.simplex, &shape_1, &shape_2);

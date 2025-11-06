@@ -75,8 +75,9 @@ fn Aabb3 Aabb3.scale(self, Vec3 scale) @operator(*) {
     };
 }
 
-fn Vec3[8] Aabb3.corners(self) {
-    return {
+fn Aabb3 Aabb3.transform(&self, Vec3 translation = {0, 0, 0}, Vec3 scale = {1, 1, 1}, Quaternionf rotation = {0, 0, 0, 1}, bool skip_rotation = false)
+{
+    Vec3[8] corners = {
         self.min,
         {self.max.x, self.min.y, self.min.z},
         {self.min.x, self.max.y, self.min.z},
@@ -86,17 +87,13 @@ fn Vec3[8] Aabb3.corners(self) {
         {self.min.x, self.max.y, self.max.z},
         self.max
     };
-}
-
-
-fn Aabb3 Aabb3.transform(self, Vec3 translation = {0, 0, 0}, Vec3 scale = {1, 1, 1}, Quaternionf rotation = {0, 0, 0, 1}, bool skip_rotation = false)
-{
-    Vec3[8] corners = self.corners();
+    
     Vec3 new_min = rotation * (corners[0] * scale) + translation;
     Vec3 new_max = rotation * (corners[7] * scale) + translation;
 
     foreach (corner: corners) {
         Vec3 point = rotation * (corner * scale) + translation;
+
         new_min.x = math::min(point.x, new_min.x);
         new_min.y = math::min(point.y, new_min.y);
         new_min.z = math::min(point.z, new_min.z);
@@ -156,7 +153,7 @@ fn Vec3 Aabb3.furthest_point(&self, Vec3 direction) @dynamic {
 
 fn Aabb3 Aabb3.get_aabb(&self) @dynamic => *self;
 
-fn ShapeNumber Aabb3.get_Number(&self) @dynamic => ShapeNumber.BOX;
+fn ShapeType Aabb3.get_type(&self) @dynamic => ShapeType.BOX;
 
 fn Matrix3f Aabb3.inertia_tensor(&self, Number mass) @dynamic {
     Vec3 size = self.size() * 2;
