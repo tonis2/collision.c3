@@ -51,8 +51,7 @@ fn void weld_remesh(Vertices* vertices, Indices* indices) {
         vertex_map.insert_at(i, new_index);
     }
 
-    for (usz i = 0; i < indices.len(); i++) {
-
+    for (usz i = 0; i < indices.len(); i+= 3) {
         usz n0 = vertex_map[i];
         usz n1 = vertex_map[i+1];
         usz n2 = vertex_map[i+2];

@@ -12,22 +12,6 @@ alias Vec4 @private = Number[<4>];
 // fn usz? Vec3.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s,%s,%s", self.x, self.y, self.z)!;
 // fn usz? Vec4.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s,%s,%s,%s", self.x, self.y, self.z, self.w)!;
 
-fn usz Vec3.hash(&self) {
-    usz hash = 17;
-    hash = (usz)(hash * 23f + self.x);
-    hash = (usz)(hash * 23f + self.y);
-    hash = (usz)(hash * 23f + self.z);
-    return hash;
-}
-
-fn Number Vec3.distance_sq(self, Vec3 v2) {
-    Vec3 dist = self - v2;
-    return dist.x * dist.x + dist.y * dist.y + dist.z * dist.z;
-}
-
-macro bool Vec3.equals(self, Vec3 b) => self == b;
-
-
 struct HitInfo {
     bool hits;
     Number depth;
@@ -40,6 +24,11 @@ struct Face @private {
     Number distance;
 }
 
+struct Pair (Printable) {
+    usz first;
+    usz second;
+}
+
 fn Matrix3f Quaternionf.as_mat3(self) {
     Matrix4f matrix = self.to_matrixf();
     return {
@@ -49,17 +38,23 @@ fn Matrix3f Quaternionf.as_mat3(self) {
     };
 }
 
-fn void Vec3.set(&self, Vec3 new) => mem::copy(self, &new, Vec3.sizeof, 0);
+fn void Vec3.set(&self, Vec3 new) @private => mem::copy(self, &new, Vec3.sizeof, 0);
 
+fn usz Vec3.hash(&self) @private {
+    usz hash = 17;
+    hash = (usz)(hash * 23f + self.x);
+    hash = (usz)(hash * 23f + self.y);
+    hash = (usz)(hash * 23f + self.z);
+    return hash;
+}
 
-
-
-
-struct Pair (Printable) {
-    usz first;
-    usz second;
+fn Number Vec3.distance_sq(self, Vec3 v2) {
+    Vec3 dist = self - v2;
+    return dist.x * dist.x + dist.y * dist.y + dist.z * dist.z;
 }
 
 fn usz? Pair.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s, %s", self.first, self.second)!;
+
 macro bool Pair.equals(self, Pair b) @operator(==) => self.first == b.first && self.second == b.second;
 macro uint Pair.hash(Pair self) => builtin::@generic_hash(self.first) + builtin::@generic_hash(self.second);
+macro bool Vec3.equals(self, Vec3 b) => self == b;

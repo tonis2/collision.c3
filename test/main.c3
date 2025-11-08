@@ -214,4 +214,5 @@ fn void test_remesh() {
     collision::weld_remesh(vertices: &vertices, indices: &indices);
 
     assert(vertices.len() == 4);
+    assert(indices.len() == 6);
 }
