@@ -1,30 +1,22 @@
 module collision;
 
-import std::collections::elastic_array;
 import std::io;
 import std::math;
 import std::collections::list;
-import std::collections::map;
-import std::sort;
-import std::collections::set;
 
-alias Vertex @private = int[<3>];
-alias Edge @private = int[<2>];
-
-alias IndexList @private = List{usz};
-alias EdgeList @private = List{Edge};
-
-alias Points @private = Vec3[];
+alias Vertex @local = int[<3>];
+alias Edge @local = int[<2>];
+alias IndexList @local = List{usz};
+alias EdgeList @local = List{Edge};
+alias Points @local = Vec3[];
 
 const Number EPSILON @local = 0.0001;
 
 struct QuickHull {
     Points points;
-    HashSet{usz} vertices;
     List{HullFace} faces;
     List{Vec3} result;
 }
-
 
 struct HullFace @local {
     Vertex v;
@@ -166,7 +158,6 @@ fn QuickHull hull_from_points(Points points) {
 
 fn void QuickHull.free(&self) {
     foreach (face: self.faces) face.outside.free();
-    self.vertices.free();
     self.faces.free();
     self.result.free();
 }

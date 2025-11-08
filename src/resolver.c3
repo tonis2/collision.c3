@@ -21,7 +21,6 @@ struct PhysicsWorld {
     CollisionCache collision_cache;
 
     SpatialHash3D spatial_map;
-    List{BVHNode} bvh_nodes;
 
     CollisionFilter filters;
 }
@@ -90,7 +89,6 @@ fn void PhysicsWorld.free(&self) {
     self.bodies.free();
     self.collisions.free();
     self.spatial_map.free();
-    self.bvh_nodes.free();
     self.constraints.free();
     self.filters.free();
     self.collision_cache.free();

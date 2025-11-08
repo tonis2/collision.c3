@@ -29,9 +29,9 @@ struct Ray (Printable) {
     Vec3 direction; // Should be a unit vector.
 }
 
-struct Triangle {
-    Vec3 v0, v1, v2;
-}
+// struct Triangle {
+//     Vec3 v0, v1, v2;
+// }
 
 struct Sphere (ConvexShape) {
     Vec3 center;

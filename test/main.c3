@@ -6,9 +6,12 @@ import std::math;
 import std::io;
 import std::collections::list;
 
-alias Vec2 @private = float[<2>];
-alias Vec3 @private = float[<3>];
-alias Vec4f @private = float[<4>];
+alias Vec2 = float[<2>];
+alias Vec3 = float[<3>];
+alias Vec4f = float[<4>];
+
+alias Vertices = List{Vec3};
+alias Indices = List{usz};
 
 fn void test_physics() {
     Aabb3 aabb = {
@@ -188,7 +191,27 @@ fn void test_bvh() {
     bool result = bvh.ray_intersects(test_ray, &hit);
     bool result_2 = bvh.box_intersects(box, &hit);
 
-    // assert(result == true);
+    assert(result == true);
     // assert(result_2 == true);
 }
 
+
+fn void test_remesh() {
+    Vertices vertices;
+    Indices indices;
+
+    vertices.push_all({
+        {0.0f, 0.0f, 0.0f},
+        {1.0f, 0.0f, 0.0f},
+        {0.0f, 1.0f, 0.0f},
+        {1.0f, 0.0f, 0.0f},
+        {1.0f, 1.0f, 0.0f},
+        {0.0f, 1.0f, 0.0f}
+    });
+
+    indices.push_all({0, 1, 2, 3, 4, 5});
+
+    collision::weld_remesh(vertices: &vertices, indices: &indices);
+
+    assert(vertices.len() == 4);
+}
