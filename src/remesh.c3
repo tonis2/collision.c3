@@ -6,7 +6,7 @@ import std::collections::list;
 
 const Number EPSILON @local = 0.0001;
 
-alias Vertices @local = List{Vec3};
+alias Vertices @local = List{Vec4};
 alias Indices @local = List{usz};
 
 
@@ -35,7 +35,7 @@ fn void weld_remesh(Vertices* vertices, Indices* indices) {
         int new_index = -1;
 
         foreach (int j, new_point: new_vertices) {
-            if (are_equal(point, new_point)) {
+            if (are_equal(point.xyz, new_point.xyz)) {
                 found_duplicate = true;
                 new_index = j;
                 break;

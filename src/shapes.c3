@@ -55,12 +55,12 @@ struct TransformedConvex (ConvexShape) {
     Vec3 translation;
     Vec3 scale;
     Quaternionf rotation;
-    Matrix3f inertia;
     ConvexShape shape;
 }
 
 struct ConvexPolyhedron (ConvexShape) {
-    Vec3[] vertices;
+    Vec4[] vertices;
+    usz[] indices;
 }
 
 fn TransformedConvex transformed_shape_from(ConvexShape shape = null, Vec3 translation = {0, 0, 0}, Vec3 scale = {1, 1, 1}, Quaternionf rotation = {0, 0, 0, 1}) {
@@ -126,7 +126,8 @@ fn Vec3 ConvexPolyhedron.furthest_point(&self, Vec3 direction) @dynamic {
     Vec3 furthest_point;
     Number max_distance = -Number.max;
 
-    foreach (pos : self.vertices) {
+    foreach (vert : self.vertices) {
+        Vec3 pos = vert.xyz;
         Number distance = pos.dot(direction);
         if (distance > max_distance) {
             max_distance = distance;
@@ -171,7 +172,9 @@ fn Matrix3f TransformedConvex.world_inertia_from_local(&self, Matrix3f local_ine
     return world_orient * local_inertia * world_orient.transpose();
 }
 
-fn Matrix3f ConvexPolyhedron.inertia_tensor(&self, Number mass) @dynamic => MATRIX3F_IDENTITY;
+fn Matrix3f ConvexPolyhedron.inertia_tensor(&self, Number mass) @dynamic {
+   return MATRIX3F_IDENTITY; 
+}
 
 fn Matrix3f Sphere.inertia_tensor(&self, Number mass) @dynamic {
     Number r2 = self.radius * self.radius;

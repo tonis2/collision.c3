@@ -8,9 +8,9 @@ import std::collections::list;
 
 alias Vec2 = float[<2>];
 alias Vec3 = float[<3>];
-alias Vec4f = float[<4>];
+alias Vec4 = float[<4>];
 
-alias Vertices = List{Vec3};
+alias Vertices = List{Vec4};
 alias Indices = List{usz};
 
 fn void test_physics() {
@@ -39,12 +39,12 @@ fn void test_physics() {
         assert(pair.first == 0 && pair.second == 1);
      };
 
-    Vec3[] cube = {
-        {-0.5, -0.5, -0.5}, {0.5, -0.5, -0.5}, {0.5, 0.5, -0.5}, {-0.5, 0.5, -0.5},
-        {-0.5, -0.5, 0.5}, {0.5, -0.5, 0.5}, {0.5, 0.5, 0.5}, {-0.5, 0.5, 0.5}
+    Vec4[] cube = {
+        {-0.5, -0.5, -0.5, 0}, {0.5, -0.5, -0.5, 0}, {0.5, 0.5, -0.5, 0}, {-0.5, 0.5, -0.5, 0},
+        {-0.5, -0.5, 0.5, 0}, {0.5, -0.5, 0.5, 0}, {0.5, 0.5, 0.5, 0}, {-0.5, 0.5, 0.5, 0}
     };
 
-    ConvexPolyhedron shape_1 = (ConvexPolyhedron){cube};
+    ConvexPolyhedron shape_1 = (ConvexPolyhedron){.vertices = cube, .indices = {}};
 
     TransformedConvex transformed_shape_1 = {
         .shape = &shape_1, 
@@ -134,9 +134,9 @@ fn void test_flow() {
         {{5,5,5}, {6,6,6}},
     };
 
-    Vec3[] cube = {
-        {-0.5, -0.5, -0.5}, {0.5, -0.5, -0.5}, {0.5, 0.5, -0.5}, {-0.5, 0.5, -0.5},
-        {-0.5, -0.5, 0.5}, {0.5, -0.5, 0.5}, {0.5, 0.5, 0.5}, {-0.5, 0.5, 0.5}
+    Vec4[] cube = {
+        {-0.5, -0.5, -0.5, 0}, {0.5, -0.5, -0.5, 0}, {0.5, 0.5, -0.5, 0}, {-0.5, 0.5, -0.5, 0},
+        {-0.5, -0.5, 0.5, 0}, {0.5, -0.5, 0.5, 0}, {0.5, 0.5, 0.5, 0}, {-0.5, 0.5, 0.5, 0}
     };
 
     // Store AABB boxes in spatial map, so you don't need to loop over all the boxes, then detecting collision
@@ -146,7 +146,7 @@ fn void test_flow() {
     // Loop over the AABB pairs that are in same grid are
     spatial_map.@get_pairs(;Pair pair) {
         // Test the collisions
-        ConvexPolyhedron shape_1 = (ConvexPolyhedron){cube};
+        ConvexPolyhedron shape_1 = (ConvexPolyhedron){.vertices = cube, .indices = {}};
 
         TransformedConvex transformed_shape_1 = {
             .shape = &shape_1, 
@@ -201,12 +201,12 @@ fn void test_remesh() {
     Indices indices;
 
     vertices.push_all({
-        {0.0f, 0.0f, 0.0f},
-        {1.0f, 0.0f, 0.0f},
-        {0.0f, 1.0f, 0.0f},
-        {1.0f, 0.0f, 0.0f},
-        {1.0f, 1.0f, 0.0f},
-        {0.0f, 1.0f, 0.0f}
+        {0.0f, 0.0f, 0.0f, 0},
+        {1.0f, 0.0f, 0.0f, 0},
+        {0.0f, 1.0f, 0.0f, 0},
+        {1.0f, 0.0f, 0.0f, 0},
+        {1.0f, 1.0f, 0.0f, 0},
+        {0.0f, 1.0f, 0.0f, 0}
     });
 
     indices.push_all({0, 1, 2, 3, 4, 5});

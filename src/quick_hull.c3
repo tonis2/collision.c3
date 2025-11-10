@@ -4,18 +4,17 @@ import std::io;
 import std::math;
 import std::collections::list;
 
+alias Points @local = List{Vec4};
 alias Vertex @local = int[<3>];
 alias Edge @local = int[<2>];
 alias IndexList @local = List{usz};
 alias EdgeList @local = List{Edge};
-alias Points @local = Vec3[];
 
 const Number EPSILON @local = 0.0001;
 
 struct QuickHull {
     Points points;
     List{HullFace} faces;
-    List{Vec3} result;
 }
 
 struct HullFace @local {
@@ -27,14 +26,15 @@ struct HullFace @local {
     IndexList outside;
 }
 
+
 <*
- @require points.len > 4 : `Hull input size must be > 4`
+ @require vertices.len() > 4 && indices != null : `Hull input size must be > 4`
 *>
-fn QuickHull hull_from_points(Points points) {
-    
-    QuickHull hull = {
-        .points = points
-    };
+// Replaces given vertices / indices with recreated ones
+fn void hull_from_points(Points* vertices, IndexList* indices) {
+    Points points = *vertices;
+    QuickHull hull = { .points = points };
+    defer hull.free();
 
     // Initial tetrahedon
     int[6] extremes;
@@ -75,10 +75,10 @@ fn QuickHull hull_from_points(Points points) {
 
     max_dist = 0;
 
-    Vec3 line_dir = (points[p2_idx] - points[p1_idx]).normalize();
+    Vec3 line_dir = (points[p2_idx] - points[p1_idx]).xyz.normalize();
     foreach (int i, point: points) {
         if (i == p1_idx || i == p2_idx) continue;
-        Vec3 to_p = (points[i] - points[p1_idx]);
+        Vec3 to_p = (points[i] - points[p1_idx]).xyz;
         Vec3 proj = line_dir * to_p.dot(line_dir);
 
         Number dist = (Number)math::sqrt((to_p - proj).sq_magnitude());
@@ -95,7 +95,7 @@ fn QuickHull hull_from_points(Points points) {
 
     foreach (int i, point: points) {
         if (i == p1_idx || i == p2_idx || i == p3_idx) continue;
-        Number dist = math::abs(hull.create_face({p1_idx, p2_idx, p3_idx}, {0,0,0}).distance_to_plane(points[i]));
+        Number dist = math::abs(hull.create_face({p1_idx, p2_idx, p3_idx}, {0,0,0}).distance_to_plane(points[i].xyz));
 
         if (dist > max_dist) {
             max_dist = dist;
@@ -103,7 +103,7 @@ fn QuickHull hull_from_points(Points points) {
         }
     }
 
-    Vec3 initial_centroid = (points[p1_idx] + points[p2_idx] + points[p3_idx] + points[p4_idx]) * 0.25f;
+    Vec3 initial_centroid = (points[p1_idx] + points[p2_idx] + points[p3_idx] + points[p4_idx]).xyz * 0.25f;
 
     HullFace f1 = hull.create_face({p1_idx, p2_idx, p3_idx}, initial_centroid);
     HullFace f2 = hull.create_face({p1_idx, p3_idx, p4_idx}, initial_centroid);
@@ -120,7 +120,7 @@ fn QuickHull hull_from_points(Points points) {
         max_dist = EPSILON;
 
         foreach (usz j, face: hull.faces) {
-            Number dist = face.distance_to_plane(point);
+            Number dist = face.distance_to_plane(point.xyz);
 
             if (dist > max_dist) {
                 max_dist = dist;
@@ -138,8 +138,7 @@ fn QuickHull hull_from_points(Points points) {
         hull.recurse(i);
     }
 
-    IndexList indices;
-    defer indices.free();
+    indices.clear();
 
     foreach (face: hull.faces) {
         if (face.v.x != -1) {
@@ -149,28 +148,34 @@ fn QuickHull hull_from_points(Points points) {
         }
     }
 
-    foreach (idx: indices) {
-        hull.result.push(points[idx]);
-    }
+    List{Vec4} new_vertices;
+    defer new_vertices.free();
 
-    return hull;
+    foreach (idx: indices) { new_vertices.push(points[idx]);}
+    // foreach (vert: new_vertices) {
+    //     io::printfn("%s", vert);
+    // }
+
+    vertices.clear();
+    vertices.add_all(&new_vertices);
 }
 
 fn void QuickHull.free(&self) {
     foreach (face: self.faces) face.outside.free();
     self.faces.free();
-    self.result.free();
 }
 
 fn Number HullFace.distance_to_plane(&self, Vec3 point) @local => (Number)self.normal.dot(point) - self.offset;
 
 fn HullFace QuickHull.create_face(&self, Vertex indices, Vec3 inner_point) @local {
-    Vec3 normal = (self.points[indices.y] - self.points[indices.x]).cross(self.points[indices.z] - self.points[indices.x]).normalize();
+    Vec3 a = (self.points[indices.y] - self.points[indices.x]).xyz;
+    Vec3 b = (self.points[indices.z] - self.points[indices.x]).xyz;
+    Vec3 normal = (a).cross(b).normalize();
 
     HullFace face = {
         .v = indices,
         .visited = false,
-        .offset = (Number)normal.dot(self.points[indices.x]),
+        .offset = (Number)normal.dot(self.points[indices.x].xyz),
         .normal = normal
     };
 
@@ -197,7 +202,7 @@ fn void QuickHull.recurse(&self, usz face_index) @local {
     Number max_dist = 0;
 
     foreach (usz index: seed_face.outside) {
-        Number dist = seed_face.distance_to_plane(self.points[index]);
+        Number dist = seed_face.distance_to_plane(self.points[index].xyz);
 
         if (dist > max_dist) {
             max_dist = dist;
@@ -233,16 +238,16 @@ fn void QuickHull.recurse(&self, usz face_index) @local {
         HullFace face = self.faces[i]; 
         if (face.v.x == 0) continue;
   
-        inner_point += self.points[face.v.x];
+        inner_point += self.points[face.v.x].xyz;
         visible_count_for_centroid++;
     }
 
     if (visible_count_for_centroid > EPSILON) {
         inner_point /= visible_count_for_centroid;
     } else {
-        inner_point = self.points[seed_face.v.x];
-        inner_point += self.points[seed_face.v.y];
-        inner_point += self.points[seed_face.v.z];
+        inner_point = self.points[seed_face.v.x].xyz;
+        inner_point += self.points[seed_face.v.y].xyz;
+        inner_point += self.points[seed_face.v.z].xyz;
         inner_point /= 3.0;
     }
 
@@ -277,7 +282,7 @@ fn void QuickHull.recurse(&self, usz face_index) @local {
             HullFace face = self.faces[face_idx];
             if (face.v.x == -1) continue;
 
-            Number dist = face.distance_to_plane(self.points[p_idx]);
+            Number dist = face.distance_to_plane(self.points[p_idx].xyz);
 
             if (dist > max_dist) {
                 max_dist = dist;
@@ -303,7 +308,7 @@ fn void QuickHull.recurse(&self, usz face_index) @local {
 
 fn void QuickHull.find_horizon(&self, usz face_index, usz eye_index, IndexList* visible_faces, EdgeList* horizon ) @local {
 
-    Vec3 eye_point = self.points[eye_index];
+    Vec3 eye_point = self.points[eye_index].xyz;
     
     HullFace* face = self.faces.get_ref(face_index);
     face.visited = true;
