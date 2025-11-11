@@ -18,8 +18,6 @@ struct PhysicsWorld {
     List{Collision} collisions;
     List{Collision} collision_cache;
     List{GenericJoint3D} constraints;
-    CollisionCache collision_cache;
-
     SpatialHash3D spatial_map;
 
     CollisionFilter filters;
@@ -91,7 +89,6 @@ fn void PhysicsWorld.free(&self) {
     self.spatial_map.free();
     self.constraints.free();
     self.filters.free();
-    self.collision_cache.free();
 }
 
 fn PhysicsWorld create_world(PhysicsWorldConfig config) {
@@ -248,7 +245,7 @@ fn void PhysicsWorld.run_step(&self, Number time, uint step_count = 15) {
                             .depth = collision_info.depth,
                         };
 
-                        self.collision_cache.set(pair.hash(), collision);
+                    
                         self.collisions.push(collision);
                     }
                 }
@@ -257,7 +254,6 @@ fn void PhysicsWorld.run_step(&self, Number time, uint step_count = 15) {
 
         foreach (collision: self.collisions) self.resolve_collision(collision);
         self.collisions.clear();
-        self.collision_cache.clear();
 
         // Apply constraints
         foreach (&joint: self.constraints) {
@@ -390,7 +386,7 @@ fn void PhysicsWorld.resolve_collision(&self, Collision collision) {
     // Values
     Number inverse_mass_sum = a.motion.inverse_mass + b.motion.inverse_mass;
     Number restitution = a.material.restitution + b.material.restitution;
-    Number static_friction = math::sqrt(a.material.static_friction * b.material.static_friction);
+    Number static_friction = a.material.static_friction * b.material.static_friction;
 
     if (inverse_mass_sum == 0) return;
 
