@@ -3,6 +3,8 @@ module collision;
 import std::math;
 import std::io;
 
+const Number EPSILON @local = 0.0001;
+
 enum ShapeType {
     SPHERE,
     CAPSULE,
@@ -73,7 +75,6 @@ fn TransformedConvex transformed_shape_from(ConvexShape shape = null, Vec3 trans
 }
 
 fn usz? Ray.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("origin %s, direction %s", self.origin, self.direction)!;
-
 
 fn Vec3 Ray.intersect(&self, Vec3 direction) {
     // Assuming direction is a unit vector
@@ -173,7 +174,36 @@ fn Matrix3f TransformedConvex.world_inertia_from_local(&self, Matrix3f local_ine
 }
 
 fn Matrix3f ConvexPolyhedron.inertia_tensor(&self, Number mass) @dynamic {
-   return MATRIX3F_IDENTITY; 
+    Matrix3f inertia = MATRIX3F_IDENTITY;
+
+    Number density = 1.0;
+
+    Vec3 c = self.center_of_mass();
+
+    for (usz i; i < self.indices.len; i += 3) {
+        Vec3 v1 = self.vertices[self.indices[i]].xyz;
+        Vec3 v2 = self.vertices[self.indices[i + 1]].xyz;
+        Vec3 v3 = self.vertices[self.indices[i + 2]].xyz;
+
+        Number tetra_mass;
+        Matrix3f tetra_I_origin = MATRIX3F_IDENTITY;
+
+        inertia += compute_origin(v1, v2, v3, density);
+    }
+
+    inertia.m00 -= mass * (c.y * c.y + c.z * c.z);
+    inertia.m11 -= mass * (c.x * c.x + c.z * c.z);
+    inertia.m22 -= mass * (c.x * c.x + c.y * c.y);
+
+    inertia.m01 -= mass * (-c.x * c.y);
+    inertia.m02 -= mass * (-c.x * c.z);
+    inertia.m12 -= mass * (-c.y * c.z);
+    
+    inertia.m10 -= mass * (-c.y * c.x);
+    inertia.m20 -= mass * (-c.z * c.x);
+    inertia.m21 -= mass * (-c.z * c.y);
+
+    return inertia;
 }
 
 fn Matrix3f Sphere.inertia_tensor(&self, Number mass) @dynamic {
@@ -246,6 +276,98 @@ fn Aabb3 Cylinder.get_aabb(&self) @dynamic {
 }
 
 
-fn Aabb3 ConvexPolyhedron.get_aabb(&self) @dynamic => {};
+fn Aabb3 ConvexPolyhedron.get_aabb(&self) @dynamic {
+    Vec3 min = {float.max, float.max, float.max};
+    Vec3 max = {-float.max, -float.max, -float.max};
+
+    foreach (point: self.vertices) {
+        min.x = math::min(point.x, min.x);
+        min.y = math::min(point.y, min.y);
+        min.z = math::min(point.z, min.z);
+
+        max.x = math::max(point.x, max.x);
+        max.y = math::max(point.y, max.y);
+        max.z = math::max(point.z, max.z);
+    }
+
+    return {
+        min,
+        max
+    };
+}
 
 fn Vec3 TransformedConvex.get_world_center_of_mass(&self, Vec3 center_of_mass) => self.rotation * center_of_mass + self.translation;
+
+
+fn Number scalar_triple_product(Vec3 a, Vec3 b, Vec3 c) @local {
+    // (a x b) . c
+    Number cross_x = a.y * b.z - a.z * b.y;
+    Number cross_y = a.z * b.x - a.x * b.z;
+    Number cross_z = a.x * b.y - a.y * b.x;
+    return cross_x * c.x + cross_y * c.y + cross_z * c.z;
+}
+
+fn Vec3 ConvexPolyhedron.center_of_mass(self) {
+    Number total_detJ = 0;
+    Vec3 weighted_com = {0, 0, 0};
+    Vec3 final_com = {0, 0, 0};
+
+    for (usz i; i < self.indices.len; i += 3) {
+        Vec3 v1 = self.vertices[self.indices[i]].xyz;
+        Vec3 v2 = self.vertices[self.indices[i + 1]].xyz;
+        Vec3 v3 = self.vertices[self.indices[i + 2]].xyz;
+
+        total_detJ += scalar_triple_product(v1, v2, v3);
+
+        weighted_com.x += total_detJ * (v1.x + v2.x + v3.x);
+        weighted_com.y += total_detJ * (v1.y + v2.y + v3.y);
+        weighted_com.z += total_detJ * (v1.z + v2.z + v3.z);
+    }
+    
+    if (math::abs(total_detJ) > EPSILON) final_com = 0.25 * weighted_com / total_detJ;
+
+    return final_com;
+}
+
+fn Matrix3f compute_origin(Vec3 a, Vec3 b, Vec3 c, Number density) @local {
+    Matrix3f inertia_tensor;
+
+    Number detJ = scalar_triple_product(a, b, c);
+
+    Number v_mult_diag = (density * detJ) / (Number)60.0;
+    Number v_mult_off_diag = (density * detJ) / (Number)120.0;
+
+    // Diagonal elements (Moments of Inertia)
+    inertia_tensor.m00 = v_mult_diag * (
+        (a.y*a.y + a.y*b.y + b.y*b.y + a.y*c.y + b.y*c.y + c.y*c.y) +
+        (a.z*a.z + a.z*b.z + b.z*b.z + a.z*c.z + b.z*c.z + c.z*c.z)
+    );
+
+    inertia_tensor.m11 = v_mult_diag * (
+        (a.x*a.x + a.x*b.x + b.x*b.x + a.x*c.x + b.x*c.x + c.x*c.x) +
+        (a.z*a.z + a.z*b.z + b.z*b.z + a.z*c.z + b.z*c.z + c.z*c.z)
+    );
+
+    inertia_tensor.m22 = v_mult_diag * (
+        (a.x*a.x + a.x*b.x + b.x*b.x + a.x*c.x + b.x*c.x + c.x*c.x) +
+        (a.y*a.y + a.y*b.y + b.y*b.y + a.y*c.y + b.y*c.y + c.y*c.y)
+    );
+
+    inertia_tensor.m01 = -v_mult_off_diag * (
+        (2*a.x*a.y + b.x*a.y + c.x*a.y) + (a.x*b.y + 2*b.x*b.y + c.x*b.y) + (a.x*c.y + b.x*c.y + 2*c.x*c.y)
+    );
+
+    inertia_tensor.m02 = -v_mult_off_diag * (
+        (2*a.x*a.z + b.x*a.z + c.x*a.z) + (a.x*b.z + 2*b.x*b.z + c.x*b.z) + (a.x*c.z + b.x*c.z + 2*c.x*c.z)
+    );
+
+    inertia_tensor.m12 = -v_mult_off_diag * (
+        (2*a.y*a.z + b.y*a.z + c.y*a.z) + (a.y*b.z + 2*b.y*b.z + c.y*b.z) + (a.y*c.z + b.y*c.z + 2*c.y*c.z)
+    );
+
+    inertia_tensor.m10 = inertia_tensor.m01;
+    inertia_tensor.m20 = inertia_tensor.m02;
+    inertia_tensor.m21 = inertia_tensor.m12;
+
+    return inertia_tensor;
+}
