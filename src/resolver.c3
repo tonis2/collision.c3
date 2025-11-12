@@ -121,7 +121,7 @@ fn Aabb3 Rigidbody.get_transformed_aabb(&self) {
 fn void? PhysicsWorld.add_body(&self, Rigidbody body) {
     body.is_static = body.motion.mass == 0;
     body.motion.inverse_mass = !body.is_static ? 1.0f / body.motion.mass : 0;
-    body.aabb = body.collider.get_aabb();
+    body.aabb = body.collider.get_aabb().scale(body.collider.scale);
     body.sleeping = false;
 
     body.transformed_aabb = body.get_transformed_aabb();
@@ -212,7 +212,6 @@ fn void PhysicsWorld.run_step(&self, Number time, uint step_count = 15) {
 
             // Apply gravity
             body.apply_linear_impulse(gravity * body.motion.gravity_factor * body.motion.mass * time_step);
-        
 
             // Apply dampening (Wind friction ..etc)
             body.motion.angular_velocity *= math::pow(body.motion.angular_dampening, time_step);
@@ -244,7 +243,6 @@ fn void PhysicsWorld.run_step(&self, Number time, uint step_count = 15) {
                             .contact = collision_info.contact_points,
                             .depth = collision_info.depth,
                         };
-
                     
                         self.collisions.push(collision);
                     }

@@ -151,10 +151,10 @@ fn void hull_from_points(Points* vertices, IndexList* indices) {
     List{Vec4} new_vertices;
     defer new_vertices.free();
 
-    foreach (idx: indices) { new_vertices.push(points[idx]);}
-    // foreach (vert: new_vertices) {
-    //     io::printfn("%s", vert);
-    // }
+    foreach (usz i, idx: indices) {
+        new_vertices.push(points[idx]);
+        indices.set_at(i, new_vertices.len() - 1);
+    }
 
     vertices.clear();
     vertices.add_all(&new_vertices);

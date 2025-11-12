@@ -62,7 +62,7 @@ struct TransformedConvex (ConvexShape) {
 
 struct ConvexPolyhedron (ConvexShape) {
     Vec4[] vertices;
-    usz[] indices;
+    // usz[] indices;
 }
 
 fn TransformedConvex transformed_shape_from(ConvexShape shape = null, Vec3 translation = {0, 0, 0}, Vec3 scale = {1, 1, 1}, Quaternionf rotation = {0, 0, 0, 1}) {
@@ -180,16 +180,16 @@ fn Matrix3f ConvexPolyhedron.inertia_tensor(&self, Number mass) @dynamic {
 
     Vec3 c = self.center_of_mass();
 
-    for (usz i; i < self.indices.len; i += 3) {
-        Vec3 v1 = self.vertices[self.indices[i]].xyz;
-        Vec3 v2 = self.vertices[self.indices[i + 1]].xyz;
-        Vec3 v3 = self.vertices[self.indices[i + 2]].xyz;
+    // for (usz i; i < self.indices.len; i += 3) {
+    //     Vec3 v1 = self.vertices[self.indices[i]].xyz;
+    //     Vec3 v2 = self.vertices[self.indices[i + 1]].xyz;
+    //     Vec3 v3 = self.vertices[self.indices[i + 2]].xyz;
 
-        Number tetra_mass;
-        Matrix3f tetra_I_origin = MATRIX3F_IDENTITY;
+    //     Number tetra_mass;
+    //     Matrix3f tetra_I_origin = MATRIX3F_IDENTITY;
 
-        inertia += compute_origin(v1, v2, v3, density);
-    }
+    //     inertia += compute_origin(v1, v2, v3, density);
+    // }
 
     inertia.m00 -= mass * (c.y * c.y + c.z * c.z);
     inertia.m11 -= mass * (c.x * c.x + c.z * c.z);
@@ -246,8 +246,8 @@ fn Matrix3f Capsule.inertia_tensor(&self, Number mass) @dynamic {
     };
 }
 
-fn ShapeType ConvexPolyhedron.get_type(&self) @dynamic => ShapeType.CONVEX;
 fn ShapeType TransformedConvex.get_type(&self) @dynamic => self.shape.get_type();
+fn ShapeType ConvexPolyhedron.get_type(&self) @dynamic => ShapeType.CONVEX;
 fn ShapeType Sphere.get_type(&self) @dynamic => ShapeType.SPHERE;
 fn ShapeType Capsule.get_type(&self) @dynamic => ShapeType.CAPSULE;
 fn ShapeType Cylinder.get_type(&self) @dynamic => ShapeType.CYLINDER;
@@ -312,17 +312,17 @@ fn Vec3 ConvexPolyhedron.center_of_mass(self) {
     Vec3 weighted_com = {0, 0, 0};
     Vec3 final_com = {0, 0, 0};
 
-    for (usz i; i < self.indices.len; i += 3) {
-        Vec3 v1 = self.vertices[self.indices[i]].xyz;
-        Vec3 v2 = self.vertices[self.indices[i + 1]].xyz;
-        Vec3 v3 = self.vertices[self.indices[i + 2]].xyz;
+    // for (usz i; i < self.indices.len; i += 3) {
+    //     Vec3 v1 = self.vertices[self.indices[i]].xyz;
+    //     Vec3 v2 = self.vertices[self.indices[i + 1]].xyz;
+    //     Vec3 v3 = self.vertices[self.indices[i + 2]].xyz;
 
-        total_detJ += scalar_triple_product(v1, v2, v3);
+    //     total_detJ += scalar_triple_product(v1, v2, v3);
 
-        weighted_com.x += total_detJ * (v1.x + v2.x + v3.x);
-        weighted_com.y += total_detJ * (v1.y + v2.y + v3.y);
-        weighted_com.z += total_detJ * (v1.z + v2.z + v3.z);
-    }
+    //     weighted_com.x += total_detJ * (v1.x + v2.x + v3.x);
+    //     weighted_com.y += total_detJ * (v1.y + v2.y + v3.y);
+    //     weighted_com.z += total_detJ * (v1.z + v2.z + v3.z);
+    // }
     
     if (math::abs(total_detJ) > EPSILON) final_com = 0.25 * weighted_com / total_detJ;
 

@@ -11,7 +11,7 @@ alias Vec4 @private = Number[<4>];
 alias Vec3 @private = Number[<3>];
 
 // fn usz? Vec3.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s,%s,%s", self.x, self.y, self.z)!;
-fn usz? Vec4.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s,%s,%s", self.x, self.y, self.z)!;
+//fn usz? Vec4.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s,%s,%s", self.x, self.y, self.z)!;
 
 struct HitInfo {
     bool hits;
@@ -59,3 +59,5 @@ fn usz? Pair.to_format(&self, Formatter* formatter) @dynamic => formatter.printf
 macro bool Pair.equals(self, Pair b) @operator(==) => self.first == b.first && self.second == b.second;
 macro uint Pair.hash(Pair self) => builtin::@generic_hash(self.first) + builtin::@generic_hash(self.second);
 macro bool Vec3.equals(self, Vec3 b) => self == b;
+
+

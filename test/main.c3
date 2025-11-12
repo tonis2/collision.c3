@@ -44,7 +44,7 @@ fn void test_physics() {
         {-0.5, -0.5, 0.5, 0}, {0.5, -0.5, 0.5, 0}, {0.5, 0.5, 0.5, 0}, {-0.5, 0.5, 0.5, 0}
     };
 
-    ConvexPolyhedron shape_1 = (ConvexPolyhedron){.vertices = cube, .indices = {}};
+    ConvexPolyhedron shape_1 = (ConvexPolyhedron){.vertices = cube};
 
     TransformedConvex transformed_shape_1 = {
         .shape = &shape_1, 
@@ -146,7 +146,7 @@ fn void test_flow() {
     // Loop over the AABB pairs that are in same grid are
     spatial_map.@get_pairs(;Pair pair) {
         // Test the collisions
-        ConvexPolyhedron shape_1 = (ConvexPolyhedron){.vertices = cube, .indices = {}};
+        ConvexPolyhedron shape_1 = (ConvexPolyhedron){.vertices = cube};
 
         TransformedConvex transformed_shape_1 = {
             .shape = &shape_1, 
@@ -214,5 +214,5 @@ fn void test_remesh() {
     collision::weld_remesh(vertices: &vertices, indices: &indices);
 
     assert(vertices.len() == 4);
-    assert(indices.len() == 6);
+    assert(indices.len() == 3);
 }

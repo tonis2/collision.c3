@@ -4,13 +4,13 @@ import std::io;
 import std::math;
 import std::collections::list;
 
-const Number EPSILON @local = 0.0001;
+const Number EPSILON @local = 0.005;
 
 alias Vertices @local = List{Vec4};
 alias Indices @local = List{usz};
 
 
-fn bool are_equal(Vec3 a, Vec3 b) => a.distance_sq(b) < EPSILON * EPSILON;
+fn bool are_equal(Vec3 a, Vec3 b) => a.distance_sq(b) < EPSILON;
 
 <*
  @require !vertices.is_empty() && !indices.is_empty() : `Vertices and Indices must not be empty`
@@ -19,14 +19,9 @@ fn void weld_remesh(Vertices* vertices, Indices* indices) {
 
     Vertices new_vertices;
     Indices new_indices;
-    Indices vertex_map;
-
-    vertex_map.init(mem, vertices.len());
-    vertex_map.set_size(vertices.len());
 
     defer {
         new_vertices.free();
-        vertex_map.free();
         new_indices.free();
     }
 
@@ -45,24 +40,31 @@ fn void weld_remesh(Vertices* vertices, Indices* indices) {
         if (found_duplicate == false) {
             // This is a unique vertex. Add it to the new list.
             new_vertices.push(point);
-            new_index = (int)new_vertices.len(); // Its new index is the current count
-        }
+            new_index = (int)new_vertices.len() - 1; // Its new index is the current count
 
-        vertex_map.insert_at(i, new_index);
+            foreach (usz j, idx: indices) {
+                if (idx == i) indices.set_at(j, new_index);
+            }
+        }
     }
 
-    for (usz i = 0; i < indices.len(); i+= 3) {
-        usz n0 = vertex_map[i];
-        usz n1 = vertex_map[i+1];
-        usz n2 = vertex_map[i+2];
 
+    usz max_index = new_vertices.len() - 1;
+    for (usz i = 0; i < indices.len(); i+= 3) {
+        usz i1 = indices.get(i);
+        usz i2 = indices.get(i + 1);
+        usz i3 = indices.get(i + 2);
+
+        if (i1 > max_index || i2 > max_index || i3 > max_index) continue;
         // Check for degenerate faces.
         // A face is degenerate if two or more of its vertices
         // were merged into the same new vertex.
-        if (n0 != n1 && n0 != n2 && n1 != n2) {
-            // This is a valid, non-degenerate triangle. Add it.
-           new_indices.push_all({n0, n1, n2});
-        }
+
+        new_indices.push_all({i1, i2, i3});
+        // if (i1 != i2 && i1 != i3 && i2 != i3) {
+        //     // This is a valid, non-degenerate triangle. Add it.
+        //    new_indices.push_all({i1, i2, i3});
+        // }
     }
 
     vertices.clear();
