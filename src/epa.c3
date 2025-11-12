@@ -77,7 +77,7 @@ fn void SupportArray.reconstruct(self, FaceArray* faces, Vec3 new_point)
 
     foreach (edge: edges) {
         Face new_face = self.create_face(edge.first, edge.second, self.len() - 1);
-        if (new_face.normal.sq_magnitude() < 0.001f) continue;
+        if (new_face.normal.sq_magnitude() < 0.1f) continue;
         faces.push(new_face);
     }
 }
