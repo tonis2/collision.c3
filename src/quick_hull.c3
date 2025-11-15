@@ -4,11 +4,11 @@ import std::io;
 import std::math;
 import std::collections::list;
 
-alias Points @local = List{Vec4};
+
 alias Vertex @local = int[<3>];
-alias Edge @local = int[<2>];
+alias Points @local = List{Vec4};
 alias IndexList @local = List{usz};
-alias EdgeList @local = List{Edge};
+alias EdgeList @local = List{int[<2>]};
 
 const Number EPSILON @local = 0.0001;
 
@@ -26,11 +26,14 @@ struct HullFace @local {
     IndexList outside;
 }
 
-
 <*
+ Creates convex hull from a mesh, fixes non-concave holes ..etc, otherwise collision detection won't work.
+ Overwrites given vertices/indices, so give a cloned lists as parameters, instead of original data.
+
+ @param vertices : `Complete points for the mesh`
+ @param indices : `Complete indices for the mesh.`
  @require vertices.len() > 4 && indices != null : `Hull input size must be > 4`
 *>
-// Replaces given vertices / indices with recreated ones
 fn void hull_from_points(Points* vertices, IndexList* indices) {
     Points points = *vertices;
     QuickHull hull = { .points = points };
@@ -44,7 +47,6 @@ fn void hull_from_points(Points* vertices, IndexList* indices) {
     int p3_idx = -1;
     int p4_idx = -1;
     
-    // 497,498,175,103
     foreach (int i, point: points) {
         if (point.x > points[extremes[0]].x) extremes[0] = i;
         if (point.x < points[extremes[1]].x) extremes[1] = i;

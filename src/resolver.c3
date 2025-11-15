@@ -12,14 +12,11 @@ alias CollisionCache = HashMap{uint, Collision};
 alias RigidBodyMap = LinkedHashMap{usz, Rigidbody};
 alias RigidBodyIterator = LinkedHashMapValueIterator{usz, Rigidbody};
 
-
 struct PhysicsWorld {
     RigidBodyMap bodies;
     List{Collision} collisions;
-    List{Collision} collision_cache;
     List{GenericJoint3D} constraints;
     SpatialHash3D spatial_map;
-
     CollisionFilter filters;
 }
 
@@ -49,6 +46,8 @@ struct Material {
 }
 
 struct Motion {
+    Vec3 linear_velocity;
+    Vec3 angular_velocity;
     Number mass;
     Number inverse_mass;
     Number gravity_factor;
@@ -59,9 +58,6 @@ struct Motion {
     //Vec3 inertia_diagonal;
     //Quaternionf inertia_orientation;
     Matrix3f inertia;
-
-    Vec3 linear_velocity;
-    Vec3 angular_velocity;
 }
 
 struct Rigidbody {
@@ -70,13 +66,13 @@ struct Rigidbody {
 
     Aabb3 aabb;
     Aabb3 transformed_aabb;
- 
-    TransformedConvex collider;
     Material material;
 
     Motion motion;
     bool sleeping;
     bool is_static;
+
+    TransformedConvex collider;
 }
 
 struct PhysicsWorldConfig {
@@ -96,6 +92,11 @@ fn PhysicsWorld create_world(PhysicsWorldConfig config) {
     world.spatial_map.cell_size = config.cell_size;
     return world;
 }
+
+
+Vec3 gravity @private = {0.0f, 0.0f, -9.8f};
+
+const EPSILON @local = 0.001f;
 
 <*
  @require self.bodies.len() > 0 : `Must have rigid bodies`
@@ -170,9 +171,6 @@ fn Vec3 Rigidbody.relative_velocity(self, Vec3 point) {
 fn bool Rigidbody.is_rotating(self) => self.motion.angular_velocity.sq_magnitude() > 0.001f;
 fn bool Rigidbody.is_moving(self) => self.motion.linear_velocity.sq_magnitude() > 0.001f;
 fn bool Rigidbody.is_sleeping(self) => self.sleeping;
-
-
-Vec3 gravity @private = {0.0f, 0.0f, -9.8f};
 
 <*
  @require self.bodies.len() > 0 : `Must have some bodies to simulate`
@@ -288,7 +286,7 @@ fn void PhysicsWorld.run_step(&self, Number time, uint step_count = 15) {
                     if (!b.is_static) total_inertia += b.get_intertia(rB, normal);
 
                     Number effective_mass = inverse_mass_sum + total_inertia.dot(normal);
-                    if (effective_mass < 0.00001f) return;
+                    if (effective_mass < EPSILON) return;
 
                     Number contact_velocity = relative_velocity.dot(normal);
                     Number position_error = worldspace_joint.dot(normal);
@@ -334,7 +332,7 @@ fn void PhysicsWorld.run_step(&self, Number time, uint step_count = 15) {
 
                     if (!a.is_static) effective_mass += normal.dot(a.get_inverse_world_inertia() * normal);
                     if (!b.is_static) effective_mass += normal.dot(b.get_inverse_world_inertia() * normal);
-                    if (effective_mass < 0.00001f) return;
+                    if (effective_mass < EPSILON) return;
 
                     Number angular_velocity = (b.motion.angular_velocity - a.motion.angular_velocity).dot(normal);
 
@@ -384,7 +382,7 @@ fn void PhysicsWorld.resolve_collision(&self, Collision collision) {
     // Values
     Number inverse_mass_sum = a.motion.inverse_mass + b.motion.inverse_mass;
     Number restitution = a.material.restitution + b.material.restitution;
-    Number static_friction = a.material.static_friction * b.material.static_friction;
+    Number static_friction = math::sqrt(a.material.static_friction * b.material.static_friction) * 0.7;
 
     if (inverse_mass_sum == 0) return;
 
@@ -397,7 +395,7 @@ fn void PhysicsWorld.resolve_collision(&self, Collision collision) {
     if (!b.is_static) relative_velocity += b.relative_velocity(rB);
 
     Number impulse_force = relative_velocity.dot(collision.normal);
-    if (impulse_force > 0.0001f) return;
+    if (impulse_force > EPSILON) return;
 
     Vec3 total_inertia;
 
@@ -411,7 +409,7 @@ fn void PhysicsWorld.resolve_collision(&self, Collision collision) {
 
     Vec3 tangent_direction = relative_velocity - relative_velocity.dot(collision.normal) * collision.normal;
     
-    if (tangent_direction.sq_magnitude() > 0.001f) {
+    if (tangent_direction.sq_magnitude() > EPSILON) {
         tangent_direction = tangent_direction.normalize();
 
         Vec3 friction_inertia = {0,0,0};
@@ -442,5 +440,3 @@ fn void PhysicsWorld.resolve_collision(&self, Collision collision) {
     if (!a.is_static) a.collider.translation -= correction;
     if (!b.is_static) b.collider.translation += correction;
 }
-
-

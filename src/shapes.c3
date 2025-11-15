@@ -61,7 +61,8 @@ struct TransformedConvex (ConvexShape) {
 }
 
 struct ConvexPolyhedron (ConvexShape) {
-    Vec4[] vertices;
+    Vec4* vertices;
+    usz count;
     // usz[] indices;
 }
 
@@ -127,8 +128,8 @@ fn Vec3 ConvexPolyhedron.furthest_point(&self, Vec3 direction) @dynamic {
     Vec3 furthest_point;
     Number max_distance = -Number.max;
 
-    foreach (vert : self.vertices) {
-        Vec3 pos = vert.xyz;
+    for (usz i; i < self.count; i++) {
+        Vec3 pos = self.vertices[i].xyz;
         Number distance = pos.dot(direction);
         if (distance > max_distance) {
             max_distance = distance;
@@ -280,7 +281,8 @@ fn Aabb3 ConvexPolyhedron.get_aabb(&self) @dynamic {
     Vec3 min = {float.max, float.max, float.max};
     Vec3 max = {-float.max, -float.max, -float.max};
 
-    foreach (point: self.vertices) {
+    for (usz i; i < self.count; i++) {
+        Vec3 point = self.vertices[i].xyz;
         min.x = math::min(point.x, min.x);
         min.y = math::min(point.y, min.y);
         min.z = math::min(point.z, min.z);
@@ -297,7 +299,6 @@ fn Aabb3 ConvexPolyhedron.get_aabb(&self) @dynamic {
 }
 
 fn Vec3 TransformedConvex.get_world_center_of_mass(&self, Vec3 center_of_mass) => self.rotation * center_of_mass + self.translation;
-
 
 fn Number scalar_triple_product(Vec3 a, Vec3 b, Vec3 c) @local {
     // (a x b) . c

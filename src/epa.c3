@@ -19,6 +19,9 @@ alias EdgeArray @private = ElasticArray{Pair, 60};
 alias FaceArray @private = ElasticArray{Face, 60};
 alias SupportArray @private = ElasticArray{SupportPoint, 60};
 
+const uint EPA_MAX_ITER = 16;
+const Number EPA_TOLERANCE = 0.0001f;
+
 fn void EdgeArray.add_if_new(&self, Pair pair)
 {
     // Reverse search
@@ -70,14 +73,15 @@ fn void SupportArray.reconstruct(self, FaceArray* faces, Vec3 new_point)
             edges.add_if_new({face.a, face.b});
             edges.add_if_new({face.b, face.c});
             edges.add_if_new({face.c, face.a});
-
             faces.remove_at(i);
         }
     }
 
     foreach (edge: edges) {
         Face new_face = self.create_face(edge.first, edge.second, self.len() - 1);
-        if (new_face.normal.sq_magnitude() < 0.1f) continue;
+        Number magnitude = new_face.normal.sq_magnitude();
+      
+        if (new_face.normal.sq_magnitude() < 0.9) continue;
         faces.push(new_face);
     }
 }
@@ -95,8 +99,6 @@ fn uint Face[].get_closest(self, Number min_distance = Number.max) {
     return closest;
 }
 
-const uint EPA_MAX_ITER = 16;
-const Number EPA_TOLERANCE = 0.0001f;
 
 <*
  @require info.simplex.len() > 3 : `Simplex data must have enough points`
@@ -148,6 +150,8 @@ fn void epa(CollisionInfo* info, ConvexShape shape_1, ConvexShape shape_2) {
             SupportPoint c = vertices[closest_face.c];
 
             Vec3 bary = p.barycenter(a.point, b.point, c.point);
+
+            if (bary.sq_magnitude() < 0.3) continue;
 
             Vec3[2] support_a = {a.a, a.b};
             Vec3[2] support_b = {b.a, b.b};

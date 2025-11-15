@@ -31,6 +31,12 @@ fn Vec3 SpatialHash3D.world_to_grid(&self, Vec3 pos) {
     };
 }
 
+<*
+ Adds a 3D AABB box into SpatialHash
+ @param box : `3D aabb box, that's inserted into the map`
+ @param id : `ID thats attached to the box, could be mesh ID`
+ @require box.size().sq_magnitude() < 10000 : `Aabb box is too big, could be because memory errors`
+*>    
 fn void? SpatialHash3D.insert(&self, Aabb3 box, usz id) {
     Vec3 min_cell = self.world_to_grid(box.min);
     Vec3 max_cell = self.world_to_grid(box.max);

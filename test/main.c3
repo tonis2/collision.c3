@@ -183,8 +183,8 @@ fn void test_bvh() {
     };
 
     Aabb3 box = {
-        .min = {3, 1, 1},
-        .max = {4, 3, 3}
+        .min = {1, 1, 1},
+        .max = {4, 2, 2}
     };
 
     HitInfo hit;
