@@ -96,7 +96,7 @@ fn PhysicsWorld create_world(PhysicsWorldConfig config) {
 
 Vec3 gravity @private = {0.0f, 0.0f, -9.8f};
 
-const EPSILON @local = 0.001f;
+const EPSILON @local = 0.0001f;
 
 <*
  @require self.bodies.len() > 0 : `Must have rigid bodies`
@@ -175,7 +175,7 @@ fn bool Rigidbody.is_sleeping(self) => self.sleeping;
 <*
  @require self.bodies.len() > 0 : `Must have some bodies to simulate`
 *>
-fn void PhysicsWorld.run_step(&self, Number time, uint step_count = 15) {
+fn void PhysicsWorld.run_step(&self, Number time, uint step_count = 20) {
 
     RigidBodyIterator rigid_bodies = self.bodies.value_iter();
 
@@ -209,7 +209,7 @@ fn void PhysicsWorld.run_step(&self, Number time, uint step_count = 15) {
             }
 
             // Apply gravity
-            body.apply_linear_impulse(gravity * body.motion.gravity_factor * body.motion.mass * time_step);
+            // body.apply_linear_impulse(gravity * body.motion.gravity_factor * body.motion.mass * time_step);
 
             // Apply dampening (Wind friction ..etc)
             body.motion.angular_velocity *= math::pow(body.motion.angular_dampening, time_step);
@@ -226,6 +226,7 @@ fn void PhysicsWorld.run_step(&self, Number time, uint step_count = 15) {
 
             // Check if aabb boxes collide first
             if (body_a.transformed_aabb.collides(body_b.transformed_aabb)) {
+
                 // Check collision with GJK algorithm
                 CollisionInfo collision_info = collision::check_collision(&body_a.collider, &body_b.collider);
 
@@ -431,8 +432,8 @@ fn void PhysicsWorld.resolve_collision(&self, Collision collision) {
         if (!b.is_static) b.apply_impulse(normal_impulse, rB);
     };
     
-    Number percent = 0.4f;
-    Number slop = 0.02f;
+    Number percent = 0.5f;
+    Number slop = 0.002f;
     Number correction_magnitude = math::max(collision.depth - slop, 0.0f) / inverse_mass_sum * percent;
 
     Vec3 correction = collision.normal * correction_magnitude;

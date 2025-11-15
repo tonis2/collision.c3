@@ -19,8 +19,10 @@ alias EdgeArray @private = ElasticArray{Pair, 60};
 alias FaceArray @private = ElasticArray{Face, 60};
 alias SupportArray @private = ElasticArray{SupportPoint, 60};
 
+
 const uint EPA_MAX_ITER = 16;
 const Number EPA_TOLERANCE = 0.0001f;
+
 
 fn void EdgeArray.add_if_new(&self, Pair pair)
 {
@@ -81,7 +83,7 @@ fn void SupportArray.reconstruct(self, FaceArray* faces, Vec3 new_point)
         Face new_face = self.create_face(edge.first, edge.second, self.len() - 1);
         Number magnitude = new_face.normal.sq_magnitude();
       
-        if (new_face.normal.sq_magnitude() < 0.9) continue;
+        if (new_face.normal.sq_magnitude() < 0.3) continue;
         faces.push(new_face);
     }
 }
@@ -144,6 +146,8 @@ fn void epa(CollisionInfo* info, ConvexShape shape_1, ConvexShape shape_2) {
             info.depth = closest_face.distance;
 
             Vec3 p = info.normal * -info.depth;
+
+            if (p.sq_magnitude() < 0.0001) continue;
  
             SupportPoint a = vertices[closest_face.a];
             SupportPoint b = vertices[closest_face.b];
@@ -151,7 +155,7 @@ fn void epa(CollisionInfo* info, ConvexShape shape_1, ConvexShape shape_2) {
 
             Vec3 bary = p.barycenter(a.point, b.point, c.point);
 
-            if (bary.sq_magnitude() < 0.3) continue;
+            // if (bary.sq_magnitude() > 1.0) continue;
 
             Vec3[2] support_a = {a.a, a.b};
             Vec3[2] support_b = {b.a, b.b};
