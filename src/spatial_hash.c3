@@ -57,7 +57,16 @@ fn void? SpatialHash3D.insert(&self, Aabb3 box, usz id) {
 
 alias CellIDs = ElasticArray{usz, 200};
 
-fn void? SpatialHash3D.update(&self, Aabb3 old_box, Aabb3 new_box, usz entity) {
+
+<*
+ Updates box location in spatial map
+ @param old_box : `Previous box location`
+ @param new_box : `New box location`
+ @param id : `Box id`
+ @require old_box.size().sq_magnitude() < 10000 && old_box.size().sq_magnitude() > 0.1 : `Aabb box size invalid, could be because memory errors`
+ @require new_box.size().sq_magnitude() < 10000 && new_box.size().sq_magnitude() > 0.1 : `Aabb box size invalid, could be because memory errors`
+*>    
+fn void? SpatialHash3D.update(&self, Aabb3 old_box, Aabb3 new_box, usz id) {
     if (old_box == new_box) return;
 
     Vec3 new_min_cell = self.world_to_grid(new_box.min);
@@ -89,7 +98,7 @@ fn void? SpatialHash3D.update(&self, Aabb3 old_box, Aabb3 new_box, usz entity) {
     foreach (cell: old_ids) {
         CellList*? cells = self.table.get_ref(cell);
         if (try cells) {
-            cells.remove_using_test(fn (id, ctx) => *id == *(usz*)ctx, &&entity);
+            cells.remove_using_test(fn (id, ctx) => *id == *(usz*)ctx, &&id);
             if (cells.is_empty()) self.table.remove(cell);
         };
     }
@@ -100,7 +109,7 @@ fn void? SpatialHash3D.update(&self, Aabb3 old_box, Aabb3 new_box, usz entity) {
                 self.table.set(cell, {});
             };
 
-            self.table.get_ref(cell)!.push(entity);
+            self.table.get_ref(cell)!.push(id);
         }
     }
 }

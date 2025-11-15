@@ -131,7 +131,6 @@ fn void? PhysicsWorld.add_body(&self, Rigidbody body) {
     if (body.motion.linear_dampening == 0) body.motion.linear_dampening = 1;
     if (body.motion.angular_dampening == 0) body.motion.angular_dampening = 1;
 
-    // if (!body.is_static) body.apply_linear_impulse(gravity * body.motion.gravity_factor * body.motion.mass * 0.02f);
     
     self.bodies.set(body.id, body);
     self.spatial_map.insert(body.transformed_aabb, body.id)!;
@@ -209,12 +208,13 @@ fn void PhysicsWorld.run_step(&self, Number time, uint step_count = 20) {
             }
 
             // Apply gravity
-            // body.apply_linear_impulse(gravity * body.motion.gravity_factor * body.motion.mass * time_step);
+            body.apply_linear_impulse(gravity * body.motion.gravity_factor * body.motion.mass * time_step);
 
             // Apply dampening (Wind friction ..etc)
             body.motion.angular_velocity *= math::pow(body.motion.angular_dampening, time_step);
             body.motion.linear_velocity *= math::pow(body.motion.linear_dampening, time_step);
         }
+
         // Reset rigid body iterator !
         rigid_bodies.started = false;
 
@@ -250,107 +250,11 @@ fn void PhysicsWorld.run_step(&self, Number time, uint step_count = 20) {
         };
 
         foreach (collision: self.collisions) self.resolve_collision(collision);
-        self.collisions.clear();
 
         // Apply constraints
-        foreach (&joint: self.constraints) {
-            Rigidbody* a = self.find_body(joint.body_a)!!;
-            Rigidbody* b = self.find_body(joint.body_b)!!;
-        
-            Number inverse_mass_sum = a.motion.inverse_mass + b.motion.inverse_mass;
+        foreach (&joint: self.constraints) self.resolve_joint(joint, time_step);
 
-            Vec3 rA = joint.anchor_a;
-            Vec3 rB = joint.anchor_b;
-
-            if (!a.is_static) rA = a.collider.rotation * rA;
-            if (!b.is_static) rB = b.collider.rotation * rB;
-
-            Vec3 worldspace_joint;
-
-            if (!a.is_static) worldspace_joint -= a.collider.translation + rA;
-            if (!a.is_static) worldspace_joint += b.collider.translation + rB;
-
-            Vec3 relative_velocity;
-
-            if (!a.is_static) relative_velocity -= a.relative_velocity(rA);
-            if (!b.is_static) relative_velocity += b.relative_velocity(rB);
-
-            // Linear limits resolving
-            if (!joint.linear_limits.is_empty()) {
-
-                foreach (limit: joint.linear_limits) {
-                    Vec3 normal = limit.axes;
-
-                    Vec3 total_inertia;
-
-                    if (!a.is_static) total_inertia += a.get_intertia(rA, normal);
-                    if (!b.is_static) total_inertia += b.get_intertia(rB, normal);
-
-                    Number effective_mass = inverse_mass_sum + total_inertia.dot(normal);
-                    if (effective_mass < EPSILON) return;
-
-                    Number contact_velocity = relative_velocity.dot(normal);
-                    Number position_error = worldspace_joint.dot(normal);
-
-                    Number bias = time_step * position_error;
-
-                    Number j = -(bias + contact_velocity) / effective_mass;
-            
-                    Vec3 impulse = j * normal;
-
-                    if (!a.is_static) a.apply_impulse(-impulse, rA);
-                    if (!b.is_static) b.apply_impulse(impulse, rB);
-
-                    joint.accumulated_linear_impulse += impulse;
-                }
-            }
-
-            // Angular limits resolving
-            if (!joint.angular_limits.is_empty()) {
-                
-                Quaternionf rotation_a = a.collider.rotation;
-                Quaternionf rotation_b = b.collider.rotation;
-
-                Quaternionf relative_orientation = (rotation_b * rotation_a);
-                Vec3 total_axis = relative_orientation.v.xyz;
-                Number total_angle = relative_orientation.to_angle();
-
-                foreach LIMITS: (limit: joint.angular_limits) {
-                    Number position_error = 0.0f;
-                    Vec3 normal = limit.axes;
-
-                    Number current_angle = total_axis.dot(normal) * total_angle;
-
-                    if (current_angle > limit.max) {
-                        position_error = current_angle - limit.max;
-                    } else if (current_angle < limit.min) {
-                        position_error = current_angle - limit.min;
-                    } else {
-                        continue LIMITS;
-                    }
-
-                    Number effective_mass = 0;
-
-                    if (!a.is_static) effective_mass += normal.dot(a.get_inverse_world_inertia() * normal);
-                    if (!b.is_static) effective_mass += normal.dot(b.get_inverse_world_inertia() * normal);
-                    if (effective_mass < EPSILON) return;
-
-                    Number angular_velocity = (b.motion.angular_velocity - a.motion.angular_velocity).dot(normal);
-
-                    Number bias = time_step * position_error * 0.02f;
-                    Number j = -(angular_velocity + bias) / effective_mass;
-
-                    // Number oldAccumulated = joint.accumulated_angular_impulse;
-                    // joint.accumulated_angular_impulse = math::max(0.0f, oldAccumulated + j);
-                    // Number impulseToApply = joint.accumulated_angular_impulse - oldAccumulated;
-
-                    Vec3 angular_impulse = j * normal;
-
-                    if (!a.is_static) a.apply_angular_impulse(-angular_impulse);
-                    if (!b.is_static) b.apply_angular_impulse(angular_impulse);
-                }   
-            }
-        }
+        self.collisions.clear();
     }
 
     while (rigid_bodies.next()) {
@@ -362,6 +266,9 @@ fn void PhysicsWorld.run_step(&self, Number time, uint step_count = 20) {
             if (rotating || moving) {
                 Aabb3 new_aabb;
                 new_aabb = body.get_transformed_aabb();
+
+                // io::printfn("%s", new_aabb);
+
                 self.spatial_map.update(body.transformed_aabb, new_aabb, body.id)!!;
                 body.transformed_aabb = new_aabb;
             }
@@ -373,10 +280,109 @@ fn void PhysicsWorld.run_step(&self, Number time, uint step_count = 20) {
     };
 }
 
+fn void PhysicsWorld.resolve_joint(&self, GenericJoint3D* joint, Number time_step) @local {
+    Rigidbody* a = self.find_body(joint.body_a)!!;
+    Rigidbody* b = self.find_body(joint.body_b)!!;
+
+    Number inverse_mass_sum = a.motion.inverse_mass + b.motion.inverse_mass;
+
+    Vec3 rA = joint.anchor_a;
+    Vec3 rB = joint.anchor_b;
+
+    if (!a.is_static) rA = a.collider.rotation * rA;
+    if (!b.is_static) rB = b.collider.rotation * rB;
+
+    Vec3 worldspace_joint;
+
+    if (!a.is_static) worldspace_joint -= a.collider.translation + rA;
+    if (!a.is_static) worldspace_joint += b.collider.translation + rB;
+
+    Vec3 relative_velocity;
+
+    if (!a.is_static) relative_velocity -= a.relative_velocity(rA);
+    if (!b.is_static) relative_velocity += b.relative_velocity(rB);
+
+    // Linear limits resolving
+    if (!joint.linear_limits.is_empty()) {
+
+        foreach (limit: joint.linear_limits) {
+            Vec3 normal = limit.axes;
+
+            Vec3 total_inertia;
+
+            if (!a.is_static) total_inertia += a.get_intertia(rA, normal);
+            if (!b.is_static) total_inertia += b.get_intertia(rB, normal);
+
+            Number effective_mass = inverse_mass_sum + total_inertia.dot(normal);
+            if (effective_mass < EPSILON) return;
+
+            Number contact_velocity = relative_velocity.dot(normal);
+            Number position_error = worldspace_joint.dot(normal);
+
+            // Number bias = time_step * position_error;
+
+            Number j = -(position_error + contact_velocity) / effective_mass;
+            
+            Vec3 impulse = j * normal;
+
+            if (!a.is_static) a.apply_impulse(-impulse, rA);
+            if (!b.is_static) b.apply_impulse(impulse, rB);
+
+            joint.accumulated_linear_impulse += impulse;
+        }
+    }
+
+    // Angular limits resolving
+    if (!joint.angular_limits.is_empty()) {
+        
+        Quaternionf rotation_a = a.collider.rotation;
+        Quaternionf rotation_b = b.collider.rotation;
+
+        Quaternionf relative_orientation = (rotation_b * rotation_a);
+        Vec3 total_axis = relative_orientation.v.xyz;
+        Number total_angle = relative_orientation.to_angle();
+
+        foreach LIMITS: (limit: joint.angular_limits) {
+            Number position_error = 0.0f;
+            Vec3 normal = limit.axes;
+
+            Number current_angle = total_axis.dot(normal) * total_angle;
+
+            if (current_angle > limit.max) {
+                position_error = current_angle - limit.max;
+            } else if (current_angle < limit.min) {
+                position_error = current_angle - limit.min;
+            } else {
+                continue LIMITS;
+            }
+
+            Number effective_mass = 0;
+
+            if (!a.is_static) effective_mass += normal.dot(a.get_inverse_world_inertia() * normal);
+            if (!b.is_static) effective_mass += normal.dot(b.get_inverse_world_inertia() * normal);
+            if (effective_mass < EPSILON) return;
+
+            Number angular_velocity = (b.motion.angular_velocity - a.motion.angular_velocity).dot(normal);
+
+            // Number bias = time_step * position_error * 0.4f;
+            Number j = -(angular_velocity + (position_error  * time_step)) / effective_mass;
+
+            // Number oldAccumulated = joint.accumulated_angular_impulse;
+            // joint.accumulated_angular_impulse = math::max(0.0f, oldAccumulated + j);
+            // Number impulseToApply = joint.accumulated_angular_impulse - oldAccumulated;
+
+            Vec3 angular_impulse = j * normal;
+
+            if (!a.is_static) a.apply_angular_impulse(-angular_impulse);
+            if (!b.is_static) b.apply_angular_impulse(angular_impulse);
+        }   
+    }
+}
+
 <*
  @require collision.a != collision.b : `Collision bodies should not be same index`
 *>
-fn void PhysicsWorld.resolve_collision(&self, Collision collision) {
+fn void PhysicsWorld.resolve_collision(&self, Collision collision) @local {
     Rigidbody* a = self.find_body(collision.a)!!;
     Rigidbody* b = self.find_body(collision.b)!!;
 
@@ -432,9 +438,9 @@ fn void PhysicsWorld.resolve_collision(&self, Collision collision) {
         if (!b.is_static) b.apply_impulse(normal_impulse, rB);
     };
     
-    Number percent = 0.5f;
-    Number slop = 0.002f;
-    Number correction_magnitude = math::max(collision.depth - slop, 0.0f) / inverse_mass_sum * percent;
+    Number percent = 0.4f;
+    Number slop = 0.02f;
+    Number correction_magnitude = (math::max(collision.depth - slop, 0.0f) / inverse_mass_sum) * percent;
 
     Vec3 correction = collision.normal * correction_magnitude;
 
