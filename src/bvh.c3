@@ -17,33 +17,72 @@ struct BVHNode {
     Aabb3 box;
     BVHNode* left;
     BVHNode* right;
-    ElasticArray{Triangle, MAX_TRIS_PER_LEAF} triangles;
+    usz count;
+    Vec4* positions;
 }
 
 fn bool BVHNode.is_leaf(&self) => self.left == null && self.right == null;
 
 fn void BVHNode.free(&self) {
-    mem::free(self.right);
-    mem::free(self.left);
+    List{BVHNode*} lefts;
+    List{BVHNode*} rights;
+
+    defer {
+        lefts.free();
+        rights.free();
+    }
+
+    BVHNode* left = self.left;
+    BVHNode* right = self.right;
+
+    while (left != null) {
+        lefts.push(left);
+        left = left.left;
+    }
+
+    while (right != null) {
+        rights.push(right);
+        right = right.right;
+    }
+
+    foreach (value: lefts) mem::free(value);
+    foreach (value: rights) mem::free(value);
+}
+
+struct MinMax @local {
+    Number min;
+    Number max;
+}
+
+fn void MinMax.expand(&self, Number value) {
+    self.min = math::min(self.min, value);
+    self.max = math::max(self.max, value);
+}
+
+fn void MinMax.expand_by_array(&self, Number[] values) {
+    foreach (value: values) self.expand(value);
 }
 
 <*
- @require triangles.len != 0 : `Triangle list is empty`
+ @require self.count != 0 && self.positions != null : `Has no positions attached`
 *>
-fn void BVHNode.build_recursive(&self, Triangle[] triangles) {
+fn void BVHNode.build_recursive(&self) {
 
-    foreach (triangle: triangles) {
-        self.box.expand_by_point(triangle.v0);
-        self.box.expand_by_point(triangle.v1);
-        self.box.expand_by_point(triangle.v2);
+    for (usz i; i < self.count; i += 3) {
+        Vec3 v0 = self.positions[i].xyz;
+        Vec3 v1 = self.positions[i + 1].xyz;
+        Vec3 v2 = self.positions[i + 2].xyz;
+
+        self.box.expand_by_point(v0);
+        self.box.expand_by_point(v1);
+        self.box.expand_by_point(v2);
     }
 
-    if (triangles.len <= MAX_TRIS_PER_LEAF) {
-        self.triangles.push_all(triangles);
+    if (self.count <= MAX_TRIS_PER_LEAF) {
         return;
     }
     
-    Vec3 extent = self.box.max - self.box.min;
+    Vec3 extent = self.box.extent();
     uint axis = 0;
 
     if (extent.y > extent.x) axis = 1;
@@ -51,37 +90,40 @@ fn void BVHNode.build_recursive(&self, Triangle[] triangles) {
 
     Number split_pos = self.box.min[axis] + extent[axis] * 0.5;
 
-    List{Triangle} left;
-    List{Triangle} right;
+    BVHNode left;
+    BVHNode right;
 
-    defer {
-        left.free();
-        right.free();
-    }
+    for (usz i; i < self.count; i += 3) {
+        Vec3 v0 = self.positions[i].xyz;
+        Vec3 v1 = self.positions[i + 1].xyz;
+        Vec3 v2 = self.positions[i + 2].xyz;
+        Vec3 centroid = (v0 + v1 + v2) / 3.0;
 
-    foreach (triangle: triangles) {
-        Vec3 centroid = (triangle.v0 + triangle.v1 + triangle.v2) / 3.0;
         if (centroid[axis] < split_pos) {
-            left.push(triangle);
+            left.count += 1;
         } else {
-            right.push(triangle);
+            right.count += 1;
         }
     }
 
     // Handle cases where the split results in all triangles on one side.
-    if (left.is_empty() || right.is_empty()) {
-        uint half = triangles.len / 2;
-        left.clear();
-        right.clear();
-        left.push_all(triangles[0..half]);
-        right.push_all(triangles[half..triangles.len - 1]);
+    if (left.count == 0 || right.count == 0) {
+        usz half = self.count / 2;
+
+        for (usz i; i < self.count; i += 3) {
+            if (i < half) { left.count += 1; }
+            else { right.count += 1; }
+        }
     }
 
-    self.left = mem::new(BVHNode, (BVHNode){});
-    self.right = mem::new(BVHNode, (BVHNode){});
+    left.positions = self.positions;
+    right.positions = self.positions + left.count;
 
-    self.left.build_recursive(left.array_view());
-    self.right.build_recursive(right.array_view());
+    self.left = @clone(left);
+    self.right = @clone(right);
+
+    self.left.build_recursive();
+    self.right.build_recursive();
 }
 
 fn bool BVHNode.ray_intersects(&self, Ray ray, HitInfo* nearest_info) {
@@ -90,7 +132,13 @@ fn bool BVHNode.ray_intersects(&self, Ray ray, HitInfo* nearest_info) {
     }
     
     if (self.is_leaf()) {
-        foreach (triangle: self.triangles) {
+        for (usz i; i < self.count; i += 3) {
+            Vec3 v0 = self.positions[i].xyz;
+            Vec3 v1 = self.positions[i + 1].xyz;
+            Vec3 v2 = self.positions[i + 2].xyz;
+
+            Triangle triangle = {v0, v1, v2};
+
             if (triangle.intersect_ray(ray, nearest_info)) {
                 return true;
             }
@@ -112,12 +160,20 @@ fn bool BVHNode.box_intersects(&self, Aabb3 box, HitInfo* nearest_info) {
 
     if (self.is_leaf()) {
         bool hit = false;
-        foreach (triangle: self.triangles) {
-            if (triangle.collides_aabb(box)) {
+
+        for (usz i; i < self.count; i += 3) {
+            Vec3 v0 = self.positions[i].xyz;
+            Vec3 v1 = self.positions[i + 1].xyz;
+            Vec3 v2 = self.positions[i + 2].xyz;
+
+            Triangle triangle = {v0, v1, v2};
+
+            if (triangle.collides_aabb(box, full: false)) {
                 nearest_info.normal = triangle.v0.cross(triangle.v1);
                 hit = true;
             }
         }
+
         return hit;
     }
 
@@ -136,59 +192,64 @@ fn Aabb3 Triangle.get_aabb(&self) {
     return box;
 }
 
-fn usz? Triangle.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("v1 %s, v2 %s v3 %s", self.v0, self.v1, self.v2)!;
+// fn usz? Triangle.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("v1 %s, v2 %s v3 %s", self.v0, self.v1, self.v2)!;
 
-fn bool Triangle.collides_aabb(&self, Aabb3 box) {
-    Vec3 box_center = (box.min + box.max) * 0.5;
-    Vec3 box_extents = box.max - box_center;
-    Vec3[3] tri_verts = {
-        self.v0 - box_center,
-        self.v1 - box_center,
-        self.v2 - box_center
-    };
+fn bool Triangle.collides_aabb(&self, Aabb3 box, bool full = true) @local {
+    Vec3 center = box.center();
+    Vec3 extent = box.extent();
 
-    for (int i = 0; i < 3; ++i) {
-        if (math::max(tri_verts[0][i], tri_verts[1][i], tri_verts[2][i]) < -box_extents[i] || math::min(tri_verts[0][i], tri_verts[1][i], tri_verts[2][i]) > box_extents[i]) {
-            return false; // Found a separating axis
-        }
+    if (full) {
+        Aabb3 aabb = self.get_aabb();
+        if (!aabb.collides(box)) return false;
     }
 
-    Vec3[3] tri_edges = {
-        tri_verts[1] - tri_verts[0],
-        tri_verts[2] - tri_verts[1],
-        tri_verts[0] - tri_verts[2]
-    };
+    Vec3 t0 = self.v0 - center;
+    Vec3 t1 = self.v1 - center;
+    Vec3 t2 = self.v2 - center;
 
-    Vec3 tri_normal = tri_edges[0].cross(tri_edges[1]);
-    Number tri_radius = math::abs(tri_verts[0].dot(tri_normal));
-    Number box_radius = math::abs(box_extents.x * tri_normal.x) +
-                       math::abs(box_extents.y * tri_normal.y) +
-                       math::abs(box_extents.z * tri_normal.z);
+    // 2. Calculate triangle edges
+    Vec3 e0 = t1 - t0;
+    Vec3 e1 = t2 - t1;
+    Vec3 e2 = t0 - t2;
 
-    if (tri_radius > box_radius) {
-        return false;
-    }
+    Vec3 normal = e0.cross(e1);
 
-    Vec3[3] axes = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}};
+    if (!are_separated(normal, t0, t1, t2, extent)) return false;
+ 
+    // Edge e0
+    if (!are_separated({0, -e0.z, e0.y}, t0, t1, t2, extent)) return false;
+    if (!are_separated({e0.z, 0, -e0.x}, t0, t1, t2, extent)) return false;
+    if (!are_separated({-e0.y, e0.x, 0}, t0, t1, t2, extent)) return false;
 
-    for (uint i = 0; i < 3; ++i) {
-        for (uint j = 0; j < 3; ++j) {
-            Vec3 axis = tri_edges[i].cross(axes[j]);
-            Vec2 tri_interval = tri_verts[0..].get_interval(3, axis);
+    // Edge e1
+    if (!are_separated({0, -e1.z, e1.y}, t0, t1, t2, extent)) return false;
+    if (!are_separated({e1.z, 0, -e1.x}, t0, t1, t2, extent)) return false;
+    if (!are_separated({-e1.y, e1.x, 0}, t0, t1, t2, extent)) return false;
 
-            Number box_radius_axis = box_extents.x * math::abs(axes[0].dot(axis)) +
-                                    box_extents.y * math::abs(axes[1].dot(axis)) +
-                                    box_extents.z * math::abs(axes[2].dot(axis));
-
-            if (tri_interval.x > box_radius_axis || tri_interval.y < -box_radius_axis) {
-                return false;
-            }                         
-        }
-    } 
+    // Edge e2
+    if (!are_separated({0, -e2.z, e2.y}, t0, t1, t2, extent)) return false;
+    if (!are_separated({e2.z, 0, -e2.x}, t0, t1, t2, extent)) return false;
+    if (!are_separated({-e2.y, e2.x, 0}, t0, t1, t2, extent)) return false;
 
     return true;
 }
 
+fn bool are_separated(Vec3 axis, Vec3 t0, Vec3 t1, Vec3 t2, Vec3 h) @local {
+    Number p0 = t0.dot(axis);
+    Number p1 = t1.dot(axis);
+    Number p2 = t2.dot(axis);
+    Number r = h.x * math::abs(axis.x) + h.y * math::abs(axis.y) + h.z * math::abs(axis.z);
+
+    MinMax box;
+
+    box.expand_by_array({p0, p1, p2});
+
+    if (box.max < -r || box.min > r) {
+        return false; // Separated
+    }
+
+    return true;
+}
 
 fn bool Triangle.intersect_ray(&self, Ray ray, HitInfo* info) {
     const Number EPSILON = 1e-6f;

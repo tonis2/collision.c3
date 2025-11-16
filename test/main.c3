@@ -166,16 +166,21 @@ fn void test_flow() {
 
 
 fn void test_bvh() {
-    Triangle[] terrain = {
-        {{-1, 0, -1}, {1, 0, -1}, {-1, 0, 1}},
-        {{1, 0, -1}, {1, 0, 1}, {-1, 0, 1}},
-        {{1, 0, -1}, {3, 1, -1}, {1, 0, 1}},
-        {{3, 1, -1}, {3, 1, 1}, {1, 0, 1}}
+    Vec4[] terrain = {
+        {-1, 0, -1, 0}, {1, 0, -1, 0}, {-1, 0, 1, 0},
+        {1, 0, -1, 0}, {1, 0, 1, 0}, {-1, 0, 1, 0},
+        {1, 0, -1, 0}, {3, 1, -1, 0}, {1, 0, 1, 0},
+        {3, 1, -1, 0}, {3, 1, 1, 0}, {1, 0, 1, 0}
     };
 
-    BVHNode bvh;
+    BVHNode bvh = {
+        .positions = terrain.ptr,
+        .count = terrain.len
+    };
 
-    bvh.build_recursive(terrain);
+    defer bvh.free();
+
+    bvh.build_recursive();
 
     Ray test_ray = {
         .origin = {0, 5, 0},
@@ -183,8 +188,8 @@ fn void test_bvh() {
     };
 
     Aabb3 box = {
-        .min = {1, 1, 1},
-        .max = {4, 2, 2}
+        .min = {-1.0f, -1.0f, -1.0f},
+        .max = {1.0f,  1.0f,  1.0f}
     };
 
     HitInfo hit;
@@ -192,7 +197,29 @@ fn void test_bvh() {
     bool result_2 = bvh.box_intersects(box, &hit);
 
     assert(result == true);
-    // assert(result_2 == true);
+    assert(result_2 == true);
+
+    Triangle tri_1 = {
+        {0.0f, 0.0f, 0.0f},
+        {0.5f, 0.0f, 0.0f},
+        {0.0f, 0.5f, 0.0f}
+    };
+
+    Triangle tri_2 = {
+        {1.1f, -2.0f, 0.0f},
+        {1.1f,  2.0f, 0.0f},
+        {1.1f, 0.0f, 2.0f}
+    };
+
+    Triangle tri_3 = {
+        {15.5f, 15.5f, 15.5f},
+        {-12.0f, 10.0f, 10.0f},
+        {12.0f, 10.0f, 10.0f}
+    };
+
+    assert(tri_1.collides_aabb(box));
+    assert(!tri_2.collides_aabb(box));
+    assert(!tri_3.collides_aabb(box));
 }
 
 
