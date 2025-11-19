@@ -6,7 +6,7 @@ import std::collections::list;
 import std::collections::elastic_array;
 import std::collections::map;
 
-struct Aabb3 (Printable, ConvexShape) {
+struct Aabb3 (Printable, CollisionShape) {
     Vec3 min;
     Vec3 max;
 }

@@ -8,7 +8,7 @@ import std::collections::map;
 
 const int MAX_TRIS_PER_LEAF = 8;
 
-struct Triangle {
+struct Triangle (CollisionShape) {
     Vec3 v0, v1, v2;
 }
 
@@ -17,8 +17,8 @@ struct BVHNode {
     Aabb3 box;
     BVHNode* left;
     BVHNode* right;
+    Vec4* positions; 
     usz count;
-    Vec4* positions;
 }
 
 fn bool BVHNode.is_leaf(&self) => self.left == null && self.right == null;
@@ -64,21 +64,22 @@ fn void MinMax.expand_by_array(&self, Number[] values) {
 }
 
 <*
- @require self.count != 0 && self.positions != null : `Has no positions attached`
+ @require positions != null : `Has no positions attached`
 *>
-fn void BVHNode.build_recursive(&self) {
-
-    for (usz i; i < self.count; i += 3) {
-        Vec3 v0 = self.positions[i].xyz;
-        Vec3 v1 = self.positions[i + 1].xyz;
-        Vec3 v2 = self.positions[i + 2].xyz;
+fn void BVHNode.build_recursive(&self, Vec4* positions, usz count) {
+    for (usz i = 0; i < count; i += 3) {
+        Vec3 v0 = positions[i].xyz;
+        Vec3 v1 = positions[i + 1].xyz;
+        Vec3 v2 = positions[i + 2].xyz;
 
         self.box.expand_by_point(v0);
         self.box.expand_by_point(v1);
         self.box.expand_by_point(v2);
     }
 
-    if (self.count <= MAX_TRIS_PER_LEAF) {
+    if (count <= MAX_TRIS_PER_LEAF * 3) {
+        self.positions = positions;
+        self.count = count;
         return;
     }
     
@@ -93,74 +94,84 @@ fn void BVHNode.build_recursive(&self) {
     BVHNode left;
     BVHNode right;
 
-    for (usz i; i < self.count; i += 3) {
-        Vec3 v0 = self.positions[i].xyz;
-        Vec3 v1 = self.positions[i + 1].xyz;
-        Vec3 v2 = self.positions[i + 2].xyz;
+    for (usz i = 0; i < count; i += 3) {
+        Vec3 v0 = positions[i].xyz;
+        Vec3 v1 = positions[i + 1].xyz;
+        Vec3 v2 = positions[i + 2].xyz;
         Vec3 centroid = (v0 + v1 + v2) / 3.0;
 
         if (centroid[axis] < split_pos) {
-            left.count += 1;
+            left.count += 3;
         } else {
-            right.count += 1;
+            right.count += 3;
         }
     }
 
     // Handle cases where the split results in all triangles on one side.
     if (left.count == 0 || right.count == 0) {
-        usz half = self.count / 2;
+        left.count = 0;
+        right.count = 0;
 
-        for (usz i; i < self.count; i += 3) {
-            if (i < half) { left.count += 1; }
-            else { right.count += 1; }
+        usz half = count / 2;
+
+        for (usz i; i < count; i += 3) {
+            if (i < half) { left.count += 3; }
+            else { right.count += 3; }
         }
     }
 
-    left.positions = self.positions;
-    right.positions = self.positions + left.count;
+    left.positions = positions;
+    right.positions = positions + left.count;
 
     self.left = @clone(left);
     self.right = @clone(right);
 
-    self.left.build_recursive();
-    self.right.build_recursive();
+    self.left.build_recursive(left.positions, left.count);
+    self.right.build_recursive(right.positions, right.count);
 }
 
-fn bool BVHNode.ray_intersects(&self, Ray ray, HitInfo* nearest_info) {
+fn HitInfo BVHNode.ray_intersects(&self, Ray ray) {
+    HitInfo hit_info = {.collides = false};
+
     if (!self.box.intersect_ray(ray)) {
-        return false;
+        return hit_info;
     }
     
     if (self.is_leaf()) {
-        for (usz i; i < self.count; i += 3) {
+        for (usz i = 0; i < self.count; i += 3) {
             Vec3 v0 = self.positions[i].xyz;
             Vec3 v1 = self.positions[i + 1].xyz;
             Vec3 v2 = self.positions[i + 2].xyz;
 
             Triangle triangle = {v0, v1, v2};
-
-            if (triangle.intersect_ray(ray, nearest_info)) {
-                return true;
-            }
+            HitInfo triangle_hit = triangle.intersect_ray(ray);
+       
+            if (triangle_hit.collides) {
+                triangle_hit.positions = self.positions;
+                return triangle_hit;
+            };
         }
         
-        return false;
+        return hit_info;
     }
     
-    bool hit_left = self.left.ray_intersects(ray, nearest_info);
-    bool hit_right = self.right.ray_intersects(ray, nearest_info);
+    HitInfo left = self.left.ray_intersects(ray);
+    HitInfo right = self.right.ray_intersects(ray);
 
-    return hit_left || hit_right;
+    if (left.collides) return left;
+    if (right.collides) return right;
+
+    return hit_info;
 }
 
-fn bool BVHNode.box_intersects(&self, Aabb3 box, HitInfo* nearest_info) {
+fn HitInfo BVHNode.box_intersects(&self, Aabb3 box) {
+    HitInfo hit_info = {.collides = false};
+
     if (!self.box.collides(box)) {
-        return false;
+        return hit_info;
     }
 
     if (self.is_leaf()) {
-        bool hit = false;
-
         for (usz i; i < self.count; i += 3) {
             Vec3 v0 = self.positions[i].xyz;
             Vec3 v1 = self.positions[i + 1].xyz;
@@ -169,28 +180,22 @@ fn bool BVHNode.box_intersects(&self, Aabb3 box, HitInfo* nearest_info) {
             Triangle triangle = {v0, v1, v2};
 
             if (triangle.collides_aabb(box, full: false)) {
-                nearest_info.normal = triangle.v0.cross(triangle.v1);
-                hit = true;
+                return {.collides = true, .normal = triangle.v0.cross(triangle.v1), .positions = self.positions};
             }
         }
 
-        return hit;
+        return hit_info;
     }
 
-    bool hit_left = self.left.box_intersects(box, nearest_info);
-    bool hit_right = self.right.box_intersects(box, nearest_info);
+    HitInfo left = self.left.box_intersects(box);
+    HitInfo right = self.right.box_intersects(box);
 
-    return hit_left || hit_right;
+    if (left.collides) return left;
+    if (right.collides) return right;
+
+    return hit_info;
 }
 
-
-fn Aabb3 Triangle.get_aabb(&self) {
-    Aabb3 box = {
-        .min = {math::min(self.v0.x, self.v1.x, self.v2.x), math::min(self.v0.y, self.v1.y, self.v2.y), math::min(self.v0.z, self.v1.z, self.v2.z)},
-        .max = {math::max(self.v0.x, self.v1.x, self.v2.x), math::max(self.v0.y, self.v1.y, self.v2.y), math::max(self.v0.z, self.v1.z, self.v2.z)}
-    };  
-    return box;
-}
 
 // fn usz? Triangle.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("v1 %s, v2 %s v3 %s", self.v0, self.v1, self.v2)!;
 
@@ -251,7 +256,9 @@ fn bool are_separated(Vec3 axis, Vec3 t0, Vec3 t1, Vec3 t2, Vec3 h) @local {
     return true;
 }
 
-fn bool Triangle.intersect_ray(&self, Ray ray, HitInfo* info) {
+fn HitInfo Triangle.intersect_ray(&self, Ray ray) {
+    HitInfo hit_info = {.collides = false};
+
     const Number EPSILON = 1e-6f;
     
     Vec3 edge1 = self.v1 - self.v0;
@@ -259,28 +266,62 @@ fn bool Triangle.intersect_ray(&self, Ray ray, HitInfo* info) {
     Vec3 h = ray.direction.cross(edge2);
     Number a = edge1.dot(h);
 
-    if (math::abs(a) < EPSILON) return false; // Ray is parallel to triangle
+    if (math::abs(a) < EPSILON) return hit_info; // Ray is parallel to triangle
 
     Number f = 1.0f / a;
     Vec3 s = ray.origin - self.v0;
     Number u = f * s.dot(h);
 
 
-    if (u < 0.0f || u > 1.0f) return false;
+    if (u < 0.0f || u > 1.0f) return hit_info;
 
     Vec3 q = s.cross(edge1);
     Number v = f * ray.direction.dot(q);
 
-    if (v < 0.0f || u + v > 2) return false;
+    if (v < 0.0f || u + v > 1.0f) return hit_info;
 
     // Compute t to find the intersection point on the ray
     Number t = f * edge2.dot(q);
 
-    if (t > EPSILON) {
-        info.depth = t;
-        info.normal = edge1.cross(edge2).normalize();
-        return true;
-    } // ray intersection
-
-    return false;
+    if (t < EPSILON) return hit_info;
+    
+    return {.collides = true, .depth = t, .normal = edge1.cross(edge2).normalize()};
 }
+
+fn Vec3 Triangle.furthest_point(&self, Vec3 direction) @dynamic {
+    Vec3 furthest_point = self.v0;
+    Number max_distance = -Number.max;
+
+    Number distance = self.v0.dot(direction);
+    Number distance2 = self.v1.dot(direction);
+    Number distance3 = self.v2.dot(direction);
+
+    if (distance < distance2) {
+        distance = distance2;
+        furthest_point = self.v1;
+    }
+
+    if (distance < distance3) {
+        distance = distance3;
+        furthest_point = self.v2;
+    }
+
+    return furthest_point;
+}
+
+fn Matrix3f Triangle.inertia_tensor(&self, Number mass) @dynamic {
+    Matrix3f inertia = MATRIX3F_IDENTITY;
+    return inertia;
+}
+
+fn ShapeType Triangle.get_type(&self) @dynamic => ShapeType.TRIANGLE;
+
+fn Aabb3 Triangle.get_aabb(&self) @dynamic {
+    Aabb3 box = {
+        .min = {math::min(self.v0.x, self.v1.x, self.v2.x), math::min(self.v0.y, self.v1.y, self.v2.y), math::min(self.v0.z, self.v1.z, self.v2.z)},
+        .max = {math::max(self.v0.x, self.v1.x, self.v2.x), math::max(self.v0.y, self.v1.y, self.v2.y), math::max(self.v0.z, self.v1.z, self.v2.z)}
+    };  
+    return box;
+}
+
+fn usz? Triangle.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s,%s,%s", self.v0, self.v1, self.v2)!;

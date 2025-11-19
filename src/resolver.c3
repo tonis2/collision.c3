@@ -73,7 +73,7 @@ struct Rigidbody {
     bool is_static;
     Number sleep_timer;
 
-    TransformedConvex collider;
+    TransformedShape collider;
 }
 
 struct PhysicsWorldConfig {

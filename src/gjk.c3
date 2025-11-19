@@ -91,7 +91,7 @@ fn bool triangle_case(Simplex* simplex, Vec3* direction) @private {
 }
 
 // Handles the tetrahedron case (4 points in simplex)
-fn bool tetrahedron_case(Simplex* simplex, Vec3* direction) {
+fn bool tetrahedron_case(Simplex* simplex, Vec3* direction) @private {
     SupportPoint a_support = simplex.get(0);
     SupportPoint b_support = simplex.get(1);
     SupportPoint c_support = simplex.get(2);
@@ -127,7 +127,7 @@ fn bool tetrahedron_case(Simplex* simplex, Vec3* direction) {
     return true; // Origin is inside tetrahedron
 }
 
-fn bool next_simplex(Simplex* simplex, Vec3* direction) {
+fn bool next_simplex(Simplex* simplex, Vec3* direction) @private {
     switch (simplex.len()) {
         case 2: return line_case(simplex, direction);
         case 3: return triangle_case(simplex, direction);
@@ -138,7 +138,7 @@ fn bool next_simplex(Simplex* simplex, Vec3* direction) {
 }
 
 // GJK algorithm to find, if shapes collide
-fn CollisionInfo check_collision(ConvexShape shape_1, ConvexShape shape_2) {
+fn CollisionInfo check_collision(CollisionShape shape_1, CollisionShape shape_2) {
     // Initial direction (arbitrary)
     Vec3 direction = {1, 0, 0};
     

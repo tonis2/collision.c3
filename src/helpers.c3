@@ -14,9 +14,10 @@ alias Vec3 @private = Number[<3>];
 //fn usz? Vec4.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s,%s,%s", self.x, self.y, self.z)!;
 
 struct HitInfo {
-    bool hits;
+    bool collides;
     Number depth;
     Vec3 normal;
+    Vec4* positions;
 }
 
 struct Face @private {
@@ -61,3 +62,4 @@ macro uint Pair.hash(Pair self) => builtin::@generic_hash(self.first) + builtin:
 macro bool Vec3.equals(self, Vec3 b) => self == b;
 
 
+fn Triangle HitInfo.get_triangle(self) => {self.positions[0].xyz, self.positions[1].xyz, self.positions[2].xyz};

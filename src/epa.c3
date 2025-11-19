@@ -19,10 +19,8 @@ alias EdgeArray @private = ElasticArray{Pair, 60};
 alias FaceArray @private = ElasticArray{Face, 60};
 alias SupportArray @private = ElasticArray{SupportPoint, 60};
 
-
 const uint EPA_MAX_ITER = 16;
 const Number EPA_TOLERANCE = 0.0001f;
-
 
 fn void EdgeArray.add_if_new(&self, Pair pair)
 {
@@ -105,7 +103,7 @@ fn uint Face[].get_closest(self, Number min_distance = Number.max) {
 <*
  @require info.simplex.len() > 3 : `Simplex data must have enough points`
 *>
-fn void epa(CollisionInfo* info, ConvexShape shape_1, ConvexShape shape_2) {
+fn void epa(CollisionInfo* info, CollisionShape shape_1, CollisionShape shape_2) {
     SupportArray vertices;
 
     foreach (item: info.simplex) {

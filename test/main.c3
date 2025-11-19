@@ -46,38 +46,38 @@ fn void test_physics() {
 
     ConvexPolyhedron shape_1 = (ConvexPolyhedron){.vertices = cube};
 
-    TransformedConvex transformed_shape_1 = {
+    TransformedShape transformed_shape_1 = {
         .shape = &shape_1, 
         .translation = {-2.0, 0, 0}, 
         .scale = {1, 1, 1},
     };
     
-    TransformedConvex transformed_shape_2 = {
+    TransformedShape transformed_shape_2 = {
         .shape = &shape_1, 
         .translation = {2.0, 0, 0}, 
         .scale = {1, 1, 1},
     };
 
-    TransformedConvex transformed_shape_3 = {
+    TransformedShape transformed_shape_3 = {
         .shape = &shape_1, 
         .translation = {0.0, 0, 0}, 
         .scale = {1, 1, 1},
     };
     
-    TransformedConvex transformed_shape_4 = {
+    TransformedShape transformed_shape_4 = {
         .shape = &shape_1, 
         .translation = {0, 0, 0}, 
         .scale = {3, 3, 3},
     };
 
-    TransformedConvex transformed_shape_5 = {
+    TransformedShape transformed_shape_5 = {
         .shape = &shape_1, 
         .translation = {-1.0, 0, 0}, 
         .scale = {1, 1, 1},
         .rotation = {0, 0.5, 0, 1 }
     };
     
-    TransformedConvex transformed_shape_6 = {
+    TransformedShape transformed_shape_6 = {
         .shape = &shape_1, 
         .translation = {1.0, 0, 0}, 
         .scale = {1, 1, 1},
@@ -148,13 +148,13 @@ fn void test_flow() {
         // Test the collisions
         ConvexPolyhedron shape_1 = (ConvexPolyhedron){.vertices = cube};
 
-        TransformedConvex transformed_shape_1 = {
+        TransformedShape transformed_shape_1 = {
             .shape = &shape_1, 
             .translation = {-2.0, 0, 0}, 
             .scale = {1, 1, 1},
         };
         
-        TransformedConvex transformed_shape_2 = {
+        TransformedShape transformed_shape_2 = {
             .shape = &shape_1, 
             .translation = {2.0, 0, 0}, 
             .scale = {1, 1, 1},
@@ -169,22 +169,24 @@ fn void test_bvh() {
     Vec4[] terrain = {
         {-1, 0, -1, 0}, {1, 0, -1, 0}, {-1, 0, 1, 0},
         {1, 0, -1, 0}, {1, 0, 1, 0}, {-1, 0, 1, 0},
-        {1, 0, -1, 0}, {3, 1, -1, 0}, {1, 0, 1, 0},
+        {-1, -1, 0, 0}, {1, -1, 0, 0}, {0, 1, 0, 0},
         {3, 1, -1, 0}, {3, 1, 1, 0}, {1, 0, 1, 0}
     };
 
-    BVHNode bvh = {
-        .positions = terrain.ptr,
-        .count = terrain.len
-    };
-
+    BVHNode bvh;
     defer bvh.free();
 
-    bvh.build_recursive();
+    bvh.build_recursive(terrain.ptr, terrain.len);
+
+    Triangle triangle = {
+        {-1.0f, -1.0f, 0.0f}, 
+        {1.0f, -1.0f, 0.0f}, 
+        {0.0f,  1.0f, 0.0f}
+    };
 
     Ray test_ray = {
-        .origin = {0, 5, 0},
-        .direction = {0, -1, 0}
+        .origin = {0.0f, 0.0f, 5.0f},
+        .direction = {0, 0, -1}
     };
 
     Aabb3 box = {
@@ -192,12 +194,15 @@ fn void test_bvh() {
         .max = {1.0f,  1.0f,  1.0f}
     };
 
-    HitInfo hit;
-    bool result = bvh.ray_intersects(test_ray, &hit);
-    bool result_2 = bvh.box_intersects(box, &hit);
+    HitInfo triangle_hit = triangle.intersect_ray(test_ray);
 
-    assert(result == true);
-    assert(result_2 == true);
+    assert(triangle_hit.collides == true);
+
+    HitInfo result = bvh.ray_intersects(test_ray);
+    assert(result.collides == true);
+
+    HitInfo result_2 = bvh.box_intersects(box);
+    assert(result_2.collides == true);
 
     Triangle tri_1 = {
         {0.0f, 0.0f, 0.0f},
@@ -220,6 +225,14 @@ fn void test_bvh() {
     assert(tri_1.collides_aabb(box));
     assert(!tri_2.collides_aabb(box));
     assert(!tri_3.collides_aabb(box));
+
+    Triangle tri_4 = result_2.get_triangle();
+
+    Aabb3 aabb = tri_4.get_aabb();
+    
+    assert(aabb.collides(box));
+
+    // assert(collision::check_collision(&box, &aabb).collided == true);
 }
 
 
