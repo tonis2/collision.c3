@@ -40,34 +40,40 @@ fn void test_physics() {
      };
 
     Vec4[] cube = {
-        {-0.5, -0.5, -0.5, 0}, {0.5, -0.5, -0.5, 0}, {0.5, 0.5, -0.5, 0}, {-0.5, 0.5, -0.5, 0},
-        {-0.5, -0.5, 0.5, 0}, {0.5, -0.5, 0.5, 0}, {0.5, 0.5, 0.5, 0}, {-0.5, 0.5, 0.5, 0}
+        {-1, 0, -1, 0}, {1, 0, -1, 0}, {-1, 0, 1, 0},
+        {1, 0, -1, 0}, {1, 0, 1, 0}, {-1, 0, 1, 0},
+        {-1, -1, 0, 0}, {1, -1, 0, 0}, {0, 1, 0, 0},
+        {3, 1, -1, 0}, {3, 1, 1, 0}, {1, 0, 1, 0}
     };
 
-    ConvexPolyhedron shape_1 = (ConvexPolyhedron){.vertices = cube};
+    ConvexPolyhedron shape_1 = (ConvexPolyhedron){.vertices = cube.ptr, .count = cube.len};
 
     TransformedShape transformed_shape_1 = {
         .shape = &shape_1, 
         .translation = {-2.0, 0, 0}, 
         .scale = {1, 1, 1},
+        .rotation = {0, 0, 0, 1 }
     };
     
     TransformedShape transformed_shape_2 = {
         .shape = &shape_1, 
         .translation = {2.0, 0, 0}, 
         .scale = {1, 1, 1},
+        .rotation = {0, 0, 0, 1 }
     };
 
     TransformedShape transformed_shape_3 = {
         .shape = &shape_1, 
         .translation = {0.0, 0, 0}, 
         .scale = {1, 1, 1},
+        .rotation = {0, 0, 0, 1 }
     };
     
     TransformedShape transformed_shape_4 = {
         .shape = &shape_1, 
         .translation = {0, 0, 0}, 
         .scale = {3, 3, 3},
+        .rotation = {0, 0, 0, 1 }
     };
 
     TransformedShape transformed_shape_5 = {
@@ -85,8 +91,8 @@ fn void test_physics() {
     };
 
     assert(!collision::check_collision(&transformed_shape_1, &transformed_shape_2).collided);
-    assert(!collision::check_collision(&transformed_shape_5, &transformed_shape_6).collided);
-    //assert(collision::check_collision(&transformed_shape_3, &transformed_shape_4).collided);
+    assert(collision::check_collision(&transformed_shape_5, &transformed_shape_6).collided);
+    assert(collision::check_collision(&transformed_shape_3, &transformed_shape_4).collided);
 
     
     //CollisionInfo epa_result = epa(collision_result.simplex, &shape_1, &shape_2);
@@ -120,50 +126,6 @@ fn void test_aabb() {
 
     assert(intertia == result);
 }
-
-
-fn void test_flow() {
-
-    // Create grid map
-    SpatialHash3D spatial_map = { .cell_size = 1.0 };
-    defer spatial_map.free();
-
-    Aabb3[] boxes = {
-        {{0,0,0}, {1,1,1}},
-        {{1,1,1}, {2.5,2.5,2.5}},
-        {{5,5,5}, {6,6,6}},
-    };
-
-    Vec4[] cube = {
-        {-0.5, -0.5, -0.5, 0}, {0.5, -0.5, -0.5, 0}, {0.5, 0.5, -0.5, 0}, {-0.5, 0.5, -0.5, 0},
-        {-0.5, -0.5, 0.5, 0}, {0.5, -0.5, 0.5, 0}, {0.5, 0.5, 0.5, 0}, {-0.5, 0.5, 0.5, 0}
-    };
-
-    // Store AABB boxes in spatial map, so you don't need to loop over all the boxes, then detecting collision
-    foreach (usz i, item: boxes) spatial_map.insert(item, i)!!;
-
-
-    // Loop over the AABB pairs that are in same grid are
-    spatial_map.@get_pairs(;Pair pair) {
-        // Test the collisions
-        ConvexPolyhedron shape_1 = (ConvexPolyhedron){.vertices = cube};
-
-        TransformedShape transformed_shape_1 = {
-            .shape = &shape_1, 
-            .translation = {-2.0, 0, 0}, 
-            .scale = {1, 1, 1},
-        };
-        
-        TransformedShape transformed_shape_2 = {
-            .shape = &shape_1, 
-            .translation = {2.0, 0, 0}, 
-            .scale = {1, 1, 1},
-        };
-
-         assert(!collision::check_collision(&transformed_shape_1, &transformed_shape_2).collided);
-     };
-}
-
 
 fn void test_bvh() {
     Vec4[] terrain = {
@@ -228,13 +190,8 @@ fn void test_bvh() {
 
     Triangle tri_4 = result_2.get_triangle();
 
-    Aabb3 aabb = tri_4.get_aabb();
-    
-    assert(aabb.collides(box));
-
-    // assert(collision::check_collision(&box, &aabb).collided == true);
+    assert(collision::check_collision(&box, &&tri_4.get_aabb()).collided);
 }
-
 
 fn void test_remesh() {
     Vertices vertices;

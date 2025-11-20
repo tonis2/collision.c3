@@ -165,9 +165,9 @@ fn CollisionInfo check_collision(CollisionShape shape_1, CollisionShape shape_2)
         Vec3 a_support = shape_1.furthest_point(direction);
         Vec3 b_support = shape_2.furthest_point(-direction);
         Vec3 mikowski_difference = a_support - b_support;
-    
+
         // If we didn't reach the origin, no collision
-        if (mikowski_difference.dot(direction) <= 0) {
+        if (mikowski_difference.dot(direction) < 0) {
             return { .collided = false };
         }
 

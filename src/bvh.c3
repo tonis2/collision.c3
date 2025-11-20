@@ -65,6 +65,7 @@ fn void MinMax.expand_by_array(&self, Number[] values) {
 
 <*
  @require positions != null : `Has no positions attached`
+ @require count % 3 == 0: `Count must be divisible by 3`
 *>
 fn void BVHNode.build_recursive(&self, Vec4* positions, usz count) {
     for (usz i = 0; i < count; i += 3) {

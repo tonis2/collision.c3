@@ -112,6 +112,7 @@ fn Vec3 ConvexPolyhedron.furthest_point(&self, Vec3 direction) @dynamic {
 
     for (usz i; i < self.count; i++) {
         Vec3 pos = self.vertices[i].xyz;
+     
         Number distance = pos.dot(direction);
         if (distance > max_distance) {
             max_distance = distance;
