@@ -10,7 +10,7 @@ alias Vec2 = float[<2>];
 alias Vec3 = float[<3>];
 alias Vec4 = float[<4>];
 
-alias Vertices = List{Vec4};
+alias Vertices = List{Vec3};
 alias Indices = List{usz};
 
 fn void test_physics() {
@@ -39,14 +39,14 @@ fn void test_physics() {
         assert(pair.first == 0 && pair.second == 1);
      };
 
-    Vec4[] cube = {
-        {-1, 0, -1, 0}, {1, 0, -1, 0}, {-1, 0, 1, 0},
-        {1, 0, -1, 0}, {1, 0, 1, 0}, {-1, 0, 1, 0},
-        {-1, -1, 0, 0}, {1, -1, 0, 0}, {0, 1, 0, 0},
-        {3, 1, -1, 0}, {3, 1, 1, 0}, {1, 0, 1, 0}
+    Vec3[] cube = {
+        {-1, 0, -1}, {1, 0, -1}, {-1, 0, 1},
+        {1, 0, -1}, {1, 0, 1}, {-1, 0, 1},
+        {-1, -1, 0}, {1, -1, 0}, {0, 1, 0},
+        {3, 1, -1}, {3, 1, 1}, {1, 0, 1}
     };
 
-    ConvexPolyhedron shape_1 = (ConvexPolyhedron){.vertices = cube.ptr, .count = cube.len};
+    ConvexPolyhedron shape_1 = (ConvexPolyhedron){.vertices = cube};
 
     TransformedShape transformed_shape_1 = {
         .shape = &shape_1, 
@@ -128,11 +128,11 @@ fn void test_aabb() {
 }
 
 fn void test_bvh() {
-    Vec4[] terrain = {
-        {-1, 0, -1, 0}, {1, 0, -1, 0}, {-1, 0, 1, 0},
-        {1, 0, -1, 0}, {1, 0, 1, 0}, {-1, 0, 1, 0},
-        {-1, -1, 0, 0}, {1, -1, 0, 0}, {0, 1, 0, 0},
-        {3, 1, -1, 0}, {3, 1, 1, 0}, {1, 0, 1, 0}
+    Vec3[] terrain = {
+        {-1, 0, -1}, {1, 0, -1}, {-1, 0, 1},
+        {1, 0, -1}, {1, 0, 1}, {-1, 0, 1},
+        {-1, -1, 0}, {1, -1, 0}, {0, 1, 0},
+        {3, 1, -1}, {3, 1, 1}, {1, 0, 1}
     };
 
     BVHNode bvh;
@@ -198,12 +198,12 @@ fn void test_remesh() {
     Indices indices;
 
     vertices.push_all({
-        {0.0f, 0.0f, 0.0f, 0},
-        {1.0f, 0.0f, 0.0f, 0},
-        {0.0f, 1.0f, 0.0f, 0},
-        {1.0f, 0.0f, 0.0f, 0},
-        {1.0f, 1.0f, 0.0f, 0},
-        {0.0f, 1.0f, 0.0f, 0}
+        {0.0f, 0.0f, 0.0f},
+        {1.0f, 0.0f, 0.0f},
+        {0.0f, 1.0f, 0.0f},
+        {1.0f, 0.0f, 0.0},
+        {1.0f, 1.0f, 0.0f},
+        {0.0f, 1.0f, 0.0f}
     });
 
     indices.push_all({0, 1, 2, 3, 4, 5});

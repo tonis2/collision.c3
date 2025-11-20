@@ -7,17 +7,16 @@ alias Number = float;
 
 alias Vec2 @private = Number[<2>];
 alias Vec4 @private = Number[<4>];
-
 alias Vec3 @private = Number[<3>];
 
-// fn usz? Vec3.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s,%s,%s", self.x, self.y, self.z)!;
-//fn usz? Vec4.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s,%s,%s", self.x, self.y, self.z)!;
+fn usz? Vec3.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s,%s,%s", self.x, self.y, self.z)!;
+fn usz? Vec4.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s,%s,%s", self.x, self.y, self.z)!;
 
 struct HitInfo {
     bool collides;
     Number depth;
     Vec3 normal;
-    Vec4* positions;
+    Vec3* positions;
 }
 
 struct Face @private {

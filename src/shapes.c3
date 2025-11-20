@@ -58,8 +58,7 @@ struct TransformedShape (CollisionShape) {
 }
 
 struct ConvexPolyhedron (CollisionShape) {
-    Vec4* vertices;
-    usz count;
+    Vec3[] vertices;
     // usz[] indices;
 }
 
@@ -110,13 +109,11 @@ fn Vec3 ConvexPolyhedron.furthest_point(&self, Vec3 direction) @dynamic {
     Vec3 furthest_point;
     Number max_distance = -Number.max;
 
-    for (usz i; i < self.count; i++) {
-        Vec3 pos = self.vertices[i].xyz;
-     
-        Number distance = pos.dot(direction);
+    foreach (point: self.vertices) {     
+        Number distance = point.dot(direction);
         if (distance > max_distance) {
             max_distance = distance;
-            furthest_point = pos;
+            furthest_point = point;
         }
     }
 
@@ -264,8 +261,7 @@ fn Aabb3 ConvexPolyhedron.get_aabb(&self) @dynamic {
     Vec3 min = {float.max, float.max, float.max};
     Vec3 max = {-float.max, -float.max, -float.max};
 
-    for (usz i; i < self.count; i++) {
-        Vec3 point = self.vertices[i].xyz;
+    foreach (point: self.vertices) {
         min.x = math::min(point.x, min.x);
         min.y = math::min(point.y, min.y);
         min.z = math::min(point.z, min.z);

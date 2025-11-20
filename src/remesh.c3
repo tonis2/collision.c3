@@ -6,7 +6,7 @@ import std::collections::list;
 
 const Number EPSILON @local = 0.005;
 
-alias Vertices @local = List{Vec4};
+alias Vertices @local = List{Vec3};
 alias Indices @local = List{usz};
 
 

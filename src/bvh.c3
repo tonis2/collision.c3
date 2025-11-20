@@ -8,7 +8,7 @@ import std::collections::map;
 
 const int MAX_TRIS_PER_LEAF = 8;
 
-struct Triangle (CollisionShape) {
+struct Triangle {
     Vec3 v0, v1, v2;
 }
 
@@ -17,7 +17,7 @@ struct BVHNode {
     Aabb3 box;
     BVHNode* left;
     BVHNode* right;
-    Vec4* positions; 
+    Vec3* positions; 
     usz count;
 }
 
@@ -67,7 +67,7 @@ fn void MinMax.expand_by_array(&self, Number[] values) {
  @require positions != null : `Has no positions attached`
  @require count % 3 == 0: `Count must be divisible by 3`
 *>
-fn void BVHNode.build_recursive(&self, Vec4* positions, usz count) {
+fn void BVHNode.build_recursive(&self, Vec3* positions, usz count) {
     for (usz i = 0; i < count; i += 3) {
         Vec3 v0 = positions[i].xyz;
         Vec3 v1 = positions[i + 1].xyz;

@@ -6,7 +6,7 @@ import std::collections::list;
 
 
 alias Vertex @local = int[<3>];
-alias Points @local = List{Vec4};
+alias Points @local = List{Vec3};
 alias IndexList @local = List{usz};
 alias EdgeList @local = List{int[<2>]};
 
@@ -150,7 +150,7 @@ fn void hull_from_points(Points* vertices, IndexList* indices) {
         }
     }
 
-    List{Vec4} new_vertices;
+    Points new_vertices;
     defer new_vertices.free();
 
     foreach (usz i, idx: indices) {
