@@ -35,7 +35,7 @@ enum PhysicsCombine {
     MULTIPLY
 }
 
-fn usz contact_id (usz a, usz b) => (usz)(a.hash() + b.hash()); 
+// fn usz contact_id (usz a, usz b) => (usz)(a.hash() + b.hash()); 
 
 struct Material {
     Number static_friction;
@@ -56,7 +56,7 @@ struct Motion {
 
     Vec3 mass_center;
     //Vec3 inertia_diagonal;
-    //Quaternionf inertia_orientation;
+    //QuaternionValue inertia_orientation;
     Matrix3f inertia;
 }
 
@@ -98,7 +98,7 @@ fn PhysicsWorld create_world(PhysicsWorldConfig config) {
 Vec3 gravity @private = {0.0f, 0.0f, -9.8f};
 
 const EPSILON @local = 0.0001f;
-const SLEEP_OFFSET = 3.0;
+const SLEEP_OFFSET @local = 3.0;
 
 <*
  @require self.bodies.len() > 0 : `Must have rigid bodies`
@@ -120,6 +120,8 @@ fn Aabb3 Rigidbody.get_transformed_aabb(&self) {
 
 <*
  @require body.collider.shape != null : `Added rigid body must have collision shape`
+ @require body.collider.rotation != (QuaternionValue){0,0,0,0} : `Body rotation must not be 0`
+ @require body.collider.scale != {0,0,0} : `Body scale must not be 0`
 *>
 fn void? PhysicsWorld.add_body(&self, Rigidbody body) {
     body.is_static = body.motion.mass == 0;
@@ -214,7 +216,7 @@ fn void PhysicsWorld.run_step(&self, Number time, uint step_count = 20) {
             Vec3 axis = body.motion.angular_velocity * (time_step * 0.5);
 
             if (axis != {0,0,0}) {
-                body.collider.rotation = (body.collider.rotation + (Quaternionf){...axis, 0} * body.collider.rotation).normalize();
+                body.collider.rotation = (body.collider.rotation + (QuaternionValue){...axis, 0} * body.collider.rotation).normalize();
             }
 
             // Apply gravity
@@ -253,17 +255,19 @@ fn void PhysicsWorld.run_step(&self, Number time, uint step_count = 20) {
             Rigidbody* body_a = self.find_body(pair.first)!!;
             Rigidbody* body_b = self.find_body(pair.second)!!;
 
+            bool has_filter = self.filters.has_key((uint)(pair.first + pair.second)) == true;
+
             // Check if aabb boxes collide first
-            if (body_a.transformed_aabb.collides(body_b.transformed_aabb)) {
+            if (!has_filter && body_a.transformed_aabb.collides(body_b.transformed_aabb)) {
       
-                if (body_a.sleeping && !body_b.is_static) body_a.stop_sleeping();
-                if (body_b.sleeping && !body_a.is_static) body_b.stop_sleeping();
+                if (body_a.sleeping && body_b.is_active()) body_a.stop_sleeping();
+                if (body_b.sleeping && body_a.is_active()) body_b.stop_sleeping();
 
                 if (body_a.is_active() || body_b.is_active()) {
                     // Check collision with GJK algorithm
                     CollisionInfo collision_info = collision::check_collision(&body_a.collider, &body_b.collider);
 
-                    if (collision_info.collided && self.filters.has_key((uint)(pair.first + pair.second)) == false) {
+                    if (collision_info.collided) {
                         // Get contact points with EPA
                         collision::epa(&collision_info, &body_a.collider, &body_b.collider);
                         
@@ -345,10 +349,10 @@ fn void PhysicsWorld.resolve_joint(&self, GenericJoint3D* joint, Number time_ste
     // Angular limits resolving
     if (!joint.angular_limits.is_empty()) {
         
-        Quaternionf rotation_a = a.collider.rotation;
-        Quaternionf rotation_b = b.collider.rotation;
+        QuaternionValue rotation_a = a.collider.rotation;
+        QuaternionValue rotation_b = b.collider.rotation;
 
-        Quaternionf relative_orientation = (rotation_b * rotation_a);
+        QuaternionValue relative_orientation = (rotation_b * rotation_a);
         Vec3 total_axis = relative_orientation.v.xyz;
         Number total_angle = relative_orientation.to_angle();
 

@@ -8,6 +8,7 @@ alias Number = float;
 alias Vec2 @private = Number[<2>];
 alias Vec4 @private = Number[<4>];
 alias Vec3 @private = Number[<3>];
+alias QuaternionValue = QuaternionNumber{Number};
 
 fn usz? Vec3.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s,%s,%s", self.x, self.y, self.z)!;
 fn usz? Vec4.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s,%s,%s", self.x, self.y, self.z)!;
@@ -30,7 +31,7 @@ struct Pair (Printable) {
     usz second;
 }
 
-fn Matrix3f Quaternionf.as_mat3(self) {
+fn Matrix3f QuaternionValue.as_mat3(self) {
     Matrix4f matrix = self.to_matrixf();
     return {
         matrix.m00, matrix.m01, matrix.m02,
@@ -59,6 +60,7 @@ fn usz? Pair.to_format(&self, Formatter* formatter) @dynamic => formatter.printf
 macro bool Pair.equals(self, Pair b) @operator(==) => self.first == b.first && self.second == b.second;
 macro uint Pair.hash(Pair self) => builtin::@generic_hash(self.first) + builtin::@generic_hash(self.second);
 macro bool Vec3.equals(self, Vec3 b) => self == b;
+macro bool QuaternionValue.equals(self, QuaternionValue b) @operator(==) => self.v.xyzw == b.v.xyzw;
 
 
 fn Triangle HitInfo.get_triangle(self) => {self.positions[0].xyz, self.positions[1].xyz, self.positions[2].xyz};

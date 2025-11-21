@@ -46,7 +46,7 @@ fn void test_physics() {
         {3, 1, -1}, {3, 1, 1}, {1, 0, 1}
     };
 
-    ConvexPolyhedron shape_1 = (ConvexPolyhedron){.vertices = cube};
+    ConvexPolyhedron shape_1 = {.vertices = cube};
 
     TransformedShape transformed_shape_1 = {
         .shape = &shape_1, 

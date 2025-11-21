@@ -8,7 +8,7 @@ import std::collections::map;
 
 const int MAX_TRIS_PER_LEAF = 8;
 
-struct Triangle {
+struct Triangle (CollisionShape) {
     Vec3 v0, v1, v2;
 }
 
@@ -61,6 +61,16 @@ fn void MinMax.expand(&self, Number value) {
 
 fn void MinMax.expand_by_array(&self, Number[] values) {
     foreach (value: values) self.expand(value);
+}
+
+<*
+ @require positions != null : `Has no positions attached`
+ @require count % 3 == 0: `Count must be divisible by 3`
+*>
+fn BVHNode create_bvh_tree(Vec3* positions, usz count) {
+    BVHNode tree;
+    tree.build_recursive(positions, count);
+    return tree;
 }
 
 <*

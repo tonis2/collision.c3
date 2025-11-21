@@ -39,7 +39,7 @@ import collision;
         {-0.5, -0.5, 0.5}, {0.5, -0.5, 0.5}, {0.5, 0.5, 0.5}, {-0.5, 0.5, 0.5}
     };
 
-    ConvexPolyhedron shape_1 = (ConvexPolyhedron){cube};
+    ConvexPolyhedron shape_1 = {.vertices = cube};
 
     // Add transforms
     TransformedConvex transformed_shape_1 = {
