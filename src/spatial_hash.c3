@@ -56,7 +56,7 @@ fn void? SpatialHash3D.insert(&self, Aabb3 box, usz id) {
     }
 }
 
-alias CellIDs = ElasticArray{usz, 30};
+alias CellIDs = ElasticArray{usz, 60};
 
 
 <*
