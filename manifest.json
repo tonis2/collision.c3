@@ -9,7 +9,7 @@
     "src/spatial_hash.c3",
     "src/bvh.c3",
     "src/resolver.c3",
-    "src/constraint.c3",
+    "src/joint.c3",
     "src/quick_hull.c3",
     "src/remesh.c3"
   ],
