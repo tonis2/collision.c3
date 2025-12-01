@@ -46,7 +46,7 @@ fn void test_physics() {
         {3, 1, -1}, {3, 1, 1}, {1, 0, 1}
     };
 
-    ConvexPolyhedron shape_1 = {.vertices = cube};
+    ConvexPolyhedron shape_1 = {.vertices = cube.ptr, .count = cube.len};
 
     TransformedShape transformed_shape_1 = {
         .shape = &shape_1, 
@@ -135,10 +135,8 @@ fn void test_bvh() {
         {3, 1, -1}, {3, 1, 1}, {1, 0, 1}
     };
 
-    BVHNode bvh;
+    BVHNode bvh = collision::create_bvh_tree(terrain.ptr, terrain.len);
     defer bvh.free();
-
-    bvh.build_recursive(terrain.ptr, terrain.len);
 
     Triangle triangle = {
         {-1.0f, -1.0f, 0.0f}, 

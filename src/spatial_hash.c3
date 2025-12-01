@@ -36,6 +36,7 @@ fn Vec3 SpatialHash3D.world_to_grid(&self, Vec3 pos) {
  @param box : `3D aabb box, that's inserted into the map`
  @param id : `ID thats attached to the box, could be mesh ID`
  @require box.size().sq_magnitude() < 10000 : `Aabb box is too big, could be because memory errors`
+ @require box.size().sq_magnitude() > 0.1 : `Aabb box is too small, could be because memory errors`
 *>    
 fn void? SpatialHash3D.insert(&self, Aabb3 box, usz id) {
     Vec3 min_cell = self.world_to_grid(box.min);
@@ -55,7 +56,7 @@ fn void? SpatialHash3D.insert(&self, Aabb3 box, usz id) {
     }
 }
 
-alias CellIDs = ElasticArray{usz, 200};
+alias CellIDs = ElasticArray{usz, 30};
 
 
 <*

@@ -58,17 +58,9 @@ struct TransformedShape (CollisionShape) {
 }
 
 struct ConvexPolyhedron (CollisionShape) {
-    Vec3[] vertices;
+    Vec3* vertices;
+    usz count;
     // usz[] indices;
-}
-
-fn TransformedShape transformed_shape_from(CollisionShape shape = null, Vec3 translation = {0, 0, 0}, Vec3 scale = {1, 1, 1}, Quaternionf rotation = {0, 0, 0, 1}) {
-    return {
-        .shape = shape,
-        .translation = translation,
-        .scale = scale,
-        .rotation = rotation
-    };
 }
 
 fn usz? Ray.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("origin %s, direction %s", self.origin, self.direction)!;
@@ -109,13 +101,18 @@ fn Vec3 ConvexPolyhedron.furthest_point(&self, Vec3 direction) @dynamic {
     Vec3 furthest_point;
     Number max_distance = -Number.max;
 
-    foreach (point: self.vertices) {     
+    for (usz i = 0; i<self.count; i++) {
+        Vec3 point = self.vertices[i];
+
         Number distance = point.dot(direction);
         if (distance > max_distance) {
             max_distance = distance;
             furthest_point = point;
         }
+        
     }
+
+    // foreach (point: self.vertices) {}
 
     return furthest_point;
 }
@@ -261,7 +258,10 @@ fn Aabb3 ConvexPolyhedron.get_aabb(&self) @dynamic {
     Vec3 min = {float.max, float.max, float.max};
     Vec3 max = {-float.max, -float.max, -float.max};
 
-    foreach (point: self.vertices) {
+
+    for (usz i = 0; i<self.count; i++) {
+        Vec3 point = self.vertices[i];
+
         min.x = math::min(point.x, min.x);
         min.y = math::min(point.y, min.y);
         min.z = math::min(point.z, min.z);

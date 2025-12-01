@@ -21,7 +21,7 @@ struct BVHNode {
     usz count;
 }
 
-fn bool BVHNode.is_leaf(&self) => self.left == null && self.right == null;
+fn bool BVHNode.is_leaf(&self) @local => self.left == null && self.right == null;
 
 fn void BVHNode.free(&self) {
     List{BVHNode*} lefts;
