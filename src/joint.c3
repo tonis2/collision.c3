@@ -133,21 +133,29 @@ fn void GenericJoint3D.create_constraint(joint, PhysicsWorld* world, Number dt) 
         world.constraints.push(axis_constraint);
     }
     
-    QuaternionValue relative_orientation = a.collider.rotation.conjugate() * b.collider.rotation;
-    QuaternionValue error_orientation = relative_orientation * joint.relative_orientation.conjugate();
+    QuaternionValue error_orientation = a.collider.rotation.conjugate() * b.collider.rotation * joint.relative_orientation.conjugate();
 
-    Vec3 error_local = error_orientation.v.xyz * (error_orientation.l >= 0 ? 1 : -1);
+    Number error_direction = error_orientation.l >= 0 ? 1 : -1;
+    Vec3 error_local = error_orientation.v.xyz * 2 * error_direction;
     Vec3 world_error = a.collider.rotation * error_local;
 
     foreach (limit: joint.angular_limits) {
-        Vec3 world_axis = a.collider.rotation * joint.relative_orientation * limit.axes;
-
+        Vec3 normal = joint.relative_orientation * limit.axes;
+        Vec3 world_axis = a.collider.rotation * normal;
+    
         float normal_inertia;
         if (!a.is_static) normal_inertia += a.get_intertia2(rA, -world_axis);
         if (!b.is_static) normal_inertia += b.get_intertia2(rB, world_axis);
 
-        Number beta = 0.2f;
-        Number bias = (beta / dt) * world_error.dot(world_axis);
+        Number denom = (0.2 / dt);
+        Number rotation_error = world_error.dot(world_axis);
+        
+        Number rigid_denom = inverse_mass_sum + normal_inertia;
+        // Number softness_denom = (limit.damping / dt) + (limit.stiffness * dt);
+        // Number total_denom = rigid_denom + softness_denom;
+
+        // Number bounce = (limit.stiffness * dt) / total_denom * rotation_error;
+        // Number bias = (limit.stiffness * dt) / rigid_denom * rotation_error;
 
         Constraint axis_constraint = {
             .body_a = a,
@@ -156,14 +164,39 @@ fn void GenericJoint3D.create_constraint(joint, PhysicsWorld* world, Number dt) 
             .linear_b = {0,0,0},
             .angular_a = -world_axis,
             .angular_b = world_axis,
-            .effective_mass = 1 / (inverse_mass_sum + normal_inertia),
+            .effective_mass = 1 / rigid_denom,
             .min = -float.max,
             .max = float.max,
-            .bias = bias,
+            .bias = denom * rotation_error,
             .impulse_cache = impulse_cache,
+            .bounce = 0,
             .impulse_offset = 0,
         };
 
-        world.constraints.push(axis_constraint);
+        if (limit.min != 0) {
+            Number limit_error = (limit.min - (-rotation_error));
+            if (limit_error > 0) {
+                axis_constraint.bias = denom * limit_error;
+                axis_constraint.min = -float.max;
+                axis_constraint.max = 0;
+                world.constraints.push(axis_constraint);
+                continue;
+            }
+        }
+
+        if (limit.max != 0) {
+            Number limit_error = (-rotation_error - limit.max);
+            if (limit_error > 0) {        
+                axis_constraint.bias = denom * -limit_error;
+                axis_constraint.min = 0;
+                axis_constraint.max = float.max;
+                world.constraints.push(axis_constraint);
+                continue;
+            }
+        }
+
+        if (limit.max == 0 && limit.min == 0) {
+            world.constraints.push(axis_constraint);
+        }
     }
 }
