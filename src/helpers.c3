@@ -58,7 +58,11 @@ fn Number Vec3.distance_sq(self, Vec3 v2) {
 fn usz? Pair.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s, %s", self.first, self.second)!;
 
 macro bool Pair.equals(self, Pair b) @operator(==) => self.first == b.first && self.second == b.second;
-macro uint Pair.hash(Pair self) => builtin::@generic_hash(self.first) + builtin::@generic_hash(self.second);
+macro uint Pair.hash(&self) {
+    if (self.first > self.second) @swap(self.first, self.second);
+    return builtin::@generic_hash(self.first) + builtin::@generic_hash(self.second);
+}
+
 macro bool Vec3.equals(self, Vec3 b) => self == b;
 macro bool QuaternionValue.equals(self, QuaternionValue b) @operator(==) => self.v.xyzw == b.v.xyzw;
 

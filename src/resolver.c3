@@ -7,15 +7,13 @@ import std::collections::list;
 import std::time;
 import std::collections::map;
 
-alias CollisionFilter = HashMap{uint, bool};
-alias CollisionCache = HashMap{ContactKey, Vec3};
+const EPSILON @local = 0.001f;
+
+alias CollisionFilter = HashMap{Pair, bool};
+alias CollisionCache = HashMap{Pair, Vec3};
 alias RigidBodyMap = LinkedHashMap{usz, Rigidbody};
 alias RigidBodyIterator = LinkedHashMapValueIterator{usz, Rigidbody};
 
-struct ContactKey {
-    usz a;
-    usz b;
-}
 
 struct Constraint {
     Rigidbody* body_a;
@@ -37,7 +35,6 @@ struct Constraint {
 
     Vec3 linear_b;
     Vec3 angular_b;
-
 }
 
 struct Collision {
@@ -67,7 +64,7 @@ struct Material {
 struct Rigidbody {
     inline TransformedShape collider;
     int bvh_node;
-    uint id;
+    usz id;
 
     Number sleep_timer;
 
@@ -79,7 +76,6 @@ struct Rigidbody {
     Aabb3 aabb;
     Aabb3 transformed_aabb;
     Material material;
-
 
     // Motion
     Vec3 linear_velocity;
@@ -105,6 +101,7 @@ struct PhysicsWorld {
     CollisionFilter filters;
     CollisionCache contact_cache;
     Vec3 gravity;
+    Number sleep_timer;
 }
 
 fn void PhysicsWorld.free(&self) {
@@ -116,17 +113,15 @@ fn void PhysicsWorld.free(&self) {
     self.contact_cache.free();
 }
 
-fn PhysicsWorld create_world(Number cell_size = 2.0, Vec3 gravity = {0.0f, 0.0f, -9.8f}) {
+fn PhysicsWorld create_world(Number cell_size = 2.0, Vec3 gravity = {0.0f, 0.0f, -9.8f}, Number sleep_timer = 5.0) {
     PhysicsWorld world = {
         .gravity = gravity,
-        .spatial_map.cell_size = cell_size
+        .spatial_map.cell_size = cell_size,
+        .sleep_timer = sleep_timer
     };
 
     return world;
 }
-
-const EPSILON @local = 0.001f;
-const SLEEP_OFFSET @local = 5.0;
 
 <*
  @require self.bodies.len() > 0 : `Must have rigid bodies`
@@ -135,16 +130,12 @@ fn Rigidbody*? PhysicsWorld.find_body(self, usz id) => self.bodies.get_ref(id);
 
 fn void? PhysicsWorld.add_constraint(&self, GenericJoint3D joint) {
     if (joint.collides == false) {
-        self.filters.set(joint.body_a + joint.body_b, false);
+        Pair key = {joint.body_a, joint.body_b};
+        self.filters.set(key, true);
     }
 
     self.joints.push(joint);
 }
-
-fn Aabb3 Rigidbody.get_transformed_aabb(&self) {
-    bool skip_rotation = self.collider.get_type() == ShapeType.SPHERE;
-    return self.aabb.transform(translation: self.collider.translation, scale: self.collider.scale, rotation: self.collider.rotation, skip_rotation: skip_rotation);
-} 
 
 <*
  @require body.collider.shape != null : `Added rigid body must have collision shape`
@@ -164,7 +155,6 @@ fn void? PhysicsWorld.add_body(&self, Rigidbody body) {
     if (body.linear_dampening == 0) body.linear_dampening = 1;
     if (body.angular_dampening == 0) body.angular_dampening = 1;
 
-
     // Don't let joint bodies sleep for now
     foreach (joint: self.joints) {
         if (joint.body_a == body.id || joint.body_b == body.id) {
@@ -175,6 +165,11 @@ fn void? PhysicsWorld.add_body(&self, Rigidbody body) {
     self.bodies.set(body.id, body);
     self.spatial_map.insert(body.transformed_aabb, body.id)!;
 }
+
+fn Aabb3 Rigidbody.get_transformed_aabb(&self) {
+    bool skip_rotation = self.collider.get_type() == ShapeType.SPHERE;
+    return self.aabb.transform(translation: self.collider.translation, scale: self.collider.scale, rotation: self.collider.rotation, skip_rotation: skip_rotation);
+} 
 
 // fn void? PhysicsWorld.add_bvh_node(&self, Rigidbody body, Aabb3 aabb) {
 //     self.bodies.push(body);
@@ -229,7 +224,7 @@ fn void PhysicsWorld.run_step(&self, Number time, uint step_count = 20) {
         Rigidbody* body_a = self.find_body(pair.first)!!;
         Rigidbody* body_b = self.find_body(pair.second)!!;
 
-        bool has_filter = self.filters.has_key((uint)(pair.first + pair.second)) == true;
+        bool has_filter = self.filters.has_key({body_a.id, body_b.id}) == true;
 
         // Check if aabb boxes collide first
         if (!has_filter && body_a.transformed_aabb.collides(body_b.transformed_aabb)) {
@@ -261,7 +256,7 @@ fn void PhysicsWorld.run_step(&self, Number time, uint step_count = 20) {
     };
 
     foreach (collision: self.collisions) {
-        ContactKey key = {collision.a, collision.b};
+        Pair key = {collision.a, collision.b};
         self.contact_cache.set(key, {});
         if (!self.contact_cache.has_key(key)) {
             self.contact_cache.set(key, {});
@@ -288,7 +283,7 @@ fn void PhysicsWorld.run_step(&self, Number time, uint step_count = 20) {
     self.contact_cache.clear();
     
     foreach (collision: self.collisions) {
-        ContactKey key = {collision.a, collision.b};
+        Pair key = {collision.a, collision.b};
         self.contact_cache.set(key, collision.impulse);
     }
 
@@ -330,7 +325,7 @@ fn void PhysicsWorld.run_step(&self, Number time, uint step_count = 20) {
     
         if (body.can_sleep == true && moving == false && rotating == false) {
             body.sleep_timer += time;
-            if (body.sleep_timer > SLEEP_OFFSET) {
+            if (body.sleep_timer > self.sleep_timer) {
                 // body.sleeping = true;
                 // body.sleep_timer = 0;
             };
@@ -348,6 +343,8 @@ fn void PhysicsWorld.solve_constraint(&self, Constraint* constraint) @local {
     Vec3* cache = constraint.impulse_cache;
 
     Number relative_velocity = constraint.relative_velocity();
+
+    // assert(relative_velocity < 100000, "Velocity to high, error with bodies %s %s", a.id, b.id);
 
     // 2. Calculate Lambda (The corrective impulse magnitude)
     Number lambda = -(relative_velocity + constraint.bias + constraint.bounce) * constraint.effective_mass;
@@ -375,12 +372,7 @@ fn void PhysicsWorld.solve_constraint(&self, Constraint* constraint) @local {
     }       
 }
 
-macro uint ContactKey.hash(ContactKey self) {
-    if (self.a > self.b) @swap(self.a, self.b);
-    return builtin::@generic_hash(self.a) + builtin::@generic_hash(self.b);
-}
 
-macro bool ContactKey.equals(self, ContactKey b) @operator(==) => self.a == b.a && self.b == b.b;
 
 fn Number Constraint.relative_velocity(self) {
     Rigidbody* a = self.body_a;
@@ -440,7 +432,7 @@ fn void Collision.create_constraint(collision, PhysicsWorld* world, Number dt) @
 
     normal_constraint.bounce = (relative_velocity * restitution);
 
-    Vec3 helper = (math::abs(normal.y) > 0.99) 
+    Vec3 helper = (math::abs(normal.y) > 0.99)
         ? {1.0f, 0.0f, 0.0f}
         : {0.0f, 1.0f, 0.0f};
   

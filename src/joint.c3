@@ -33,8 +33,8 @@ struct GenericJoint3D {
    Vec3 anchor_b;
    QuaternionValue relative_orientation;
 
-   uint body_a;
-   uint body_b;
+   usz body_a;
+   usz body_b;
 
    Vec3 accumulated_linear_impulse;
    Number accumulated_angular_impulse;
@@ -49,8 +49,7 @@ fn void GenericJoint3D.create_constraint(joint, PhysicsWorld* world, Number dt) 
 
     // if (a.sleeping || b.sleeping) return;
 
-    ContactKey key = {joint.body_a, joint.body_b};
-    world.contact_cache.set(key, {});
+    world.contact_cache.set({joint.body_a, joint.body_b}, {});
 
     Vec3* impulse_cache = world.contact_cache.get_ref({joint.body_a, joint.body_b})!!;
 
@@ -82,7 +81,6 @@ fn void GenericJoint3D.create_constraint(joint, PhysicsWorld* world, Number dt) 
         if (!a.is_static) normal_inertia += a.get_intertia2(rA, -normal);
         if (!b.is_static) normal_inertia += b.get_intertia2(rB, normal);
 
-        // 
         Number rigid_denom = inverse_mass_sum + normal_inertia;
         // Number softness_denom = (limit.damping / dt) + (limit.stiffness * dt);
         // Number total_denom = rigid_denom + softness_denom;
@@ -92,7 +90,7 @@ fn void GenericJoint3D.create_constraint(joint, PhysicsWorld* world, Number dt) 
         // Number bounce = (limit.stiffness * dt) / total_denom * position_error;
         // Number bias = (limit.stiffness * dt) / rigid_denom * position_error;
 
-        Number bias = 0.2 / rigid_denom * position_error;
+        Number denom = (0.2 / dt);
 
         Constraint axis_constraint = {
             .body_a = a,
@@ -105,17 +103,15 @@ fn void GenericJoint3D.create_constraint(joint, PhysicsWorld* world, Number dt) 
             .min = -float.max,
             .max = float.max,
             .impulse_cache = impulse_cache,
-            .bias = bias,
+            .bias = denom * position_error,
             .bounce = 0,
             .impulse_offset = offset,
         };
 
-        Number denom = 0.2 / rigid_denom;
-
         if (limit.min != 0) {
             Number correction = (limit.min - position_error) * impulse_dir;
             if (correction > 0) {
-                axis_constraint.bias = bias * correction;
+                axis_constraint.bias = denom * correction;
                 axis_constraint.min = -float.max;
                 axis_constraint.max = 0;
             }
@@ -124,7 +120,7 @@ fn void GenericJoint3D.create_constraint(joint, PhysicsWorld* world, Number dt) 
         if (limit.max != 0) {
             Number correction = (position_error - limit.max) * impulse_dir;
             if (correction > 0) {
-                axis_constraint.bias = bias * correction;
+                axis_constraint.bias = denom * correction;
                 axis_constraint.min = 0;
                 axis_constraint.max = float.max;
             }
@@ -142,7 +138,12 @@ fn void GenericJoint3D.create_constraint(joint, PhysicsWorld* world, Number dt) 
     foreach (limit: joint.angular_limits) {
         Vec3 normal = joint.relative_orientation * limit.axes;
         Vec3 world_axis = a.collider.rotation * normal;
-    
+
+        usz offset = 0;
+
+        if (limit.axes.y != 0) offset = 1;
+        if (limit.axes.z != 0) offset = 2;
+
         float normal_inertia;
         if (!a.is_static) normal_inertia += a.get_intertia2(rA, -world_axis);
         if (!b.is_static) normal_inertia += b.get_intertia2(rB, world_axis);
@@ -151,6 +152,7 @@ fn void GenericJoint3D.create_constraint(joint, PhysicsWorld* world, Number dt) 
         Number rotation_error = world_error.dot(world_axis);
         
         Number rigid_denom = inverse_mass_sum + normal_inertia;
+
         // Number softness_denom = (limit.damping / dt) + (limit.stiffness * dt);
         // Number total_denom = rigid_denom + softness_denom;
 
@@ -170,7 +172,7 @@ fn void GenericJoint3D.create_constraint(joint, PhysicsWorld* world, Number dt) 
             .bias = denom * rotation_error,
             .impulse_cache = impulse_cache,
             .bounce = 0,
-            .impulse_offset = 0,
+            .impulse_offset = offset,
         };
 
         if (limit.min != 0) {
