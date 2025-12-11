@@ -189,10 +189,10 @@ fn void Rigidbody.apply_angular_impulse(&self, Vec3 impulse) {
     self.angular_velocity += inertia * impulse;
 }
 
-fn void Rigidbody.apply_impulse(&self, Vec3 impulse, Vec3 point) {
-    self.linear_velocity += impulse * self.inverse_mass;
-    self.apply_angular_impulse(point.cross(impulse));
-}
+// fn void Rigidbody.apply_impulse(&self, Vec3 impulse, Vec3 point) {
+//     self.linear_velocity += impulse * self.inverse_mass;
+//     self.apply_angular_impulse(point.cross(impulse));
+// }
 
 // fn Vec3 Rigidbody.get_intertia(self, Vec3 point, Vec3 normal) {
 //     return (self.get_inverse_world_inertia() * point.cross(normal)).cross(point);
@@ -204,7 +204,7 @@ fn Number Rigidbody.get_intertia(self, Vec3 point, Vec3 normal) {
     return accel.dot(ang);
 }
 
-fn Vec3 Rigidbody.relative_velocity(self, Vec3 point) => self.linear_velocity + self.angular_velocity.cross(point);
+//fn Vec3 Rigidbody.relative_velocity(self, Vec3 point) => self.linear_velocity + self.angular_velocity.cross(point);
 
 fn bool Rigidbody.is_rotating(self) => self.angular_velocity.sq_magnitude() > 0.1f;
 fn bool Rigidbody.is_moving(self) => self.linear_velocity.sq_magnitude() > 0.1f;
@@ -350,7 +350,9 @@ fn void PhysicsWorld.run_step(&self, Number time, uint step_count = 20) {
     }
 }
 
+
 <*
+ Generic solver for constraints, solves both collision and joint constraints.
  @require constraint.body_a != constraint.body_b : `Collision bodies should not be same index`
 *>
 fn void PhysicsWorld.solve_constraint(&self, Constraint* constraint) @local {
@@ -396,17 +398,7 @@ fn void PhysicsWorld.solve_constraint(&self, Constraint* constraint) @local {
     }       
 }
 
-
-
-fn Number Constraint.relative_velocity(self) {
-    Rigidbody* a = self.body_a;
-    Rigidbody* b = self.body_b;
-    return self.linear_a.dot(a.linear_velocity) 
-            + self.angular_a.dot(a.angular_velocity)
-            + self.linear_b.dot(b.linear_velocity)
-            + self.angular_b.dot(b.angular_velocity);
-}
-
+// Create distance / normal contraint, for collision
 fn void Collision.create_constraint(collision, PhysicsWorld* world, Number dt) @local {
     Rigidbody* a = world.find_body(collision.a)!!;
     Rigidbody* b = world.find_body(collision.b)!!;
@@ -497,4 +489,16 @@ fn void Collision.create_constraint(collision, PhysicsWorld* world, Number dt) @
     };
 
     world.constraints.push_all({normal_constraint, tangent_constraint, tangent_constraint_2});
+}
+
+
+
+
+fn Number Constraint.relative_velocity(self) {
+    Rigidbody* a = self.body_a;
+    Rigidbody* b = self.body_b;
+    return self.linear_a.dot(a.linear_velocity) 
+            + self.angular_a.dot(a.angular_velocity)
+            + self.linear_b.dot(b.linear_velocity)
+            + self.angular_b.dot(b.angular_velocity);
 }
