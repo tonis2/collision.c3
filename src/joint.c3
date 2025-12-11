@@ -136,8 +136,8 @@ fn void GenericJoint3D.create_constraint(joint, PhysicsWorld* world, Number dt) 
     Vec3 world_error = a.collider.rotation * error_local;
 
     foreach (limit: joint.angular_limits) {
-        Vec3 normal = joint.relative_orientation * limit.axes;
-        Vec3 world_axis = a.collider.rotation * normal;
+        Vec3 normal = joint.relative_orientation * limit.axes * impulse_dir;
+        Vec3 world_axis = a.collider.rotation * normal ;
 
         usz offset = 0;
 
@@ -157,7 +157,7 @@ fn void GenericJoint3D.create_constraint(joint, PhysicsWorld* world, Number dt) 
         // Number total_denom = rigid_denom + softness_denom;
 
         // Number bounce = (limit.stiffness * dt) / total_denom * rotation_error;
-        // Number bias = (limit.stiffness * dt) / rigid_denom * rotation_error;
+        Number bias = (0.2 / dt);
 
         Constraint axis_constraint = {
             .body_a = a,
@@ -169,35 +169,26 @@ fn void GenericJoint3D.create_constraint(joint, PhysicsWorld* world, Number dt) 
             .effective_mass = 1 / rigid_denom,
             .min = -float.max,
             .max = float.max,
-            .bias = denom * rotation_error,
+            .bias = bias * rotation_error,
             .impulse_cache = impulse_cache,
             .bounce = 0,
             .impulse_offset = offset,
         };
 
-        if (limit.min != 0) {
-            Number limit_error = (limit.min - (-rotation_error));
-            if (limit_error > 0) {
-                axis_constraint.bias = denom * limit_error;
-                axis_constraint.min = -float.max;
-                axis_constraint.max = 0;
-                world.constraints.push(axis_constraint);
-                continue;
-            }
+        Number min_limit = limit.min - rotation_error;
+        Number max_limit = rotation_error - limit.max;
+
+        if (min_limit > 0) {
+            axis_constraint.bias = bias * min_limit * rotation_error;
+            axis_constraint.min = 0;
+            axis_constraint.max = float.max;
+            world.constraints.push(axis_constraint);
         }
 
-        if (limit.max != 0) {
-            Number limit_error = (-rotation_error - limit.max);
-            if (limit_error > 0) {        
-                axis_constraint.bias = denom * -limit_error;
-                axis_constraint.min = 0;
-                axis_constraint.max = float.max;
-                world.constraints.push(axis_constraint);
-                continue;
-            }
-        }
-
-        if (limit.max == 0 && limit.min == 0) {
+        if (max_limit > 0) {
+            axis_constraint.bias = bias * max_limit * rotation_error;
+            axis_constraint.min = -float.max;
+            axis_constraint.max = 0;
             world.constraints.push(axis_constraint);
         }
     }

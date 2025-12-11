@@ -224,7 +224,9 @@ fn void PhysicsWorld.run_step(&self, Number time, uint step_count = 20) {
         Rigidbody* body_a = self.find_body(pair.first)!!;
         Rigidbody* body_b = self.find_body(pair.second)!!;
 
-        bool has_filter = self.filters.has_key({body_a.id, body_b.id}) == true;
+        Pair key = {body_a.id, body_b.id};
+        
+        bool has_filter = self.filters.has_key(key) == true;
 
         // Check if aabb boxes collide first
         if (!has_filter && body_a.transformed_aabb.collides(body_b.transformed_aabb)) {
@@ -356,10 +358,10 @@ fn void PhysicsWorld.solve_constraint(&self, Constraint* constraint) @local {
     }
 
     // Todo: fix hot starting
-    // Number old_impulse = cache[0][constraint.impulse_offset];
-    Number new_impulse = math::max(constraint.min, math::min(lambda, constraint.max));
+    Number old_impulse = cache[0][constraint.impulse_offset];
+    Number new_impulse = math::max(constraint.min, math::min(lambda + old_impulse, constraint.max));
     cache[0][constraint.impulse_offset] = new_impulse;
-    // new_impulse = (new_impulse - old_impulse);
+    new_impulse = (new_impulse - old_impulse);
 
     if (!a.is_static) {
         a.apply_linear_impulse(constraint.linear_a * new_impulse);
