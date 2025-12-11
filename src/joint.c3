@@ -36,9 +36,6 @@ struct GenericJoint3D {
    usz body_a;
    usz body_b;
 
-   Vec3 accumulated_linear_impulse;
-   Number accumulated_angular_impulse;
-
    Number dampening;
    Number stifness;
 }
