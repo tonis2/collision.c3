@@ -105,3 +105,6 @@ Basic AABB collision detecting
 
 
 Physics world resolver basic example is [here](https://github.com/tonis2/collision.c3/blob/main/example/main.c3) 
+
+
+Usage example with vulkan and gltf [here](https://github.com/tonis2/game.c3/blob/main/main.c3)
