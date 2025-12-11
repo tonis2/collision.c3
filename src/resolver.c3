@@ -417,6 +417,7 @@ fn void Collision.create_constraint(collision, PhysicsWorld* world, Number dt) @
     Number slop = 0.01f;
     int impulse_dir = math::min(a.impulse_dir, b.impulse_dir);
 
+    // Calculates the distance fix, basically the distance that one body collided into other body, adds some slop value too, to prevent wobbling
     Number bias = ((beta / dt) * math::max(collision.depth - slop, 0.0f)) * impulse_dir;
 
     float normal_inertia;
@@ -448,6 +449,8 @@ fn void Collision.create_constraint(collision, PhysicsWorld* world, Number dt) @
 
     normal_constraint.bounce = (relative_velocity * restitution);
 
+
+    // FRICTION constraint stuff
     Vec3 helper = (math::abs(normal.y) > 0.99)
         ? {1.0f, 0.0f, 0.0f}
         : {0.0f, 1.0f, 0.0f};
@@ -455,6 +458,7 @@ fn void Collision.create_constraint(collision, PhysicsWorld* world, Number dt) @
     Vec3 tangent_1 = normal.cross(helper).normalize();
     Vec3 tangent_2 = normal.cross(tangent_1);
 
+    // Calculate friction info for vertical and horizontal axes
     float tangent_inertia;
     if (!a.is_static) tangent_inertia += a.get_intertia(rA, -tangent_1);
     if (!b.is_static) tangent_inertia += b.get_intertia(rB, tangent_1);
@@ -463,7 +467,6 @@ fn void Collision.create_constraint(collision, PhysicsWorld* world, Number dt) @
     if (!a.is_static) tangent_inertia_2 += a.get_intertia(rA, -tangent_2);
     if (!b.is_static) tangent_inertia_2 += b.get_intertia(rB, tangent_2);
 
-    // FRICTION
     Constraint tangent_constraint = {
         ...normal_constraint,
         .friction = static_friction,
