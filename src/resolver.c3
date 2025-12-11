@@ -129,9 +129,10 @@ fn PhysicsWorld create_world(Number cell_size = 2.0, Vec3 gravity = {0.0f, 0.0f,
 fn Rigidbody*? PhysicsWorld.find_body(self, usz id) => self.bodies.get_ref(id);
 
 fn void? PhysicsWorld.add_constraint(&self, GenericJoint3D joint) {
+
+    // Add collision filter for joints, so they won't collide with eachother
     if (joint.collides == false) {
-        Pair key = {joint.body_a, joint.body_b};
-        self.filters.set(key, true);
+        self.filters.set({joint.body_a, joint.body_b}, true);
     }
 
     self.joints.push(joint);
@@ -197,7 +198,7 @@ fn void Rigidbody.apply_impulse(&self, Vec3 impulse, Vec3 point) {
 //     return (self.get_inverse_world_inertia() * point.cross(normal)).cross(point);
 // }
 
-fn Number Rigidbody.get_intertia2(self, Vec3 point, Vec3 normal) {
+fn Number Rigidbody.get_intertia(self, Vec3 point, Vec3 normal) {
     Vec3 ang = point.cross(normal);
     Vec3 accel = self.get_inverse_world_inertia() * ang;
     return accel.dot(ang);
@@ -223,17 +224,19 @@ fn void PhysicsWorld.run_step(&self, Number time, uint step_count = 20) {
     self.spatial_map.@get_pairs(;Pair pair) {
         Rigidbody* body_a = self.find_body(pair.first)!!;
         Rigidbody* body_b = self.find_body(pair.second)!!;
-
-        Pair key = {body_a.id, body_b.id};
         
-        bool has_filter = self.filters.has_key(key) == true;
+        // Check if collision filters have this combo of rigid bodies, if true skip the collision check
+        bool has_filter = self.filters.has_key({body_a.id, body_b.id}) == true;
 
         // Check if aabb boxes collide first
         if (!has_filter && body_a.transformed_aabb.collides(body_b.transformed_aabb)) {
+
+            // If contact happens and one body is asleep, but other is awake, wake up sleeping body
             if (body_a.sleeping && body_b.is_active()) body_a.stop_sleeping();
             if (body_b.sleeping && body_a.is_active()) body_b.stop_sleeping();
 
             if (body_a.is_active() || body_b.is_active()) {
+
                 // Check collision with GJK algorithm
                 CollisionInfo collision_info = collision::check_collision(&body_a.collider, &body_b.collider);
 
@@ -242,6 +245,8 @@ fn void PhysicsWorld.run_step(&self, Number time, uint step_count = 20) {
                     collision::epa(&collision_info, &body_a.collider, &body_b.collider);
                     
                     if (collision_info.collided) {
+
+                        // Create collision, so distance constraint can be created for it later
                         Collision collision = {
                             .a = pair.first,
                             .b = pair.second,
@@ -257,26 +262,33 @@ fn void PhysicsWorld.run_step(&self, Number time, uint step_count = 20) {
         }
     };
 
+ 
     foreach (collision: self.collisions) {
+
+        // Create the impulse cache
         Pair key = {collision.a, collision.b};
         self.contact_cache.set(key, {});
         if (!self.contact_cache.has_key(key)) {
             self.contact_cache.set(key, {});
         }
 
+        // Create normal / distance contraint for collision
         collision.create_constraint(self, time);
     }
 
+    // Create joint constraints
     foreach (joint: self.joints) {
         joint.create_constraint(self, time);
     }
 
+    // Solve contraints for step counts
     for (usz i; i < step_count; i++) {
         foreach (&contraint: self.constraints) {
             self.solve_constraint(contraint);
         }
     }
 
+    // Maintenance for collision cache, so will get impulses from last frame
     foreach (&collision: self.collisions) {
         collision.impulse = self.contact_cache[{collision.a, collision.b}]!!;
     }
@@ -293,18 +305,19 @@ fn void PhysicsWorld.run_step(&self, Number time, uint step_count = 20) {
     self.constraints.clear();
 
 
+    // Apply the calculated impulses as rotation / position changes, plus do other maintenance
     RigidBodyIterator rigid_bodies = self.bodies.value_iter();
-
     while (rigid_bodies.next()) {
         Rigidbody* body = rigid_bodies.get()!!;
 
+        // If body is sleeping skip it
         if (!body.is_active()) continue;
+
         // Apply linear velocity and translation
         body.collider.translation += body.linear_velocity * time;
 
         // Apply angular velocity as rotation
         Vec3 axis = body.angular_velocity * (time * 0.5);
-
         if (axis != {0,0,0}) {
             body.collider.rotation = (body.collider.rotation + (QuaternionValue){...axis, 0} * body.collider.rotation).normalize();
         }
@@ -312,19 +325,21 @@ fn void PhysicsWorld.run_step(&self, Number time, uint step_count = 20) {
         // Apply gravity
         body.apply_linear_impulse(self.gravity * body.gravity_factor * body.mass * time);
 
-        // Apply dampening (Wind friction ..etc)
+        // Apply dampening friction (Wind friction ..etc)
         body.angular_velocity *= math::pow(body.angular_dampening, time);
         body.linear_velocity *= math::pow(body.linear_dampening, time);
 
         bool rotating = body.is_rotating();
         bool moving = body.is_moving();
 
+        // Update the spatial map AABB boxes,for searching the rigid bodies that are close together 
         if (rotating || moving) {
             Aabb3 new_aabb = body.get_transformed_aabb();
             self.spatial_map.update(body.transformed_aabb, new_aabb, body.id)!!;
             body.transformed_aabb = new_aabb;
         }
-    
+
+        // Sleeping is broken cause of joints currently
         if (body.can_sleep == true && moving == false && rotating == false) {
             body.sleep_timer += time;
             if (body.sleep_timer > self.sleep_timer) {
@@ -344,6 +359,7 @@ fn void PhysicsWorld.solve_constraint(&self, Constraint* constraint) @local {
 
     Vec3* cache = constraint.impulse_cache;
 
+    // Total velocity diffence (angular + linear)
     Number relative_velocity = constraint.relative_velocity();
 
     // assert(relative_velocity < 100000, "Velocity to high, error with bodies %s %s", a.id, b.id);
@@ -359,10 +375,16 @@ fn void PhysicsWorld.solve_constraint(&self, Constraint* constraint) @local {
 
     // Todo: fix hot starting
     Number old_impulse = cache[0][constraint.impulse_offset];
+
+    // Apply min / max impulse constraints to the new impulse
     Number new_impulse = math::max(constraint.min, math::min(lambda + old_impulse, constraint.max));
+
+    // Store impulse to it's cache
     cache[0][constraint.impulse_offset] = new_impulse;
+
     new_impulse = (new_impulse - old_impulse);
 
+    // Apply impulses
     if (!a.is_static) {
         a.apply_linear_impulse(constraint.linear_a * new_impulse);
         a.apply_angular_impulse(constraint.angular_a * new_impulse);
@@ -406,8 +428,8 @@ fn void Collision.create_constraint(collision, PhysicsWorld* world, Number dt) @
     Number bias = ((beta / dt) * math::max(collision.depth - slop, 0.0f)) * impulse_dir;
 
     float normal_inertia;
-    if (!a.is_static) normal_inertia += a.get_intertia2(rA, -normal);
-    if (!b.is_static) normal_inertia += b.get_intertia2(rB, normal);
+    if (!a.is_static) normal_inertia += a.get_intertia(rA, -normal);
+    if (!b.is_static) normal_inertia += b.get_intertia(rB, normal);
 
     Vec3 linear_a = -normal;
     Vec3 angular_a = rA.cross(-normal);
@@ -442,12 +464,12 @@ fn void Collision.create_constraint(collision, PhysicsWorld* world, Number dt) @
     Vec3 tangent_2 = normal.cross(tangent_1);
 
     float tangent_inertia;
-    if (!a.is_static) tangent_inertia += a.get_intertia2(rA, -tangent_1);
-    if (!b.is_static) tangent_inertia += b.get_intertia2(rB, tangent_1);
+    if (!a.is_static) tangent_inertia += a.get_intertia(rA, -tangent_1);
+    if (!b.is_static) tangent_inertia += b.get_intertia(rB, tangent_1);
 
     float tangent_inertia_2;
-    if (!a.is_static) tangent_inertia_2 += a.get_intertia2(rA, -tangent_2);
-    if (!b.is_static) tangent_inertia_2 += b.get_intertia2(rB, tangent_2);
+    if (!a.is_static) tangent_inertia_2 += a.get_intertia(rA, -tangent_2);
+    if (!b.is_static) tangent_inertia_2 += b.get_intertia(rB, tangent_2);
 
     // FRICTION
     Constraint tangent_constraint = {

@@ -52,6 +52,7 @@ fn void GenericJoint3D.create_constraint(joint, PhysicsWorld* world, Number dt) 
 
     Number inverse_mass_sum = a.inverse_mass + b.inverse_mass;
 
+    // Need to check if impulse direction is - or +
     int impulse_dir = math::min(a.impulse_dir, b.impulse_dir);
 
     Vec3 world_a = a.collider.translation + (a.collider.rotation * joint.anchor_a);
@@ -75,8 +76,8 @@ fn void GenericJoint3D.create_constraint(joint, PhysicsWorld* world, Number dt) 
         Vec3 angular_b = rB.cross(normal);
 
         Number normal_inertia;
-        if (!a.is_static) normal_inertia += a.get_intertia2(rA, -normal);
-        if (!b.is_static) normal_inertia += b.get_intertia2(rB, normal);
+        if (!a.is_static) normal_inertia += a.get_intertia(rA, -normal);
+        if (!b.is_static) normal_inertia += b.get_intertia(rB, normal);
 
         Number rigid_denom = inverse_mass_sum + normal_inertia;
         // Number softness_denom = (limit.damping / dt) + (limit.stiffness * dt);
@@ -126,6 +127,8 @@ fn void GenericJoint3D.create_constraint(joint, PhysicsWorld* world, Number dt) 
         world.constraints.push(axis_constraint);
     }
     
+
+    // Relative orientation is neccesary for rotation error check, if joint original position is rotated
     QuaternionValue error_orientation = a.collider.rotation.conjugate() * b.collider.rotation * joint.relative_orientation.conjugate();
 
     Number error_direction = error_orientation.l >= 0 ? 1 : -1;
@@ -142,8 +145,8 @@ fn void GenericJoint3D.create_constraint(joint, PhysicsWorld* world, Number dt) 
         if (limit.axes.z != 0) offset = 2;
 
         float normal_inertia;
-        if (!a.is_static) normal_inertia += a.get_intertia2(rA, -world_axis);
-        if (!b.is_static) normal_inertia += b.get_intertia2(rB, world_axis);
+        if (!a.is_static) normal_inertia += a.get_intertia(rA, -world_axis);
+        if (!b.is_static) normal_inertia += b.get_intertia(rB, world_axis);
 
         Number denom = (0.2 / dt);
         Number rotation_error = world_error.dot(world_axis);
