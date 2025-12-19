@@ -7,7 +7,7 @@ import std::collections::list;
 const Number EPSILON @local = 0.005;
 
 alias Vertices @local = List{Vec3};
-alias Indices @local = List{usz};
+alias Indices @local = List{ushort};
 
 
 fn bool are_equal(Vec3 a, Vec3 b) => a.distance_sq(b) < EPSILON;
@@ -43,7 +43,7 @@ fn void weld_remesh(Vertices* vertices, Indices* indices) {
             new_index = (int)new_vertices.len() - 1; // Its new index is the current count
 
             foreach (usz j, idx: indices) {
-                if (idx == i) indices.set_at(j, new_index);
+                if (idx == i) indices.set_at(j, (ushort)new_index);
             }
         }
     }
@@ -51,9 +51,9 @@ fn void weld_remesh(Vertices* vertices, Indices* indices) {
 
     usz max_index = new_vertices.len() - 1;
     for (usz i = 0; i < indices.len(); i+= 3) {
-        usz i1 = indices.get(i);
-        usz i2 = indices.get(i + 1);
-        usz i3 = indices.get(i + 2);
+        ushort i1 = indices.get(i);
+        ushort i2 = indices.get(i + 1);
+        ushort i3 = indices.get(i + 2);
 
         if (i1 > max_index || i2 > max_index || i3 > max_index) continue;
         // Check for degenerate faces.

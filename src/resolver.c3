@@ -189,10 +189,10 @@ fn void Rigidbody.apply_angular_impulse(&self, Vec3 impulse) {
     self.angular_velocity += inertia * impulse;
 }
 
-// fn void Rigidbody.apply_impulse(&self, Vec3 impulse, Vec3 point) {
-//     self.linear_velocity += impulse * self.inverse_mass;
-//     self.apply_angular_impulse(point.cross(impulse));
-// }
+fn void Rigidbody.apply_impulse(&self, Vec3 impulse, Vec3 point) {
+    self.linear_velocity += impulse * self.inverse_mass;
+    self.apply_angular_impulse(point.cross(impulse));
+}
 
 // fn Vec3 Rigidbody.get_intertia(self, Vec3 point, Vec3 normal) {
 //     return (self.get_inverse_world_inertia() * point.cross(normal)).cross(point);
@@ -204,7 +204,7 @@ fn Number Rigidbody.get_intertia(self, Vec3 point, Vec3 normal) {
     return accel.dot(ang);
 }
 
-//fn Vec3 Rigidbody.relative_velocity(self, Vec3 point) => self.linear_velocity + self.angular_velocity.cross(point);
+fn Vec3 Rigidbody.relative_velocity(self, Vec3 point) => self.linear_velocity + self.angular_velocity.cross(point);
 
 fn bool Rigidbody.is_rotating(self) => self.angular_velocity.sq_magnitude() > 0.1f;
 fn bool Rigidbody.is_moving(self) => self.linear_velocity.sq_magnitude() > 0.1f;
@@ -236,27 +236,27 @@ fn void PhysicsWorld.run_step(&self, Number time, uint step_count = 20) {
             if (body_b.sleeping && body_a.is_active()) body_b.stop_sleeping();
 
             if (body_a.is_active() || body_b.is_active()) {
+                CollisionInfo collision_info;
 
-                // Check collision with GJK algorithm
-                CollisionInfo collision_info = collision::check_collision(&body_a.collider, &body_b.collider);
-
+                if (body_a.collider.get_type() == TRIANGLE || body_b.collider.get_type() == TRIANGLE) {
+                    // Check collision with BVH tree, much slower, only use when nothing else usable
+                    collision_info = collision::check_concave_collision(body_a, body_b);
+                } else {
+                    // Check collision with GJK algorithm
+                    collision_info = collision::check_convex_collision(&body_a.collider, &body_b.collider, epa:true);
+                }
+                
                 if (collision_info.collided) {
-                    // Get contact points with EPA
-                    collision::epa(&collision_info, &body_a.collider, &body_b.collider);
-                    
-                    if (collision_info.collided) {
+                    // Create collision, so distance constraint can be created for it later
+                    Collision collision = {
+                        .a = pair.first,
+                        .b = pair.second,
+                        .normal = collision_info.normal,
+                        .contact = collision_info.contact_points,
+                        .depth = collision_info.depth,
+                    };
 
-                        // Create collision, so distance constraint can be created for it later
-                        Collision collision = {
-                            .a = pair.first,
-                            .b = pair.second,
-                            .normal = collision_info.normal,
-                            .contact = collision_info.contact_points,
-                            .depth = collision_info.depth,
-                        };
-
-                        self.collisions.push(collision);
-                    }
+                    self.collisions.push(collision);
                 }
             }
         }
@@ -304,7 +304,6 @@ fn void PhysicsWorld.run_step(&self, Number time, uint step_count = 20) {
     self.collisions.clear();
     self.constraints.clear();
 
-
     // Apply the calculated impulses as rotation / position changes, plus do other maintenance
     RigidBodyIterator rigid_bodies = self.bodies.value_iter();
     while (rigid_bodies.next()) {
@@ -350,9 +349,7 @@ fn void PhysicsWorld.run_step(&self, Number time, uint step_count = 20) {
     }
 }
 
-
 <*
- Generic solver for constraints, solves both collision and joint constraints.
  @require constraint.body_a != constraint.body_b : `Collision bodies should not be same index`
 *>
 fn void PhysicsWorld.solve_constraint(&self, Constraint* constraint) @local {
@@ -398,7 +395,15 @@ fn void PhysicsWorld.solve_constraint(&self, Constraint* constraint) @local {
     }       
 }
 
-// Create distance / normal contraint, for collision
+fn Number Constraint.relative_velocity(self) {
+    Rigidbody* a = self.body_a;
+    Rigidbody* b = self.body_b;
+    return self.linear_a.dot(a.linear_velocity) 
+            + self.angular_a.dot(a.angular_velocity)
+            + self.linear_b.dot(b.linear_velocity)
+            + self.angular_b.dot(b.angular_velocity);
+}
+
 fn void Collision.create_constraint(collision, PhysicsWorld* world, Number dt) @local {
     Rigidbody* a = world.find_body(collision.a)!!;
     Rigidbody* b = world.find_body(collision.b)!!;
@@ -417,7 +422,6 @@ fn void Collision.create_constraint(collision, PhysicsWorld* world, Number dt) @
     Number slop = 0.01f;
     int impulse_dir = math::min(a.impulse_dir, b.impulse_dir);
 
-    // Calculates the distance fix, basically the distance that one body collided into other body, adds some slop value too, to prevent wobbling
     Number bias = ((beta / dt) * math::max(collision.depth - slop, 0.0f)) * impulse_dir;
 
     float normal_inertia;
@@ -449,8 +453,6 @@ fn void Collision.create_constraint(collision, PhysicsWorld* world, Number dt) @
 
     normal_constraint.bounce = (relative_velocity * restitution);
 
-
-    // FRICTION constraint stuff
     Vec3 helper = (math::abs(normal.y) > 0.99)
         ? {1.0f, 0.0f, 0.0f}
         : {0.0f, 1.0f, 0.0f};
@@ -458,7 +460,6 @@ fn void Collision.create_constraint(collision, PhysicsWorld* world, Number dt) @
     Vec3 tangent_1 = normal.cross(helper).normalize();
     Vec3 tangent_2 = normal.cross(tangent_1);
 
-    // Calculate friction info for vertical and horizontal axes
     float tangent_inertia;
     if (!a.is_static) tangent_inertia += a.get_intertia(rA, -tangent_1);
     if (!b.is_static) tangent_inertia += b.get_intertia(rB, tangent_1);
@@ -467,6 +468,7 @@ fn void Collision.create_constraint(collision, PhysicsWorld* world, Number dt) @
     if (!a.is_static) tangent_inertia_2 += a.get_intertia(rA, -tangent_2);
     if (!b.is_static) tangent_inertia_2 += b.get_intertia(rB, tangent_2);
 
+    // FRICTION
     Constraint tangent_constraint = {
         ...normal_constraint,
         .friction = static_friction,
@@ -492,16 +494,4 @@ fn void Collision.create_constraint(collision, PhysicsWorld* world, Number dt) @
     };
 
     world.constraints.push_all({normal_constraint, tangent_constraint, tangent_constraint_2});
-}
-
-
-
-
-fn Number Constraint.relative_velocity(self) {
-    Rigidbody* a = self.body_a;
-    Rigidbody* b = self.body_b;
-    return self.linear_a.dot(a.linear_velocity) 
-            + self.angular_a.dot(a.angular_velocity)
-            + self.linear_b.dot(b.linear_velocity)
-            + self.angular_b.dot(b.angular_velocity);
 }

@@ -7,17 +7,11 @@ import std::collections::map;
 import std::io;
 import std::os;
 
-struct CollisionInfo {
-    Simplex simplex;
-    Vec3 normal;
-    Vec3[2] contact_points;
-    Number depth;
-    bool collided;
-}
 
-alias EdgeArray @private = ElasticArray{Pair, 60};
-alias FaceArray @private = ElasticArray{Face, 60};
-alias SupportArray @private = ElasticArray{SupportPoint, 60};
+
+alias EdgeArray @private = ElasticArray{Pair, 40};
+alias FaceArray @private = ElasticArray{Face, 40};
+alias SupportArray @private = ElasticArray{SupportPoint, 40};
 
 const uint EPA_MAX_ITER = 16;
 const Number EPA_TOLERANCE = 0.0001f;

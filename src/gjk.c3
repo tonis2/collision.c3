@@ -4,6 +4,7 @@ import std::math;
 import std::collections::elastic_array;
 
 const usz GJK_MAX_ITERATION = 30;
+const Number GJK_TOLERANCE = 0.0001f;
 
 alias Simplex = ElasticArray{SupportPoint, 4};
 
@@ -138,7 +139,7 @@ fn bool next_simplex(Simplex* simplex, Vec3* direction) @private {
 }
 
 // GJK algorithm to find, if shapes collide
-fn CollisionInfo check_collision(CollisionShape shape_1, CollisionShape shape_2) {
+fn CollisionInfo check_convex_collision(CollisionShape shape_1, CollisionShape shape_2, bool epa = false) {
     // Initial direction (arbitrary)
     Vec3 direction = {1, 0, 0};
     
@@ -167,7 +168,7 @@ fn CollisionInfo check_collision(CollisionShape shape_1, CollisionShape shape_2)
         Vec3 mikowski_difference = a_support - b_support;
 
         // If we didn't reach the origin, no collision
-        if (mikowski_difference.dot(direction) < 0) {
+        if (mikowski_difference.dot(direction) < GJK_TOLERANCE) {
             return { .collided = false };
         }
 
@@ -179,7 +180,9 @@ fn CollisionInfo check_collision(CollisionShape shape_1, CollisionShape shape_2)
         });
 
         if (next_simplex(&simplex, &direction)) {
-            return { .collided = true, .simplex = simplex };
+            CollisionInfo info = { .collided = true, .simplex = simplex };
+            if (epa == true) collision::epa(&info, shape_1, shape_2);
+            return info;
         }
     }
 

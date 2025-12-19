@@ -11,7 +11,7 @@ alias Vec3 = float[<3>];
 alias Vec4 = float[<4>];
 
 alias Vertices = List{Vec3};
-alias Indices = List{usz};
+alias Indices = List{ushort};
 
 fn void test_physics() {
     Aabb3 aabb = {
@@ -90,9 +90,9 @@ fn void test_physics() {
         .rotation = {0, -0.5, 0, 1 }
     };
 
-    assert(!collision::check_collision(&transformed_shape_1, &transformed_shape_2).collided);
-    assert(collision::check_collision(&transformed_shape_5, &transformed_shape_6).collided);
-    assert(collision::check_collision(&transformed_shape_3, &transformed_shape_4).collided);
+    assert(!collision::check_convex_collision(&transformed_shape_1, &transformed_shape_2).collided);
+    assert(collision::check_convex_collision(&transformed_shape_5, &transformed_shape_6).collided);
+    assert(collision::check_convex_collision(&transformed_shape_3, &transformed_shape_4).collided);
 
     
     //CollisionInfo epa_result = epa(collision_result.simplex, &shape_1, &shape_2);
@@ -135,8 +135,22 @@ fn void test_bvh() {
         {3, 1, -1}, {3, 1, 1}, {1, 0, 1}
     };
 
-    BVHNode bvh = collision::create_bvh_tree(terrain.ptr, terrain.len);
-    defer bvh.free();
+    Vec3[] terrain2 = {
+        {0,0,0}, {1,0,0}, {0,1,0},
+        {10,10,10}, {11,10,10}, {10,11,10},
+        {-10,-10,-10}, {-9,-10,-10}, {-10,-9,-10},
+    };
+
+    BVHNode* bvh = collision::create_bvh_tree(terrain.ptr, terrain.len);
+    BVHNode* bvh2 = collision::create_bvh_tree(terrain2.ptr, terrain2.len);
+
+    defer {
+        bvh.free();
+        mem::free(bvh);
+
+        bvh2.free();
+        mem::free(bvh2);
+    };
 
     Triangle triangle = {
         {-1.0f, -1.0f, 0.0f}, 
@@ -154,15 +168,24 @@ fn void test_bvh() {
         .max = {1.0f,  1.0f,  1.0f}
     };
 
-    HitInfo triangle_hit = triangle.intersect_ray(test_ray);
+    Aabb3 box2 = {
+        .min = {-0.1f, -0.1f, -0.1f},
+        .max = {0.1f, 0.1f, 0.1f}
+    };
 
-    assert(triangle_hit.collides == true);
+    Aabb3 box3 = {
+        .min = {4.0f, 4.0f, 4.0f},
+        .max = {6.0f, 6.0f, 6.0f}
+    };
 
-    HitInfo result = bvh.ray_intersects(test_ray);
-    assert(result.collides == true);
+    assert(bvh2.box_intersects(box2).collided);
+    assert(bvh2.box_intersects(box3).collided == false);
+
+    assert(triangle.intersect_ray(test_ray).collided);
+    assert(bvh.ray_intersects(test_ray).collided);
 
     HitInfo result_2 = bvh.box_intersects(box);
-    assert(result_2.collides == true);
+    assert(result_2.collided == true);
 
     Triangle tri_1 = {
         {0.0f, 0.0f, 0.0f},
@@ -182,13 +205,10 @@ fn void test_bvh() {
         {12.0f, 10.0f, 10.0f}
     };
 
-    assert(tri_1.collides_aabb(box));
-    assert(!tri_2.collides_aabb(box));
-    assert(!tri_3.collides_aabb(box));
-
-    Triangle tri_4 = result_2.get_triangle();
-
-    assert(collision::check_collision(&box, &&tri_4.get_aabb()).collided);
+    assert(collision::check_convex_collision(&box, &tri_1).collided);
+    assert(!collision::check_convex_collision(&box, &tri_2).collided);
+    assert(!collision::check_convex_collision(&box, &tri_3).collided);
+    assert(collision::check_convex_collision(&box, &&result_2.triangle.get_aabb()).collided);
 }
 
 fn void test_remesh() {

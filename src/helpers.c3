@@ -8,16 +8,25 @@ alias Number = float;
 alias Vec2 @private = Number[<2>];
 alias Vec4 @private = Number[<4>];
 alias Vec3 @private = Number[<3>];
+alias ContactPoints @private = Vec3[2];
 alias QuaternionValue = QuaternionNumber{Number};
 
 fn usz? Vec3.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s,%s,%s", self.x, self.y, self.z)!;
 fn usz? Vec4.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s,%s,%s", self.x, self.y, self.z)!;
 
+struct CollisionInfo {
+    Simplex simplex;
+    Vec3 normal;
+    ContactPoints contact_points;
+    Number depth;
+    bool collided;
+}
+
 struct HitInfo {
-    bool collides;
+    bool collided;
     Number depth;
     Vec3 normal;
-    Vec3* positions;
+    Triangle triangle;
 }
 
 struct Face @private {
@@ -56,6 +65,7 @@ fn Number Vec3.distance_sq(self, Vec3 v2) {
 }
 
 fn usz? Pair.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s, %s", self.first, self.second)!;
+fn usz? ContactPoints.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s\n%s", (*self)[0], (*self)[1])!;
 
 macro bool Pair.equals(self, Pair b) @operator(==) => self.first == b.first && self.second == b.second;
 macro uint Pair.hash(&self) {
@@ -65,6 +75,3 @@ macro uint Pair.hash(&self) {
 
 macro bool Vec3.equals(self, Vec3 b) => self == b;
 macro bool QuaternionValue.equals(self, QuaternionValue b) @operator(==) => self.v.xyzw == b.v.xyzw;
-
-
-fn Triangle HitInfo.get_triangle(self) => {self.positions[0].xyz, self.positions[1].xyz, self.positions[2].xyz};

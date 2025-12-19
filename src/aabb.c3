@@ -11,6 +11,8 @@ struct Aabb3 (Printable, CollisionShape) {
     Vec3 max;
 }
 
+const EMPTY_AABB3 = (Aabb3) {.min = {float.max, float.max, float.max}, .max = {-float.max, -float.max, -float.max} };
+
 fn Aabb3 aabb_from_half(Vec3 size) => {-size * 0.5, size * 0.5};
 
 fn Vec3 Aabb3.size(self) => self.max - self.min;
@@ -18,7 +20,6 @@ fn Vec3 Aabb3.extent(self) => (self.max - self.min) * 0.5f;
 fn Vec3 Aabb3.center(self) => (self.min + self.max) * 0.5f;
 
 fn usz? Aabb3.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s\n%s", self.min, self.max)!;
-
 fn bool Aabb3.equals(self, Aabb3 b) @operator(==) => self.min == b.min && self.max == b.max;
 
 fn Aabb3 Aabb3.add(self, Vec3 value) @operator(+) {
@@ -63,6 +64,11 @@ fn void Aabb3.expand_max(&self, Vec3 point) {
 fn void Aabb3.expand_by_point(&self, Vec3 point) {
     self.expand_max(point);
     self.expand_min(point);
+}
+
+fn void Aabb3.expand_by_aabb(&self, Aabb3 box) {
+    self.expand_max(box.max);
+    self.expand_min(box.min);
 }
 
 fn Aabb3 Aabb3.scale(self, Vec3 scale) @operator(*) {
@@ -118,14 +124,23 @@ fn Aabb3 Aabb3.child_bounds(self, uint index) {
     return { newMin, newMax };
 }
 
-fn bool Aabb3.intersect_ray(&self, Ray ray, HitInfo* info = null) {
+fn usz Aabb3.longest_axis(self) {
+    Vec3 size = self.size();
+    if (size.x > size.y && size.x > size.z) return 0;
+    if (size.y > size.z) return 1;
+    return 2;
+}
+
+fn HitInfo Aabb3.intersect_ray(self, Ray ray) {
+    HitInfo response = {.collided = false};
+
     Number tmin = 0.0;
     Number tmax = Number.max;
 
     for (uint i = 0; i < 3; ++i) {
         if (math::abs(ray.direction[i]) < 1e-6) {
             if (ray.origin[i] < self.min[i] || ray.origin[i] > self.max[i]) {
-                return false; // Parallel and outside the box
+                return response; // Parallel and outside the box
             }
         } else {
             Number ood = 1.0 / ray.direction[i];
@@ -134,11 +149,14 @@ fn bool Aabb3.intersect_ray(&self, Ray ray, HitInfo* info = null) {
             if (t1 > t2) @swap(t1, t2);
             tmin = math::max(tmin, t1);
             tmax = math::min(tmax, t2);
-            if (tmin > tmax) return false;
+            if (tmin > tmax) return response;
         }
     }
-    if (info != null) info.depth = tmin;
-    return true;
+
+    return {
+        .collided = true,
+        .depth = tmin
+    };
 }
 
 fn Vec3 Aabb3.furthest_point(&self, Vec3 direction) @dynamic {

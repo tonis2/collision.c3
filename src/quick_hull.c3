@@ -7,7 +7,7 @@ import std::collections::list;
 
 alias Vertex @local = int[<3>];
 alias Points @local = List{Vec3};
-alias IndexList @local = List{usz};
+alias IndexList @local = List{ushort};
 alias EdgeList @local = List{int[<2>]};
 
 const Number EPSILON @local = 0.0001;
@@ -131,7 +131,7 @@ fn void hull_from_points(Points* vertices, IndexList* indices) {
         }
 
         if (best_face_idx != -1) {
-            hull.faces[best_face_idx].outside.push(i);
+            hull.faces[best_face_idx].outside.push((ushort)i);
         }
     }
 
@@ -144,9 +144,9 @@ fn void hull_from_points(Points* vertices, IndexList* indices) {
 
     foreach (face: hull.faces) {
         if (face.v.x != -1) {
-            indices.push(face.v[0]);
-            indices.push(face.v[1]);
-            indices.push(face.v[2]);
+            indices.push((ushort)face.v[0]);
+            indices.push((ushort)face.v[1]);
+            indices.push((ushort)face.v[2]);
         }
     }
 
@@ -155,7 +155,7 @@ fn void hull_from_points(Points* vertices, IndexList* indices) {
 
     foreach (usz i, idx: indices) {
         new_vertices.push(points[idx]);
-        indices.set_at(i, new_vertices.len() - 1);
+        indices.set_at(i, (ushort)(new_vertices.len() - 1));
     }
 
     vertices.clear();
@@ -258,7 +258,7 @@ fn void QuickHull.recurse(&self, usz face_index) @local {
 
     foreach (edge: horizon) {
         HullFace face = self.create_face(indices: {edge.x, edge.y, furthest_point_index}, inner_point: inner_point);
-        new_face_indices.push(self.faces.len());
+        new_face_indices.push((ushort)self.faces.len());
         self.faces.push(face);
     }
 
@@ -316,7 +316,7 @@ fn void QuickHull.find_horizon(&self, usz face_index, usz eye_index, IndexList* 
     face.visited = true;
 
     if (face.distance_to_plane(eye_point) > EPSILON) {
-        visible_faces.push(face_index);
+        visible_faces.push((ushort)face_index);
        
         // Check its neighbors
         foreach NEIGHBOURS: (usz i, neighbor: self.faces) {

@@ -146,9 +146,27 @@ fn Matrix3f TransformedShape.inertia_tensor(&self, Number mass) @dynamic {
     return r * local_inertia * r.transpose();
 }
 
-fn Matrix3f TransformedShape.world_inertia_from_local(&self, Matrix3f local_inertia) @dynamic {
+fn Matrix3f TransformedShape.world_inertia_from_local(&self, Matrix3f local_inertia) {
     Matrix3f world_orient = self.rotation.as_mat3();
     return world_orient * local_inertia * world_orient.transpose();
+}
+
+fn Matrix4f TransformedShape.matrix(self) {
+    Matrix4f translation_matrix = {
+        1, 0, 0, self.translation.x,
+        0, 1, 0, self.translation.y,
+        0, 0, 1, self.translation.z,
+        0.0, 0.0, 0.0, 1.0,
+    };
+
+    Matrix4f scale_matrix = {
+        self.scale.x, 0, 0, 0,
+        0, self.scale.y, 0, 0,
+        0, 0, self.scale.z, 0,
+        0.0, 0.0, 0.0, 1.0,
+    };
+    
+    return translation_matrix * self.rotation.to_matrixf() * scale_matrix;
 }
 
 fn Matrix3f ConvexPolyhedron.inertia_tensor(&self, Number mass) @dynamic {
