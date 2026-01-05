@@ -148,7 +148,7 @@ fn void? PhysicsWorld.add_body(&self, Rigidbody body) {
     body.inverse_mass = !body.is_static ? 1.0f / body.mass : 0;
    
     body.impulse_dir = (self.gravity * body.gravity_factor).z > 0 ? 1 : -1;
-
+	
     body.aabb = body.collider.get_aabb();
     body.transformed_aabb = body.get_transformed_aabb();
     if (!body.is_static) body.inertia = body.aabb.scale(body.collider.scale).inertia_tensor(body.mass).inverse()!!;

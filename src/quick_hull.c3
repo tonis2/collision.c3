@@ -34,7 +34,7 @@ struct HullFace @local {
  @param indices : `Complete indices for the mesh.`
  @require vertices.len() > 4 && indices != null : `Hull input size must be > 4`
 *>
-fn void hull_from_points(Points* vertices, IndexList* indices) {
+fn void hull_from_points(Points* vertices, IndexList* indices, bool remesh = true) {
     Points points = *vertices;
     QuickHull hull = { .points = points };
     defer hull.free();
@@ -160,6 +160,9 @@ fn void hull_from_points(Points* vertices, IndexList* indices) {
 
     vertices.clear();
     vertices.add_all(&new_vertices);
+
+	// Removes duplicate vertices
+	if (remesh) weld_remesh(vertices, indices);
 }
 
 fn void QuickHull.free(&self) {

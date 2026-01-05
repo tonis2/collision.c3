@@ -269,7 +269,10 @@ fn Aabb3 Cylinder.get_aabb(&self) @dynamic {
     };
 }
 
-
+<*
+ @require self.vertices != null : `Vertices should not be empty`
+ @require self.count != 0 : `Count should not be 0`
+*>
 fn Aabb3 ConvexPolyhedron.get_aabb(&self) @dynamic {
     Vec3 min = {float.max, float.max, float.max};
     Vec3 max = {-float.max, -float.max, -float.max};
