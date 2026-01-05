@@ -11,7 +11,8 @@
     "src/resolver.c3",
     "src/joint.c3",
     "src/quick_hull.c3",
-    "src/remesh.c3"
+    "src/remesh.c3",
+    "src/acd_mesh.c3"
   ],
   "targets" : {
     "macos-x64" : {

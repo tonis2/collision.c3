@@ -20,6 +20,7 @@ interface CollisionShape
     fn Matrix3f inertia_tensor(Number mass);
     fn Aabb3 get_aabb();
     fn ShapeType get_type();
+    fn void free() @optional;
 }
 
 interface RayCast
@@ -109,10 +110,7 @@ fn Vec3 ConvexPolyhedron.furthest_point(&self, Vec3 direction) @dynamic {
             max_distance = distance;
             furthest_point = point;
         }
-        
     }
-
-    // foreach (point: self.vertices) {}
 
     return furthest_point;
 }
@@ -276,7 +274,7 @@ fn Aabb3 ConvexPolyhedron.get_aabb(&self) @dynamic {
     Vec3 min = {float.max, float.max, float.max};
     Vec3 max = {-float.max, -float.max, -float.max};
 
-
+    
     for (usz i = 0; i<self.count; i++) {
         Vec3 point = self.vertices[i];
 
@@ -369,4 +367,3 @@ fn Matrix3f compute_origin(Vec3 a, Vec3 b, Vec3 c, Number density) @local {
 
     return inertia_tensor;
 }
-

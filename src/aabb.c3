@@ -11,7 +11,8 @@ struct Aabb3 (Printable, CollisionShape) {
     Vec3 max;
 }
 
-const EMPTY_AABB3 = (Aabb3) {.min = {float.max, float.max, float.max}, .max = {-float.max, -float.max, -float.max} };
+const NEW_AABB3 = (Aabb3) {.min = {float.max, float.max, float.max}, .max = {-float.max, -float.max, -float.max} };
+const EMPTY_AABB3 = (Aabb3) {.min = {0,0,0}, .max = {0,0,0}};
 
 fn Aabb3 aabb_from_half(Vec3 size) => {-size * 0.5, size * 0.5};
 

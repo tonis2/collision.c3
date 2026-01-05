@@ -8,10 +8,13 @@ import std::collections::map;
 import std::time;
 import std::sort;
 
-const int MAX_TRIS_PER_LEAF = 8;
+const int MAX_TRIS_PER_LEAF = 12;
 const Number EPSILON @local = 0.00001;
 
-alias Triangle = Vec3[3];
+struct MinMax @local {
+    Number min;
+    Number max;
+}
 
 struct TriangleInfo {
     usz v0, v1, v2;
@@ -25,12 +28,54 @@ struct BVHNode (CollisionShape) {
     BVHNode* left;
     BVHNode* right;
     Vec3* positions;
+    usz count;
     usz index;
 }
 
+fn void MinMax.expand(&self, Number value) {
+    self.min = math::min(self.min, value);
+    self.max = math::max(self.max, value);
+}
+
+fn void MinMax.expand_by_array(&self, Number[] values) {
+    foreach (value: values) self.expand(value);
+}
+
+fn MinMax min_max_from_box(Vec3 center, Vec3 extent, Vec3 axis) {
+    Number c = center.dot(axis);
+    Number r = math::abs(axis.x) * extent.x + math::abs(axis.y) * extent.y + math::abs(axis.z) * extent.z;
+
+    return {
+        .min = c - r,
+        .max = c + r
+    };
+}
+
+fn MinMax min_max_from_axis(Vec3 axis, Vec3[] points) {
+    MinMax corners = {
+        .min = axis.dot(points[0]),
+        .max = axis.dot(points[0])
+    };
+
+    foreach (point: points) corners.expand(axis.dot(point));
+
+    return corners;
+}
+
+fn Number MinMax.overlap(&a, MinMax b) {
+    if (a.max < b.min || b.max < a.min) {
+        // Separated 
+        return -1;
+    }
+
+    Number depth = math::min(a.max, b.max) - math::max(a.min, b.min);
+    return depth;
+}
+
+fn usz? MinMax.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("min %s max %s",  self.min, self.max)!;
 fn bool BVHNode.is_leaf(&self) => self.left == null && self.right == null;
 
-fn void BVHNode.free(&self) {
+fn void BVHNode.free(&self) @dynamic {
     if (self.left != null) {
         self.left.free();
         mem::free(self.left);
@@ -40,19 +85,14 @@ fn void BVHNode.free(&self) {
         self.right.free();
         mem::free(self.right);
     };
-
-    // if (self.is_leaf()) {
-    //     mem::free(self);
-    // }
-  
 }
 
 fn void BVHNode.remap(&self, Vec3* positions) @local {
-    if (self.is_leaf()) {
-        self.positions = positions;
-        self.index *= 3;
-        return;
-    }
+    self.positions = positions;
+    // if (self.is_leaf()) {
+    //     self.index *= 3;
+    //     return;
+    // }
 
     if (self.left != null) self.left.remap(positions);
     if (self.right != null) self.right.remap(positions);
@@ -97,13 +137,15 @@ fn BVHNode* create_bvh_tree(Vec3* vertices, usz count) {
             .v1 = v_idx + 1,
             .v2 = v_idx + 2,
             .centroid = (v0 + v1 + v2) / 3,
-            .aabb = EMPTY_AABB3
+            .aabb = NEW_AABB3
         };
 
         triangle.aabb.expand_by_point(v0);
         triangle.aabb.expand_by_point(v1);
         triangle.aabb.expand_by_point(v2);
-   
+
+        assert(triangle.aabb != EMPTY_AABB3, "Triangle aabb, must not be empty");
+
         triangles[i] = triangle;
     }
 
@@ -112,7 +154,7 @@ fn BVHNode* create_bvh_tree(Vec3* vertices, usz count) {
     // Reorder position buffer vertices, for fast cache locality
     Vec3* new_positions = mem::new_array(Vec3, count);
 
-    // 2. Copy vertices from the old buffer to the new buffer in the new order
+    // // 2. Copy vertices from the old buffer to the new buffer in the new order
     for (usz i = 0; i < triangle_count; i++) {
         // Find where the vertices were originally
         usz old_v0 = triangles[i].v0;
@@ -127,7 +169,6 @@ fn BVHNode* create_bvh_tree(Vec3* vertices, usz count) {
     }
 
     mem::copy(vertices, new_positions, Vec3.sizeof * count);
-
     mem::free(new_positions);
     mem::free(triangles);
 
@@ -140,18 +181,17 @@ fn BVHNode* create_bvh_tree(Vec3* vertices, usz count) {
  @require triangles != null : `Has no triangles attached`
 *>
 fn BVHNode* build_recursive(TriangleInfo* triangles, usz start, usz count) @local {
-    BVHNode* node = mem::new(BVHNode, {.index = 0, .aabb = EMPTY_AABB3 });
+    BVHNode* node = mem::new(BVHNode, {.index = 0, .count = count, .index = start, .aabb = NEW_AABB3 });
 
     for (usz i = start; i < start + count; i++) {
         node.aabb.expand_by_aabb(triangles[i].aabb);
     }
 
-    if (count == 1) {
-        node.index = start;
+    if (count <= MAX_TRIS_PER_LEAF) {
         return node;
     }
 
-    Aabb3 centroid_aabb = EMPTY_AABB3;
+    Aabb3 centroid_aabb = NEW_AABB3;
     for (usz i = start; i < start + count; i++) {
         centroid_aabb.expand_by_point(triangles[i].centroid);
     }
@@ -203,35 +243,45 @@ fn HitInfo BVHNode.ray_intersects(&self, Ray ray) {
 }
 
 fn HitInfo BVHNode.box_intersects(&self, Aabb3 aabb) {
-    HitInfo hit_info = {.collided = false};
+	HitInfo hit;
 
     if (!self.aabb.collides(aabb)) {
-        return hit_info;
+        return hit;
     }
 
     if (self.is_leaf()) {
-        usz pos_index = self.index;
-        Vec3 v0 = self.positions[pos_index].xyz;
-        Vec3 v1 = self.positions[pos_index + 1].xyz;
-        Vec3 v2 = self.positions[pos_index + 2].xyz;
+        for (usz i = 0; i < self.count; i++) {
+            usz offset = self.index + (i * 3);
+     
+            Vec3 v0 = self.positions[offset];
+            Vec3 v1 = self.positions[offset + 1];
+            Vec3 v2 = self.positions[offset + 2];
 
-        Triangle triangle = {v0, v1, v2};
-        
-       
-        if (collision::check_convex_collision(&aabb, &self.aabb, epa: false).collided) {
-            return {.collided = true, .normal = triangle[0].cross(triangle[1]), .triangle = triangle};
+            Triangle triangle = {v0, v1, v2};
+
+            Number overlap = triangle.collides_aabb(aabb);
+
+            if (overlap > 0) {
+				return {
+					.triangle = triangle,
+					.depth = overlap,
+					.collided = true,
+				};
+            }
         }
-
-        return hit_info;
     }
 
-    HitInfo left = self.left.box_intersects(aabb);
-    HitInfo right = self.right.box_intersects(aabb);
+    if (self.left != null) {
+		HitInfo left_hit = self.left.box_intersects(aabb);
+		if (left_hit.collided) return left_hit;
+	};
 
-    if (left.collided) return left;
-    if (right.collided) return right;
+    if (self.right != null) {
+		HitInfo right_hit = self.right.box_intersects(aabb);
+		if (right_hit.collided) return right_hit;
+	};
 
-    return hit_info;
+	return hit;
 }
 
 fn HitInfo Triangle.intersect_ray(self, Ray ray) {
@@ -286,77 +336,123 @@ fn Matrix3f Triangle.inertia_tensor(&self, Number mass) @dynamic {
 
 fn ShapeType Triangle.get_type(&self) @dynamic => ShapeType.TRIANGLE;
 
-fn Aabb3 Triangle.get_aabb(&self) @dynamic {
-    Vec3[3] triangle = *self;
-    return {
-        .min = {math::min(triangle[0].x, triangle[1].x, triangle[2].x), math::min(triangle[0].y, triangle[1].y, triangle[2].y), math::min(triangle[0].z, triangle[1].z, triangle[2].z)},
-        .max = {math::max(triangle[0].x, triangle[1].x, triangle[2].x), math::max(triangle[0].y, triangle[1].y, triangle[2].y), math::max(triangle[0].z, triangle[1].z, triangle[2].z)}
+fn Number Triangle.collides_aabb(&self, Aabb3 box, bool full = true) @local {
+    Vec3 center = box.center();
+    Vec3 extent = box.extent();
+
+    // if (self.get_aabb().collides(box) == false) return 0;
+
+    Vec3 v0 = (*self)[0] - center;
+    Vec3 v1 = (*self)[1] - center;
+    Vec3 v2 = (*self)[2] - center;
+
+    // Compute the edge vectors of the triangle  (ABC)
+    // That is, get the lines between the points as vectors
+    Vec3 f0 = v1 - v0; // B - A
+    Vec3 f1 = v2 - v1; // C - B
+    Vec3 f2 = v0 - v2; // A - C
+
+    Vec3[] t = {
+        v0,
+        v1,
+        v2
     };
+
+    Vec3[] axes = {
+        {1.0f, 0.0f, 0.0f},
+        {0.0f, 1.0f, 0.0f},
+        {0.0f, 0.0f, 1.0f}
+    };
+
+    Number result_depth = float.max;
+
+    foreach (axis: axes) {
+        MinMax triangle_corners = min_max_from_axis(axis, t);
+        MinMax box_corners = min_max_from_box({0,0,0}, extent, axis);
+        Number depth = triangle_corners.overlap(box_corners);
+        if (depth == -1) return -1;
+
+        if (depth != 0) result_depth = math::min(depth, result_depth);
+    }
+
+    Vec3 normal = f0.cross(f1);
+
+    {
+        MinMax triangle_corners = min_max_from_axis(normal, t);
+        MinMax box_corners = min_max_from_box({0,0,0}, extent, normal);
+        Number depth = triangle_corners.overlap(box_corners);
+        if (depth == -1) return -1;
+
+        if (depth != 0) result_depth = math::min(depth, result_depth);
+    }
+
+    Vec3[] edges = {
+        f0,
+        f1,
+        f2
+    };
+
+    foreach (axis: axes) {
+        foreach (edge: edges) {
+            Vec3 new_axis = axis.cross(edge);
+
+            if (new_axis == {0,0,0}) continue;
+
+            MinMax triangle_corners = min_max_from_axis(new_axis, edges);
+            MinMax box_corners = min_max_from_box({0,0,0}, extent, new_axis);
+            Number depth = triangle_corners.overlap(box_corners);
+            if (depth == -1) return -1;
+            if (depth != 0) result_depth = math::min(depth, result_depth);
+        }
+    }
+
+    return result_depth;
 }
 
-fn usz? Triangle.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s\n%s\n%s", (*self)[0], (*self)[1], (*self)[2])!;
+fn Vec3 BVHNode.furthest_point(&self, Vec3 direction) @dynamic {
+    Vec3 furthest_point;
+    Number max_distance = -Number.max;
 
+    for (usz i = 0; i < self.count; i++) {
+        Vec3 point = self.positions[i];
 
-fn Vec3 BVHNode.furthest_point(&self, Vec3 direction) @dynamic => {0,0,0};
+        Number distance = point.dot(direction);
+        if (distance > max_distance) {
+            max_distance = distance;
+            furthest_point = point;
+        }
+    }
+
+    return furthest_point;
+}
+
 fn ShapeType BVHNode.get_type(&self) @dynamic => ShapeType.TRIANGLE;
 fn Aabb3 BVHNode.get_aabb(&self) @dynamic => self.aabb;
-fn Matrix3f BVHNode.inertia_tensor(&self, Number mass) @dynamic {
-    Matrix3f inertia = MATRIX3F_IDENTITY;
-    return inertia;
-}
+fn Matrix3f BVHNode.inertia_tensor(&self, Number mass) @dynamic => MATRIX3F_IDENTITY;
 
-fn CollisionInfo check_concave_collision(Rigidbody* shape_1, Rigidbody* shape_2) {
+fn CollisionInfo check_concave_collision(Rigidbody* body_a, Rigidbody* body_b) {
     // Ball
     Rigidbody* convex_shape;
 
     // Plane
     Rigidbody* concave_shape;
 
-    if (shape_1.collider.get_type() != TRIANGLE && shape_2.collider.get_type() == TRIANGLE) {
-        convex_shape = shape_1;
-        concave_shape = shape_2;
+    if (body_a.get_type() != TRIANGLE && body_b.get_type() == TRIANGLE) {
+        convex_shape = body_a;
+        concave_shape = body_b;
     } else {
-        convex_shape = shape_2;
-        concave_shape = shape_1;
+        convex_shape = body_b;
+        concave_shape = body_a;
     }
 
     // Shape 2 center of the universe, shape 1 player
     BVHNode* bvh_tree = (BVHNode*)concave_shape.shape;
 
-    // Matrix4f matrix = concave_shape.collider.matrix();
+    HitInfo triangle_hit = bvh_tree.box_intersects(convex_shape.transformed_aabb);
 
-    Vec3 local_pos = convex_shape.collider.translation;
-
-    // io::printfn("%s", local_pos);
-
-    // io::printfn("%s", shape_1.collider.translation);
-
-    // Vec3 local_space = (matrix.inverse()!! * shape_1.collider.translation);
-    //Vec3 local_space = shape_1.collider.translation;
-
-    // HitInfo info = bvh_tree.ray_intersects({.origin = convex_shape.collider.translation, .direction = {0, 0, -1}});
-
-    HitInfo info = bvh_tree.box_intersects(convex_shape.transformed_aabb);
-
-    if (info.collided) {
-        Triangle triangle = info.triangle;
-        
-        // io::printfn("%s", triangle);
-        // foreach (i, value: triangle) {
-        //     triangle[i] = value;
-        // }
-
-        TransformedShape shape = {
-            ...convex_shape.collider,
-            .shape = &triangle,
-        };
-
-        CollisionInfo collision = collision::check_convex_collision(&triangle, &convex_shape.collider, epa:true);
-
-        // io::printfn("%s", collision.contact_points);
-
-        return collision;
+    if (triangle_hit.collided) {
+        return check_convex_collision(convex_shape, &triangle_hit.triangle, epa:true);
     }
 
-    return {};
+    return {.collided = false};
 }
