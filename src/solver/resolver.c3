@@ -14,7 +14,6 @@ alias CollisionCache = HashMap{Pair, Vec3};
 alias RigidBodyMap = LinkedHashMap{usz, Rigidbody};
 alias RigidBodyIterator = LinkedHashMapValueIterator{usz, Rigidbody};
 
-
 struct Constraint {
     Rigidbody* body_a;
     Rigidbody* body_b;
@@ -72,7 +71,7 @@ struct Rigidbody {
     bool can_sleep;
     bool is_static;
     int impulse_dir;
-    
+
     Aabb3 aabb;
     Aabb3 transformed_aabb;
     Material material;
@@ -90,6 +89,9 @@ struct Rigidbody {
     //Vec3 inertia_diagonal;
     //QuaternionValue inertia_orientation;
     Matrix3f inertia;
+
+    // Compound collision - convex decomposition parts for concave meshes
+    List{Mesh} convex_parts;
 }
 
 struct PhysicsWorld {
@@ -105,6 +107,11 @@ struct PhysicsWorld {
 }
 
 fn void PhysicsWorld.free(&self) {
+
+	self.bodies.@each(;key, body) {
+		body.free();
+	};
+
     self.bodies.free();
     self.collisions.free();
     self.spatial_map.free();
@@ -215,6 +222,23 @@ fn void Rigidbody.stop_sleeping(&self) {
 }
 fn bool Rigidbody.is_active(self) => self.sleeping == false && self.is_static == false;
 
+// Set up convex decomposition for concave meshes
+fn void Rigidbody.set_convex_parts(&self, Mesh* mesh, DecomposeParameters params = DEFAULT_PARAMETERS) {
+    // Free existing parts if any
+   	self.free();
+    // Decompose the mesh into convex parts
+    self.convex_parts = decompose(mesh, params);
+}
+
+fn void Rigidbody.free(&self) {
+    foreach (&part : self.convex_parts) {
+        part.free();
+    }
+    self.convex_parts.free();
+}
+
+fn bool Rigidbody.has_convex_parts(self) => self.convex_parts.len() > 0;
+
 <*
  @require self.bodies.len() > 0 : `Must have some bodies to simulate`
 *>
@@ -236,27 +260,29 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 20) {
             if (body_b.sleeping && body_a.is_active()) body_b.stop_sleeping();
 
             if (body_a.is_active() || body_b.is_active()) {
-                CollisionInfo collision_info;
+                // Check for compound collisions (convex decomposition)
+                bool a_has_parts = body_a.convex_parts.len() > 0;
+                bool b_has_parts = body_b.convex_parts.len() > 0;
 
-                if (body_a.collider.get_type() == TRIANGLE || body_b.collider.get_type() == TRIANGLE) {
-                    // Check collision with BVH tree, much slower, only use when nothing else usable
-                    // collision_info = collision::check_concave_collision(body_a, body_b);
+                if (a_has_parts || b_has_parts) {
+                    // Compound collision - iterate through all convex parts
+                    self.check_compound_collision(body_a, body_b, pair);
                 } else {
-                    // Check collision with GJK algorithm
-                    collision_info = collision::check_convex_collision(&body_a.collider, &body_b.collider, epa:true);
-                }
-                
-                if (collision_info.collided) {
-                    // Create collision, so distance constraint can be created for it later
-                    Collision collision = {
-                        .a = pair.a,
-                        .b = pair.b,
-                        .normal = collision_info.normal,
-                        .contact = collision_info.contact_points,
-                        .depth = collision_info.depth,
-                    };
+                    // Check collision with GJK algorithm (simple convex vs convex)
+                    CollisionInfo collision_info = collision::check_convex_collision(&body_a.collider, &body_b.collider, epa:true);
 
-                    self.collisions.push(collision);
+                    if (collision_info.collided) {
+                        // Create collision, so distance constraint can be created for it later
+                        Collision collision = {
+                            .a = pair.a,
+                            .b = pair.b,
+                            .normal = collision_info.normal,
+                            .contact = collision_info.contact_points,
+                            .depth = collision_info.depth,
+                        };
+
+                        self.collisions.push(collision);
+                    }
                 }
             }
         }
@@ -347,6 +373,138 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 20) {
             };
         };
     }
+}
+
+// Temporary storage for collecting compound collision contacts
+struct CompoundContact @local {
+    Vec3 normal;
+    Vec3[2] contact;
+    float depth;
+}
+
+// Check collisions between compound bodies (bodies with convex_parts)
+// Collects all contacts and merges them into a single collision
+fn void PhysicsWorld.check_compound_collision(&self, Rigidbody* body_a, Rigidbody* body_b, Pair pair) @local {
+    List{CompoundContact} contacts;
+    defer contacts.free();
+
+    bool a_has_parts = body_a.convex_parts.len() > 0;
+    bool b_has_parts = body_b.convex_parts.len() > 0;
+
+    // Collect all contacts from part combinations
+    if (a_has_parts && b_has_parts) {
+        foreach (&part_a : body_a.convex_parts) {
+            TransformedShape shape_a = {
+                .translation = body_a.collider.translation,
+                .scale = body_a.collider.scale,
+                .rotation = body_a.collider.rotation,
+                .shape = part_a,
+            };
+
+            foreach (&part_b : body_b.convex_parts) {
+                TransformedShape shape_b = {
+                    .translation = body_b.collider.translation,
+                    .scale = body_b.collider.scale,
+                    .rotation = body_b.collider.rotation,
+                    .shape = part_b,
+                };
+
+                collect_part_contact(&shape_a, &shape_b, &contacts);
+            }
+        }
+    } else if (a_has_parts) {
+        foreach (&part_a : body_a.convex_parts) {
+            TransformedShape shape_a = {
+                .translation = body_a.collider.translation,
+                .scale = body_a.collider.scale,
+                .rotation = body_a.collider.rotation,
+                .shape = part_a,
+            };
+
+            collect_part_contact(&shape_a, &body_b.collider, &contacts);
+        }
+    } else {
+        foreach (&part_b : body_b.convex_parts) {
+            TransformedShape shape_b = {
+                .translation = body_b.collider.translation,
+                .scale = body_b.collider.scale,
+                .rotation = body_b.collider.rotation,
+                .shape = part_b,
+            };
+
+            collect_part_contact(&body_a.collider, &shape_b, &contacts);
+        }
+    }
+
+    // Merge contacts into a single collision
+    if (contacts.len() > 0) {
+        Collision merged = merge_compound_contacts(&contacts, pair);
+        self.collisions.push(merged);
+    }
+}
+
+fn void collect_part_contact(TransformedShape* shape_a, TransformedShape* shape_b, List{CompoundContact}* contacts) @local {
+    CollisionInfo info = collision::check_convex_collision(shape_a, shape_b, epa:true);
+
+    if (info.collided) {
+        contacts.push({
+            .normal = info.normal,
+            .contact = info.contact_points,
+            .depth = info.depth,
+        });
+    }
+}
+
+// Merge multiple contacts into a single collision using depth-weighted average
+fn Collision merge_compound_contacts(List{CompoundContact}* contacts, Pair pair) @local {
+    if (contacts.len() == 1) {
+        CompoundContact c = contacts.get(0);
+        return {
+            .a = pair.a,
+            .b = pair.b,
+            .normal = c.normal,
+            .contact = c.contact,
+            .depth = c.depth,
+        };
+    }
+
+    // Find deepest contact for the primary normal direction
+    float max_depth = 0;
+    Vec3 primary_normal;
+    foreach (&c : *contacts) {
+        if (c.depth > max_depth) {
+            max_depth = c.depth;
+            primary_normal = c.normal;
+        }
+    }
+
+    // Weighted average of contact points (weighted by depth)
+    Vec3 avg_contact_a = {0, 0, 0};
+    Vec3 avg_contact_b = {0, 0, 0};
+    float total_weight = 0;
+
+    foreach (&c : *contacts) {
+        // Only merge contacts with similar normals (within ~45 degrees)
+        if (c.normal.dot(primary_normal) > 0.7) {
+            float weight = c.depth;
+            avg_contact_a += c.contact[0] * weight;
+            avg_contact_b += c.contact[1] * weight;
+            total_weight += weight;
+        }
+    }
+
+    if (total_weight > 0) {
+        avg_contact_a /= total_weight;
+        avg_contact_b /= total_weight;
+    }
+
+    return {
+        .a = pair.a,
+        .b = pair.b,
+        .normal = primary_normal.normalize(),
+        .contact = { avg_contact_a, avg_contact_b },
+        .depth = max_depth,
+    };
 }
 
 <*
