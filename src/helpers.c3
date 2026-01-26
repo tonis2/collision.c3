@@ -4,50 +4,90 @@ import std::math;
 import std::io;
 import std::collections::list;
 
-alias Number = float;
-
-alias Vec2 @private = Number[<2>];
-alias Vec4 @private = Number[<4>];
-alias Vec3 @private = Number[<3>];
+alias Vec2 @private = float[<2>];
+alias Vec4 @private = float[<4>];
+alias Vec3 @private = float[<3>];
 alias ContactPoints @private = Vec3[2];
-alias QuaternionValue = QuaternionNumber{Number};
+alias QuaternionValue = QuaternionNumber{float};
+alias Vertices = List{Vec3};
 
 fn usz? Vec3.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s,%s,%s", self.x, self.y, self.z)!;
 fn usz? Vec4.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s,%s,%s", self.x, self.y, self.z)!;
-
-alias Triangle = Vec3[3];
 
 struct CollisionInfo {
     Simplex simplex;
     Vec3 normal;
     ContactPoints contact_points;
-    Number depth;
+    float depth;
     bool collided;
 }
 
 struct HitInfo {
     bool collided;
-    Number depth;
+    float depth;
     Vec3 normal;
     Triangle triangle;
 }
 
-struct Plane {
-    Vec3 point;
-    Vec3 normal;
-	Number d;
-}
 
 struct Face @private {
     usz a,b,c;
     Vec3 normal;
-    Number distance;
+    float distance;
+	bool active;
+	bool visible;
 }
 
 struct Pair (Printable) {
-    usz first;
-    usz second;
+    usz a;
+    usz b;
 }
+
+struct MinMax {
+    float min;
+    float max;
+}
+
+fn MinMax min_max_from_axis(Vec3 axis, Vec3[] points) {
+    MinMax corners = {
+        .min = axis.dot(points[0]),
+        .max = axis.dot(points[0])
+    };
+
+    foreach (point: points) corners.expand(axis.dot(point));
+
+    return corners;
+}
+
+fn void MinMax.expand(&self, float value) {
+    self.min = math::min(self.min, value);
+    self.max = math::max(self.max, value);
+}
+
+fn void MinMax.expand_by_array(&self, float[] values) {
+    foreach (value: values) self.expand(value);
+}
+
+fn MinMax min_max_from_box(Vec3 center, Vec3 extent, Vec3 axis) {
+    float c = center.dot(axis);
+    float r = math::abs(axis.x) * extent.x + math::abs(axis.y) * extent.y + math::abs(axis.z) * extent.z;
+
+    return {
+        .min = c - r,
+        .max = c + r
+    };
+}
+
+fn float MinMax.overlap(&a, MinMax b) {
+    if (a.max < b.min || b.max < a.min) {
+        // Separated 
+        return -1;
+    }
+	
+    return math::min(a.max, b.max) - math::max(a.min, b.min);
+}
+
+fn usz? MinMax.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("min %s max %s",  self.min, self.max)!;
 
 fn Matrix3f QuaternionValue.as_mat3(self) {
     Matrix4f matrix = self.to_matrixf();
@@ -68,92 +108,34 @@ fn usz Vec3.hash(&self) @private {
     return hash;
 }
 
-fn Number Vec3.distance_sq(self, Vec3 v2) {
+fn float Vec3.distance_sq(self, Vec3 v2) {
     Vec3 dist = self - v2;
     return dist.x * dist.x + dist.y * dist.y + dist.z * dist.z;
 }
 
-fn usz? Pair.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s, %s", self.first, self.second)!;
 fn usz? ContactPoints.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s\n%s", (*self)[0], (*self)[1])!;
+fn usz? Pair.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s, %s", self.a, self.b)!;
+macro bool Pair.equals(a, Pair b) @operator(==) => (a.a == b.a && a.b == b.b) || (a.a == b.b && a.b == b.a);
 
-macro bool Pair.equals(self, Pair b) @operator(==) => self.first == b.first && self.second == b.second;
 macro uint Pair.hash(&self) {
-    if (self.first > self.second) @swap(self.first, self.second);
-    return builtin::@generic_hash(self.first) + builtin::@generic_hash(self.second);
+    if (self.a > self.b) @swap(self.a, self.b);
+    return builtin::@generic_hash(self.a) + builtin::@generic_hash(self.b);
 }
 
-macro bool Vec3.equals(self, Vec3 b) => self == b;
 macro bool QuaternionValue.equals(self, QuaternionValue b) @operator(==) => self.v.xyzw == b.v.xyzw;
 
-fn Plane Triangle.get_plane(&self) {
-	Vec3 p0 = (*self)[0];
-	Vec3 p1 = (*self)[1];
-	Vec3 p2 = (*self)[2];
+fn float Face.get_area(self, List{Vec3} vertices) {
+	Vec3 a = vertices[self.a];
+    Vec3 b = vertices[self.b];
+    Vec3 c = vertices[self.c];
 
-	Vec3 edge1 = {p1.x - p0.x, p1.y - p0.y, p1.z - p0.z};
-	Vec3 edge2 = {p2.x - p0.x, p2.y - p0.y, p2.z - p0.z};
-	Vec3 normal = {
-		edge1.y * edge2.z - edge1.z * edge2.y,
-		edge1.z * edge2.x - edge1.x * edge2.z,
-		edge1.x * edge2.y - edge1.y * edge2.x
-	};
+	Vec3 ab = { b.x - a.x, b.y - a.y, b.z - a.z };
+    Vec3 ac = { c.x - a.x, c.y - a.y, c.z - a.z };
 
-	return {
-		.normal = normal.normalize(),
-		.point = p0,
-	};
+	return ab.cross(ac).sq_magnitude();
 }
 
-fn Aabb3 Triangle.get_aabb(&self) @dynamic {
-    Vec3[3] triangle = *self;
-    return {
-        .min = {math::min(triangle[0].x, triangle[1].x, triangle[2].x), math::min(triangle[0].y, triangle[1].y, triangle[2].y), math::min(triangle[0].z, triangle[1].z, triangle[2].z)},
-        .max = {math::max(triangle[0].x, triangle[1].x, triangle[2].x), math::max(triangle[0].y, triangle[1].y, triangle[2].y), math::max(triangle[0].z, triangle[1].z, triangle[2].z)}
-    };
-}
-
-fn usz? Triangle.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s\n%s\n%s", (*self)[0], (*self)[1], (*self)[2])!;
-
-
-fn Number Plane.get_distance_to_point(plane, Vec3 point) {
-    Vec3 v = {point.x - plane.point.x, point.y - plane.point.y, point.z - plane.point.z};
-    return (v.x * plane.normal.x + v.y * plane.normal.y + v.z * plane.normal.z);	
-}
-
-fn bool Plane.contains_point(&plane, Vec3 point) {
-    return (point.dot(plane.normal) + plane.d) >= 0;
-}
-
-fn Vec3 Plane.intersects(plane, Vec3 a, Vec3 b) {
-	Number da = a.dot(plane.normal) + plane.d;
-	Number db = b.dot(plane.normal) + plane.d;
-	Number t = da / (da - db);
-	return {
-		a.x + t * (b.x - a.x),
-        a.y + t * (b.y - a.y),
-        a.z + t * (b.z - a.z)
-	};
-}
-
-<*
- @require in_points.len() > 0 : `in points should not be empty`
-*>
-fn void Plane.clip_againt(&plane, List{Vec3}* in_points, List{Vec3}* out_points) {
-   Vec3 s = in_points.get(in_points.len() - 1);
-
-   for (usz i = 0; i < in_points.len(); i++) {
-		Vec3 e = in_points.get(i);
-
-		if (plane.contains_point(e)) {
-			if (!plane.contains_point(s)) {
-				out_points.push(plane.intersects(s, e));
-			}
-			out_points.push(e);
-		}
-		else if (plane.contains_point(s)) {
-			out_points.push(plane.intersects(s, e));
-		}
-
-		s = e;
-   }
+fn bool Vertices.is_face_visible(self, Face face, Vec3 point) {
+	Vec3 ap = point - self[face.a];
+	return face.normal.dot(ap) > 1e-6;
 }

@@ -14,14 +14,14 @@ alias FaceArray @private = ElasticArray{Face, 40};
 alias SupportArray @private = ElasticArray{SupportPoint, 40};
 
 const uint EPA_MAX_ITER = 16;
-const Number EPA_TOLERANCE = 0.0001f;
+const float EPA_TOLERANCE = 0.0001f;
 
 fn void EdgeArray.add_if_new(&self, Pair pair)
 {
     // Reverse search
     for (int i = (int)self.len() - 1; i >= 0; i--) {
         Pair edge = self.get(i);
-        if (edge == (Pair){pair.second, pair.first}) {
+        if (edge == (Pair){pair.b, pair.a}) {
             self.remove_at(i);
             return;
         }
@@ -37,7 +37,7 @@ fn Face SupportArray.create_face(self, usz a_index, usz b_index, usz c_index)
     Vec3 c = self.get(c_index).point;
 
     Vec3 normal = (b - a).cross(c - a).normalize();
-    Number distance = a.dot(normal);
+    float distance = a.dot(normal);
 
     // assert(normal != (Vec3){0,0,0});
 
@@ -72,14 +72,14 @@ fn void SupportArray.reconstruct(self, FaceArray* faces, Vec3 new_point)
     }
 
     foreach (edge: edges) {
-        Face new_face = self.create_face(edge.first, edge.second, self.len() - 1);
-        Number magnitude = new_face.normal.sq_magnitude();
+        Face new_face = self.create_face(edge.a, edge.b, self.len() - 1);
+        float magnitude = new_face.normal.sq_magnitude();
         if (new_face.normal.sq_magnitude() < 0.001) continue;
         faces.push(new_face);
     }
 }
 
-fn uint Face[].get_closest(self, Number min_distance = Number.max) {
+fn uint Face[].get_closest(self, float min_distance = float.max) {
     uint closest = 0;
 
     foreach (uint i, face: self) {
@@ -128,7 +128,7 @@ fn void epa(CollisionInfo* info, CollisionShape shape_1, CollisionShape shape_2)
             .point = a_support - b_support
         };
 
-        Number support_distance = face_normal.dot(support_point.point);
+        float support_distance = face_normal.dot(support_point.point);
 
         if (support_distance - closest_face.distance < EPA_TOLERANCE) {
           

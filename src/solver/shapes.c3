@@ -3,7 +3,7 @@ module collision;
 import std::math;
 import std::io;
 
-const Number EPSILON @local = 0.0001;
+const float EPSILON @local = 0.0001;
 
 enum ShapeType {
     SPHERE,
@@ -17,7 +17,7 @@ enum ShapeType {
 interface CollisionShape
 {
     fn Vec3 furthest_point(Vec3 direction);
-    fn Matrix3f inertia_tensor(Number mass);
+    fn Matrix3f inertia_tensor(float mass);
     fn Aabb3 get_aabb();
     fn ShapeType get_type();
     fn void free() @optional;
@@ -35,19 +35,19 @@ struct Ray (Printable) {
 
 struct Sphere (CollisionShape) {
     Vec3 center;
-    Number radius;
+    float radius;
 }
 
 struct Cylinder (CollisionShape) {
-    Number height;
-    Number radius_top;
-    Number radius_bottom;
+    float height;
+    float radius_top;
+    float radius_bottom;
 }
 
 struct Capsule (CollisionShape) {
-    Number height;
-    Number radius_top;
-    Number radius_bottom;
+    float height;
+    float radius_top;
+    float radius_bottom;
 }
 
 // Shapes
@@ -73,20 +73,20 @@ fn Vec3 Ray.intersect(&self, Vec3 direction) {
 }
 
 
-fn Number Sphere.intersect(&self, Ray ray) @dynamic {
+fn float Sphere.intersect(&self, Ray ray) @dynamic {
     Vec3 oc = ray.origin - self.center;
-    Number a = ray.direction.dot(ray.direction);
-    Number b = 2.0 * oc.dot(ray.direction);
-    Number c = oc.dot(oc) - self.radius * self.radius;
-    Number discriminant = b * b - 4 * a * c;
+    float a = ray.direction.dot(ray.direction);
+    float b = 2.0 * oc.dot(ray.direction);
+    float c = oc.dot(oc) - self.radius * self.radius;
+    float discriminant = b * b - 4 * a * c;
 
     if (discriminant < 0) {
         return -1.0f; // No intersection
     } else {
         // Return the nearest positive intersection distance
-        Number t1 = (-b - math::sqrt(discriminant)) / (Number)(2.0 * a);
+        float t1 = (-b - math::sqrt(discriminant)) / (float)(2.0 * a);
         if (t1 > 0) return t1;
-        Number t2 = (-b + math::sqrt(discriminant)) / (Number)(2.0 * a);
+        float t2 = (-b + math::sqrt(discriminant)) / (float)(2.0 * a);
         if (t2 > 0) return t2;
         return -1.0;
     }
@@ -100,12 +100,12 @@ fn Vec3 TransformedShape.furthest_point(&self, Vec3 direction) @dynamic {
 
 fn Vec3 ConvexPolyhedron.furthest_point(&self, Vec3 direction) @dynamic {
     Vec3 furthest_point;
-    Number max_distance = -Number.max;
+    float max_distance = -float.max;
 
     for (usz i = 0; i<self.count; i++) {
         Vec3 point = self.vertices[i];
 
-        Number distance = point.dot(direction);
+        float distance = point.dot(direction);
         if (distance > max_distance) {
             max_distance = distance;
             furthest_point = point;
@@ -130,7 +130,7 @@ fn Vec3 Capsule.furthest_point(&self, Vec3 direction) @dynamic {
     return result;
 }
 
-fn Matrix3f TransformedShape.inertia_tensor(&self, Number mass) @dynamic {
+fn Matrix3f TransformedShape.inertia_tensor(&self, float mass) @dynamic {
     Matrix3f local_inertia = self.shape.inertia_tensor(mass);
 
     Matrix4f matrix = self.rotation.normalize().to_matrixf();
@@ -167,10 +167,10 @@ fn Matrix4f TransformedShape.matrix(self) {
     return translation_matrix * self.rotation.to_matrixf() * scale_matrix;
 }
 
-fn Matrix3f ConvexPolyhedron.inertia_tensor(&self, Number mass) @dynamic {
+fn Matrix3f ConvexPolyhedron.inertia_tensor(&self, float mass) @dynamic {
     Matrix3f inertia = MATRIX3F_IDENTITY;
 
-    Number density = 1.0;
+    float density = 1.0;
 
     Vec3 c = self.center_of_mass();
 
@@ -179,7 +179,7 @@ fn Matrix3f ConvexPolyhedron.inertia_tensor(&self, Number mass) @dynamic {
     //     Vec3 v2 = self.vertices[self.indices[i + 1]].xyz;
     //     Vec3 v3 = self.vertices[self.indices[i + 2]].xyz;
 
-    //     Number tetra_mass;
+    //     float tetra_mass;
     //     Matrix3f tetra_I_origin = MATRIX3F_IDENTITY;
 
     //     inertia += compute_origin(v1, v2, v3, density);
@@ -200,9 +200,9 @@ fn Matrix3f ConvexPolyhedron.inertia_tensor(&self, Number mass) @dynamic {
     return inertia;
 }
 
-fn Matrix3f Sphere.inertia_tensor(&self, Number mass) @dynamic {
-    Number r2 = self.radius * self.radius;
-    Number i = mass * r2 * 2.0f / 5.0f;
+fn Matrix3f Sphere.inertia_tensor(&self, float mass) @dynamic {
+    float r2 = self.radius * self.radius;
+    float i = mass * r2 * 2.0f / 5.0f;
 	return {
         i, 0, 0,
         0, i, 0,
@@ -210,13 +210,13 @@ fn Matrix3f Sphere.inertia_tensor(&self, Number mass) @dynamic {
     };
 }
 
-fn Matrix3f Cylinder.inertia_tensor(&self, Number mass) @dynamic {
-    Number r2 = self.radius_bottom * self.radius_top;
-    Number h2 = self.height * self.height;
+fn Matrix3f Cylinder.inertia_tensor(&self, float mass) @dynamic {
+    float r2 = self.radius_bottom * self.radius_top;
+    float h2 = self.height * self.height;
 
-    Number ix = (mass / 12.0f) * (3 * r2 + h2);
-    Number iy = (mass / 2.0f) * r2;
-    Number iz = (mass / 12.0f) * (3 * r2 + h2);
+    float ix = (mass / 12.0f) * (3 * r2 + h2);
+    float iy = (mass / 2.0f) * r2;
+    float iz = (mass / 12.0f) * (3 * r2 + h2);
 
     return {
         ix, 0, 0,
@@ -225,13 +225,13 @@ fn Matrix3f Cylinder.inertia_tensor(&self, Number mass) @dynamic {
     };
 }
 
-fn Matrix3f Capsule.inertia_tensor(&self, Number mass) @dynamic {
-    Number r2 = self.radius_bottom * self.radius_top;
-    Number h2 = self.height * self.height;
+fn Matrix3f Capsule.inertia_tensor(&self, float mass) @dynamic {
+    float r2 = self.radius_bottom * self.radius_top;
+    float h2 = self.height * self.height;
 
-    Number ix = (mass / 12.0f) * (3 * r2 + h2);
-    Number iy = (mass / 2.0f) * r2;
-    Number iz = (mass / 12.0f) * (3 * r2 + h2);
+    float ix = (mass / 12.0f) * (3 * r2 + h2);
+    float iy = (mass / 2.0f) * r2;
+    float iz = (mass / 12.0f) * (3 * r2 + h2);
 
     return {
         ix, 0, 0,
@@ -252,7 +252,7 @@ fn Aabb3 TransformedShape.get_aabb(&self) @dynamic => self.shape.get_aabb();
 fn Aabb3 Sphere.get_aabb(&self) @dynamic => {.min = self.center - self.radius, .max = self.center + self.radius};
 
 fn Aabb3 Capsule.get_aabb(&self) @dynamic {
-    Number radius_max = math::max(self.radius_top, self.radius_bottom);
+    float radius_max = math::max(self.radius_top, self.radius_bottom);
 
     return {
         .min = {-radius_max, 0, -radius_max},
@@ -261,7 +261,7 @@ fn Aabb3 Capsule.get_aabb(&self) @dynamic {
 }
 
 fn Aabb3 Cylinder.get_aabb(&self) @dynamic {
-    Number radius_max = math::max(self.radius_top, self.radius_bottom);
+    float radius_max = math::max(self.radius_top, self.radius_bottom);
 
     return {
         .min = {-radius_max, 0, -radius_max},
@@ -298,16 +298,16 @@ fn Aabb3 ConvexPolyhedron.get_aabb(&self) @dynamic {
 
 fn Vec3 TransformedShape.get_world_center_of_mass(&self, Vec3 center_of_mass) => self.rotation * center_of_mass + self.translation;
 
-fn Number scalar_triple_product(Vec3 a, Vec3 b, Vec3 c) @local {
+fn float scalar_triple_product(Vec3 a, Vec3 b, Vec3 c) @local {
     // (a x b) . c
-    Number cross_x = a.y * b.z - a.z * b.y;
-    Number cross_y = a.z * b.x - a.x * b.z;
-    Number cross_z = a.x * b.y - a.y * b.x;
+    float cross_x = a.y * b.z - a.z * b.y;
+    float cross_y = a.z * b.x - a.x * b.z;
+    float cross_z = a.x * b.y - a.y * b.x;
     return cross_x * c.x + cross_y * c.y + cross_z * c.z;
 }
 
 fn Vec3 ConvexPolyhedron.center_of_mass(self) {
-    Number total_detJ = 0;
+    float total_detJ = 0;
     Vec3 weighted_com = {0, 0, 0};
     Vec3 final_com = {0, 0, 0};
 
@@ -328,13 +328,13 @@ fn Vec3 ConvexPolyhedron.center_of_mass(self) {
     return final_com;
 }
 
-fn Matrix3f compute_origin(Vec3 a, Vec3 b, Vec3 c, Number density) @local {
+fn Matrix3f compute_origin(Vec3 a, Vec3 b, Vec3 c, float density) @local {
     Matrix3f inertia_tensor;
 
-    Number detJ = scalar_triple_product(a, b, c);
+    float detJ = scalar_triple_product(a, b, c);
 
-    Number v_mult_diag = (density * detJ) / (Number)60.0;
-    Number v_mult_off_diag = (density * detJ) / (Number)120.0;
+    float v_mult_diag = (density * detJ) / (float)60.0;
+    float v_mult_off_diag = (density * detJ) / (float)120.0;
 
     // Diagonal elements (Moments of Inertia)
     inertia_tensor.m00 = v_mult_diag * (

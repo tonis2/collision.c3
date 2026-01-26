@@ -10,7 +10,7 @@ alias CellList = List{usz};
 alias SpatialMap = HashMap{usz, CellList};
 
 struct SpatialHash3D {
-    Number cell_size;
+    float cell_size;
     SpatialMap table;
     HashMap{usz, bool} unique_map;
 }
@@ -42,9 +42,9 @@ fn void? SpatialHash3D.insert(&self, Aabb3 box, usz id) {
     Vec3 min_cell = self.world_to_grid(box.min);
     Vec3 max_cell = self.world_to_grid(box.max);
 
-    for (Number x = min_cell.x; x <= max_cell.x; ++x) {
-        for (Number y = min_cell.y; y <= max_cell.y; ++y) {
-            for (Number z = min_cell.z; z <= max_cell.z; ++z) {
+    for (float x = min_cell.x; x <= max_cell.x; ++x) {
+        for (float y = min_cell.y; y <= max_cell.y; ++y) {
+            for (float z = min_cell.z; z <= max_cell.z; ++z) {
                 usz cell_id = self.world_to_grid({x, y, z}).hash();
                 if (!self.table.has_key(cell_id)) {
                     self.table.set(cell_id, {});
@@ -78,18 +78,18 @@ fn void? SpatialHash3D.update(&self, Aabb3 old_box, Aabb3 new_box, usz id) {
 
     CellIDs old_ids, new_ids;
     
-    for (Number x = old_min_cell.x; x <= old_max_cell.x; ++x) {
-        for (Number y = old_min_cell.y; y <= old_max_cell.y; ++y) {
-            for (Number z = old_min_cell.z; z <= old_max_cell.z; ++z) {
+    for (float x = old_min_cell.x; x <= old_max_cell.x; ++x) {
+        for (float y = old_min_cell.y; y <= old_max_cell.y; ++y) {
+            for (float z = old_min_cell.z; z <= old_max_cell.z; ++z) {
                 usz cell_id = self.world_to_grid({x, y, z}).hash();
                 old_ids.push(cell_id);
             }
         }
     }
 
-    for (Number x = new_min_cell.x; x <= new_max_cell.x; ++x) {
-        for (Number y = new_min_cell.y; y <= new_max_cell.y; ++y) {
-            for (Number z = new_min_cell.z; z <= new_max_cell.z; ++z) {
+    for (float x = new_min_cell.x; x <= new_max_cell.x; ++x) {
+        for (float y = new_min_cell.y; y <= new_max_cell.y; ++y) {
+            for (float z = new_min_cell.z; z <= new_max_cell.z; ++z) {
                 usz cell_id = self.world_to_grid({x, y, z}).hash();
                 new_ids.push(cell_id);      
             }

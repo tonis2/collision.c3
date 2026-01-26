@@ -135,8 +135,8 @@ fn usz Aabb3.longest_axis(self) {
 fn HitInfo Aabb3.intersect_ray(self, Ray ray) {
     HitInfo response = {.collided = false};
 
-    Number tmin = 0.0;
-    Number tmax = Number.max;
+    float tmin = 0.0;
+    float tmax = float.max;
 
     for (uint i = 0; i < 3; ++i) {
         if (math::abs(ray.direction[i]) < 1e-6) {
@@ -144,9 +144,9 @@ fn HitInfo Aabb3.intersect_ray(self, Ray ray) {
                 return response; // Parallel and outside the box
             }
         } else {
-            Number ood = 1.0 / ray.direction[i];
-            Number t1 = (self.min[i] - ray.origin[i]) * ood;
-            Number t2 = (self.max[i] - ray.origin[i]) * ood;
+            float ood = 1.0 / ray.direction[i];
+            float t1 = (self.min[i] - ray.origin[i]) * ood;
+            float t2 = (self.max[i] - ray.origin[i]) * ood;
             if (t1 > t2) @swap(t1, t2);
             tmin = math::max(tmin, t1);
             tmax = math::min(tmax, t2);
@@ -174,12 +174,12 @@ fn Aabb3 Aabb3.get_aabb(&self) @dynamic => *self;
 
 fn ShapeType Aabb3.get_type(&self) @dynamic => ShapeType.BOX;
 
-fn Matrix3f Aabb3.inertia_tensor(&self, Number mass) @dynamic {
+fn Matrix3f Aabb3.inertia_tensor(&self, float mass) @dynamic {
     Vec3 size = self.size() * 2;
 
-    Number ix = (1 / 12.0f) * mass * (size.y + size.z);
-    Number iy = (1 / 12.0f) * mass * (size.x + size.z);
-    Number iz = (1 / 12.0f) * mass * (size.x + size.y);
+    float ix = (1 / 12.0f) * mass * (size.y + size.z);
+    float iy = (1 / 12.0f) * mass * (size.x + size.z);
+    float iz = (1 / 12.0f) * mass * (size.x + size.y);
 
     return {
         ix, 0, 0,

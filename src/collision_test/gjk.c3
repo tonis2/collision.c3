@@ -4,7 +4,7 @@ import std::math;
 import std::collections::elastic_array;
 
 const usz GJK_MAX_ITERATION = 30;
-const Number GJK_TOLERANCE = 0.0001f;
+const float GJK_TOLERANCE = 0.0001f;
 
 alias Simplex = ElasticArray{SupportPoint, 4};
 

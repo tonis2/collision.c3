@@ -17,10 +17,10 @@ alias Limits = ElasticArray{Limit, 3};
 
 struct Limit {
     Vec3 axes;
-    Number min;
-    Number max;
-    Number stiffness;
-    Number damping;
+    float min;
+    float max;
+    float stiffness;
+    float damping;
 }
 
 struct GenericJoint3D {
@@ -36,11 +36,11 @@ struct GenericJoint3D {
    usz body_a;
    usz body_b;
 
-   Number dampening;
-   Number stifness;
+   float dampening;
+   float stifness;
 }
 
-fn void GenericJoint3D.create_constraint(joint, PhysicsWorld* world, Number dt) @local {
+fn void GenericJoint3D.create_constraint(joint, PhysicsWorld* world, float dt) @local {
     Rigidbody* a = world.find_body(joint.body_a)!!;
     Rigidbody* b = world.find_body(joint.body_b)!!;
 
@@ -50,7 +50,7 @@ fn void GenericJoint3D.create_constraint(joint, PhysicsWorld* world, Number dt) 
 
     Vec3* impulse_cache = world.contact_cache.get_ref({joint.body_a, joint.body_b})!!;
 
-    Number inverse_mass_sum = a.inverse_mass + b.inverse_mass;
+    float inverse_mass_sum = a.inverse_mass + b.inverse_mass;
 
     // Need to check if impulse direction is - or +
     int impulse_dir = math::min(a.impulse_dir, b.impulse_dir);
@@ -75,20 +75,20 @@ fn void GenericJoint3D.create_constraint(joint, PhysicsWorld* world, Number dt) 
         Vec3 linear_b = normal;
         Vec3 angular_b = rB.cross(normal);
 
-        Number normal_inertia;
+        float normal_inertia;
         if (!a.is_static) normal_inertia += a.get_intertia(rA, -normal);
         if (!b.is_static) normal_inertia += b.get_intertia(rB, normal);
 
-        Number rigid_denom = inverse_mass_sum + normal_inertia;
-        // Number softness_denom = (limit.damping / dt) + (limit.stiffness * dt);
-        // Number total_denom = rigid_denom + softness_denom;
+        float rigid_denom = inverse_mass_sum + normal_inertia;
+        // float softness_denom = (limit.damping / dt) + (limit.stiffness * dt);
+        // float total_denom = rigid_denom + softness_denom;
 
-        Number position_error = (world_b - world_a).dot(normal);
+        float position_error = (world_b - world_a).dot(normal);
 
-        // Number bounce = (limit.stiffness * dt) / total_denom * position_error;
-        // Number bias = (limit.stiffness * dt) / rigid_denom * position_error;
+        // float bounce = (limit.stiffness * dt) / total_denom * position_error;
+        // float bias = (limit.stiffness * dt) / rigid_denom * position_error;
 
-        Number denom = (0.2 / dt);
+        float denom = (0.2 / dt);
 
         Constraint axis_constraint = {
             .body_a = a,
@@ -107,7 +107,7 @@ fn void GenericJoint3D.create_constraint(joint, PhysicsWorld* world, Number dt) 
         };
 
         if (limit.min != 0) {
-            Number correction = (limit.min - position_error) * impulse_dir;
+            float correction = (limit.min - position_error) * impulse_dir;
             if (correction > 0) {
                 axis_constraint.bias = denom * correction;
                 axis_constraint.min = -float.max;
@@ -116,7 +116,7 @@ fn void GenericJoint3D.create_constraint(joint, PhysicsWorld* world, Number dt) 
         }
 
         if (limit.max != 0) {
-            Number correction = (position_error - limit.max) * impulse_dir;
+            float correction = (position_error - limit.max) * impulse_dir;
             if (correction > 0) {
                 axis_constraint.bias = denom * correction;
                 axis_constraint.min = 0;
@@ -131,7 +131,7 @@ fn void GenericJoint3D.create_constraint(joint, PhysicsWorld* world, Number dt) 
     // Relative orientation is neccesary for rotation error check, if joint original position is rotated
     QuaternionValue error_orientation = a.collider.rotation.conjugate() * b.collider.rotation * joint.relative_orientation.conjugate();
 
-    Number error_direction = error_orientation.l >= 0 ? 1 : -1;
+    float error_direction = error_orientation.l >= 0 ? 1 : -1;
     Vec3 error_local = error_orientation.v.xyz * 2 * error_direction;
     Vec3 world_error = a.collider.rotation * error_local;
 
@@ -148,16 +148,16 @@ fn void GenericJoint3D.create_constraint(joint, PhysicsWorld* world, Number dt) 
         if (!a.is_static) normal_inertia += a.get_intertia(rA, -world_axis);
         if (!b.is_static) normal_inertia += b.get_intertia(rB, world_axis);
 
-        Number denom = (0.2 / dt);
-        Number rotation_error = world_error.dot(world_axis);
+        float denom = (0.2 / dt);
+        float rotation_error = world_error.dot(world_axis);
         
-        Number rigid_denom = inverse_mass_sum + normal_inertia;
+        float rigid_denom = inverse_mass_sum + normal_inertia;
 
-        // Number softness_denom = (limit.damping / dt) + (limit.stiffness * dt);
-        // Number total_denom = rigid_denom + softness_denom;
+        // float softness_denom = (limit.damping / dt) + (limit.stiffness * dt);
+        // float total_denom = rigid_denom + softness_denom;
 
-        // Number bounce = (limit.stiffness * dt) / total_denom * rotation_error;
-        Number bias = (0.2 / dt);
+        // float bounce = (limit.stiffness * dt) / total_denom * rotation_error;
+        float bias = (0.2 / dt);
 
         Constraint axis_constraint = {
             .body_a = a,
@@ -175,8 +175,8 @@ fn void GenericJoint3D.create_constraint(joint, PhysicsWorld* world, Number dt) 
             .impulse_offset = offset,
         };
 
-        Number min_limit = limit.min - rotation_error;
-        Number max_limit = rotation_error - limit.max;
+        float min_limit = limit.min - rotation_error;
+        float max_limit = rotation_error - limit.max;
 
         if (min_limit > 0) {
             axis_constraint.bias = bias * min_limit * rotation_error;

@@ -4,11 +4,8 @@ import std::io;
 import std::math;
 import std::collections::list;
 
-const Number EPSILON @local = 0.005;
-
-alias Vertices @local = List{Vec3};
+const float EPSILON @local = 0.005;
 alias Indices @local = List{ushort};
-
 
 fn bool are_equal(Vec3 a, Vec3 b) => a.distance_sq(b) < EPSILON;
 

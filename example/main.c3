@@ -56,7 +56,7 @@ fn main() {
      while (game_running) {
 
         // Move physics world forward one time-step
-        physics_world.run_step((Number)time.mark());
+        physics_world.run_step((float)time.mark());
 
         // Get or update data from rigidbody collider
         Rigidbody* rigid_body = physics_world.find_body(1);

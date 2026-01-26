@@ -21,12 +21,12 @@ struct Constraint {
 
     Vec3* impulse_cache;
 
-    Number min;
-    Number max;
-    Number bias;
-    Number effective_mass;
-    Number friction;
-    Number bounce;
+    float min;
+    float max;
+    float bias;
+    float effective_mass;
+    float friction;
+    float bounce;
 
     usz impulse_offset;
 
@@ -42,7 +42,7 @@ struct Collision {
     usz b;
     Vec3 normal;
     Vec3[2] contact;
-    Number depth;
+    float depth;
     Vec3 impulse;
 }
 
@@ -54,9 +54,9 @@ enum PhysicsCombine {
 }
 
 struct Material {
-    Number static_friction;
-    Number dynamic_friction;
-    Number restitution;
+    float static_friction;
+    float dynamic_friction;
+    float restitution;
     PhysicsCombine friction_combine;
     PhysicsCombine restitution_combine;
 }
@@ -66,7 +66,7 @@ struct Rigidbody {
     int bvh_node;
     usz id;
 
-    Number sleep_timer;
+    float sleep_timer;
 
     bool sleeping;
     bool can_sleep;
@@ -80,11 +80,11 @@ struct Rigidbody {
     // Motion
     Vec3 linear_velocity;
     Vec3 angular_velocity;
-    Number mass;
-    Number inverse_mass;
-    Number gravity_factor;
-    Number linear_dampening;
-    Number angular_dampening;
+    float mass;
+    float inverse_mass;
+    float gravity_factor;
+    float linear_dampening;
+    float angular_dampening;
 
     Vec3 mass_center;
     //Vec3 inertia_diagonal;
@@ -101,7 +101,7 @@ struct PhysicsWorld {
     CollisionFilter filters;
     CollisionCache contact_cache;
     Vec3 gravity;
-    Number sleep_timer;
+    float sleep_timer;
 }
 
 fn void PhysicsWorld.free(&self) {
@@ -113,7 +113,7 @@ fn void PhysicsWorld.free(&self) {
     self.contact_cache.free();
 }
 
-fn PhysicsWorld create_world(Number cell_size = 2.0, Vec3 gravity = {0.0f, 0.0f, -9.8f}, Number sleep_timer = 5.0) {
+fn PhysicsWorld create_world(float cell_size = 2.0, Vec3 gravity = {0.0f, 0.0f, -9.8f}, float sleep_timer = 5.0) {
     PhysicsWorld world = {
         .gravity = gravity,
         .spatial_map.cell_size = cell_size,
@@ -198,7 +198,7 @@ fn void Rigidbody.apply_impulse(&self, Vec3 impulse, Vec3 point) {
 //     return (self.get_inverse_world_inertia() * point.cross(normal)).cross(point);
 // }
 
-fn Number Rigidbody.get_intertia(self, Vec3 point, Vec3 normal) {
+fn float Rigidbody.get_intertia(self, Vec3 point, Vec3 normal) {
     Vec3 ang = point.cross(normal);
     Vec3 accel = self.get_inverse_world_inertia() * ang;
     return accel.dot(ang);
@@ -218,12 +218,12 @@ fn bool Rigidbody.is_active(self) => self.sleeping == false && self.is_static ==
 <*
  @require self.bodies.len() > 0 : `Must have some bodies to simulate`
 *>
-fn void PhysicsWorld.run_step(&self, Number time, uint step_count = 20) {
+fn void PhysicsWorld.run_step(&self, float time, uint step_count = 20) {
 
     // Create collisions
     self.spatial_map.@get_pairs(;Pair pair) {
-        Rigidbody* body_a = self.find_body(pair.first)!!;
-        Rigidbody* body_b = self.find_body(pair.second)!!;
+        Rigidbody* body_a = self.find_body(pair.a)!!;
+        Rigidbody* body_b = self.find_body(pair.b)!!;
         
         // Check if collision filters have this combo of rigid bodies, if true skip the collision check
         bool has_filter = self.filters.has_key({body_a.id, body_b.id}) == true;
@@ -240,7 +240,7 @@ fn void PhysicsWorld.run_step(&self, Number time, uint step_count = 20) {
 
                 if (body_a.collider.get_type() == TRIANGLE || body_b.collider.get_type() == TRIANGLE) {
                     // Check collision with BVH tree, much slower, only use when nothing else usable
-                    collision_info = collision::check_concave_collision(body_a, body_b);
+                    // collision_info = collision::check_concave_collision(body_a, body_b);
                 } else {
                     // Check collision with GJK algorithm
                     collision_info = collision::check_convex_collision(&body_a.collider, &body_b.collider, epa:true);
@@ -249,8 +249,8 @@ fn void PhysicsWorld.run_step(&self, Number time, uint step_count = 20) {
                 if (collision_info.collided) {
                     // Create collision, so distance constraint can be created for it later
                     Collision collision = {
-                        .a = pair.first,
-                        .b = pair.second,
+                        .a = pair.a,
+                        .b = pair.b,
                         .normal = collision_info.normal,
                         .contact = collision_info.contact_points,
                         .depth = collision_info.depth,
@@ -359,12 +359,12 @@ fn void PhysicsWorld.solve_constraint(&self, Constraint* constraint) @local {
     Vec3* cache = constraint.impulse_cache;
 
     // Total velocity diffence (angular + linear)
-    Number relative_velocity = constraint.relative_velocity();
+    float relative_velocity = constraint.relative_velocity();
 
     // assert(relative_velocity < 100000, "Velocity to high, error with bodies %s %s", a.id, b.id);
 
     // 2. Calculate Lambda (The corrective impulse magnitude)
-    Number lambda = -(relative_velocity + constraint.bias + constraint.bounce) * constraint.effective_mass;
+    float lambda = -(relative_velocity + constraint.bias + constraint.bounce) * constraint.effective_mass;
 
     if (constraint.friction != 0) {
         float max_friction = constraint.friction * cache.x;
@@ -373,10 +373,10 @@ fn void PhysicsWorld.solve_constraint(&self, Constraint* constraint) @local {
     }
 
     // Todo: fix hot starting
-    Number old_impulse = cache[0][constraint.impulse_offset];
+    float old_impulse = cache[0][constraint.impulse_offset];
 
     // Apply min / max impulse constraints to the new impulse
-    Number new_impulse = math::max(constraint.min, math::min(lambda + old_impulse, constraint.max));
+    float new_impulse = math::max(constraint.min, math::min(lambda + old_impulse, constraint.max));
 
     // Store impulse to it's cache
     cache[0][constraint.impulse_offset] = new_impulse;
@@ -395,7 +395,7 @@ fn void PhysicsWorld.solve_constraint(&self, Constraint* constraint) @local {
     }       
 }
 
-fn Number Constraint.relative_velocity(self) {
+fn float Constraint.relative_velocity(self) {
     Rigidbody* a = self.body_a;
     Rigidbody* b = self.body_b;
     return self.linear_a.dot(a.linear_velocity) 
@@ -404,25 +404,25 @@ fn Number Constraint.relative_velocity(self) {
             + self.angular_b.dot(b.angular_velocity);
 }
 
-fn void Collision.create_constraint(collision, PhysicsWorld* world, Number dt) @local {
+fn void Collision.create_constraint(collision, PhysicsWorld* world, float dt) @local {
     Rigidbody* a = world.find_body(collision.a)!!;
     Rigidbody* b = world.find_body(collision.b)!!;
     Vec3 normal = collision.normal.normalize();
 
     Vec3* impulse_cache = world.contact_cache.get_ref({collision.a, collision.b})!!;
 
-    Number inverse_mass_sum = a.inverse_mass + b.inverse_mass;
-    Number restitution = math::max(a.material.restitution, b.material.restitution);      
-    Number static_friction = a.material.static_friction * b.material.static_friction;
+    float inverse_mass_sum = a.inverse_mass + b.inverse_mass;
+    float restitution = math::max(a.material.restitution, b.material.restitution);      
+    float static_friction = a.material.static_friction * b.material.static_friction;
 
     Vec3 rA = collision.contact[0] - a.collider.translation;
     Vec3 rB = collision.contact[1] - b.collider.translation;
     
-    Number beta = 0.2f;
-    Number slop = 0.01f;
+    float beta = 0.2f;
+    float slop = 0.01f;
     int impulse_dir = math::min(a.impulse_dir, b.impulse_dir);
 
-    Number bias = ((beta / dt) * math::max(collision.depth - slop, 0.0f)) * impulse_dir;
+    float bias = ((beta / dt) * math::max(collision.depth - slop, 0.0f)) * impulse_dir;
 
     float normal_inertia;
     if (!a.is_static) normal_inertia += a.get_intertia(rA, -normal);
@@ -449,7 +449,7 @@ fn void Collision.create_constraint(collision, PhysicsWorld* world, Number dt) @
         .impulse_offset = 0,
     };
 
-    Number relative_velocity = normal_constraint.relative_velocity();
+    float relative_velocity = normal_constraint.relative_velocity();
 
     normal_constraint.bounce = (relative_velocity * restitution);
 
