@@ -20,12 +20,12 @@ struct HullFace @local {
     List{int} outside;    // Points outside this face
 }
 
-fn void HullFace.free(HullFace* self) {
+fn void HullFace.free(&self) {
     self.outside.free();
 }
 
 // Compute face normal and distance from 3 points
-fn void HullFace.compute_plane(HullFace* self, Vec3[] points) {
+fn void HullFace.compute_plane(&self, Vec3[] points) {
     Vec3 a = points[self.vertices[0]];
     Vec3 b = points[self.vertices[1]];
     Vec3 c = points[self.vertices[2]];
@@ -37,7 +37,7 @@ fn void HullFace.compute_plane(HullFace* self, Vec3[] points) {
 }
 
 // Signed distance from point to face plane
-fn double HullFace.point_distance(HullFace* self, Vec3 p) {
+fn double HullFace.point_distance(&self, Vec3 p) {
     return self.normal.dot(p) - self.distance;
 }
 

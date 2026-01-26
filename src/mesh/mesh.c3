@@ -1,6 +1,5 @@
 module collision;
-import std::math;
-import std::collections::list;
+import std::math, std::collections::list;
 
 
 // // 3D Vector structure
@@ -13,7 +12,7 @@ fn bool Vec3.equals(Vec3* self, Vec3 v) {
 }
 
 // Triangle structure
-alias Triangle = int[<3>];
+alias Triangle = uint[<3>];
 
 fn Vec3 Triangle.get_normal(Triangle* self, Vec3[] vertices) {
     Vec3 e1 = vertices[self.y] - vertices[self.x];
@@ -32,17 +31,24 @@ fn double Triangle.get_area(Triangle* self, Vec3[] vertices) {
 }
 
 // Mesh structure
-struct Mesh {
+struct Mesh (CollisionShape) {
     List{Vec3} vertices;
     List{Triangle} triangles;
 }
 
-fn void Mesh.free(Mesh* self) {
+fn Mesh create_mesh(Vec3[] vertices, uint[] indices) {
+	Mesh mesh;
+	mesh.vertices.push_all(vertices);
+	mesh.set_indices(indices);
+	return mesh;
+}
+
+fn void Mesh.free(&self) @dynamic {
     self.vertices.free();
     self.triangles.free();
 }
 
-fn void Mesh.add_triangle(Mesh* self, Vec3 v0, Vec3 v1, Vec3 v2) {
+fn void Mesh.add_triangle(&self, Vec3 v0, Vec3 v1, Vec3 v2) {
     int idx0 = (int)self.vertices.len();
     self.vertices.push(v0);
     self.vertices.push(v1);
@@ -51,14 +57,13 @@ fn void Mesh.add_triangle(Mesh* self, Vec3 v0, Vec3 v1, Vec3 v2) {
 }
 
 // Load from flat index array (GLTF-style)
-fn void Mesh.set_indices(Mesh* self, int[] indices) {
+fn void Mesh.set_indices(&self, uint[] indices) {
     self.triangles.clear();
     for (usz i = 0; i + 2 < indices.len; i += 3) {
         self.triangles.push({indices[i], indices[i+1], indices[i+2]});
     }
 }
-
-fn Vec3 Mesh.get_center(Mesh* self) {
+fn Vec3 Mesh.get_center(&self) {
     Vec3 center = {0, 0, 0};
     foreach (v : self.vertices) {
         center += v;
@@ -66,7 +71,7 @@ fn Vec3 Mesh.get_center(Mesh* self) {
     return center / self.vertices.len();
 }
 
-fn double Mesh.get_volume(Mesh* self) {
+fn double Mesh.get_volume(&self) {
     double volume = 0.0;
     
     foreach (tri : self.triangles) {
@@ -80,7 +85,7 @@ fn double Mesh.get_volume(Mesh* self) {
     return math::abs(volume);
 }
 
-fn bool Mesh.is_convex(Mesh* self) {
+fn bool Mesh.is_convex(&self) {
     if (self.triangles.len() < 4) return true;
 
     const double EPSILON = Vec3.sizeof == 4 ? 1e-4 : 1e-6;
@@ -101,6 +106,101 @@ fn bool Mesh.is_convex(Mesh* self) {
     
     return true;
 }
+
+<*
+ @require !self.vertices.is_empty() : `Vertices should not be empty`
+*>
+fn Aabb3 Mesh.get_aabb(&self) @dynamic {
+    Vec3 min = {float.max, float.max, float.max};
+    Vec3 max = {-float.max, -float.max, -float.max};
+
+    foreach (point: self.vertices) {
+        min.x = math::min(point.x, min.x);
+        min.y = math::min(point.y, min.y);
+        min.z = math::min(point.z, min.z);
+
+        max.x = math::max(point.x, max.x);
+        max.y = math::max(point.y, max.y);
+        max.z = math::max(point.z, max.z);
+	}
+
+    return {
+        min,
+        max
+    };
+}
+
+fn Vec3 Mesh.furthest_point(&self, Vec3 direction) @dynamic {
+    Vec3 furthest_point;
+    float max_distance = -float.max;
+
+	foreach (point: self.vertices) {
+		float distance = point.dot(direction);
+        if (distance > max_distance) {
+            max_distance = distance;
+            furthest_point = point;
+        }
+	}
+
+    return furthest_point;
+}
+
+fn Vec3 Mesh.center_of_mass(self) {
+    float total_detJ = 0;
+    Vec3 weighted_com = {0, 0, 0};
+    Vec3 final_com = {0, 0, 0};
+
+	foreach (triangle: self.triangles) {
+		Vec3 v1 = self.vertices[triangle.x].xyz;
+        Vec3 v2 = self.vertices[triangle.y].xyz;
+        Vec3 v3 = self.vertices[triangle.z].xyz;
+
+        total_detJ += v1.dot(v2.cross(v3));
+
+        weighted_com.x += total_detJ * (v1.x + v2.x + v3.x);
+        weighted_com.y += total_detJ * (v1.y + v2.y + v3.y);
+        weighted_com.z += total_detJ * (v1.z + v2.z + v3.z);
+	}
+    
+    if (math::abs(total_detJ) > VEC_EPSILON) final_com = 0.25 * weighted_com / total_detJ;
+
+    return final_com;
+}
+
+fn Matrix3f Mesh.inertia_tensor(&self, float mass) @dynamic {
+    Matrix3f inertia = MATRIX3F_IDENTITY;
+
+    float density = 1.0;
+
+    Vec3 c = self.center_of_mass();
+
+    foreach (triangle: self.triangles) {
+		Vec3 v1 = self.vertices[triangle.x].xyz;
+        Vec3 v2 = self.vertices[triangle.y].xyz;
+        Vec3 v3 = self.vertices[triangle.z].xyz;
+
+        float tetra_mass;
+        Matrix3f tetra_I_origin = MATRIX3F_IDENTITY;
+
+        inertia += compute_origin(v1, v2, v3, density);
+	}
+
+    inertia.m00 -= mass * (c.y * c.y + c.z * c.z);
+    inertia.m11 -= mass * (c.x * c.x + c.z * c.z);
+    inertia.m22 -= mass * (c.x * c.x + c.y * c.y);
+
+    inertia.m01 -= mass * (-c.x * c.y);
+    inertia.m02 -= mass * (-c.x * c.z);
+    inertia.m12 -= mass * (-c.y * c.z);
+    
+    inertia.m10 -= mass * (-c.y * c.x);
+    inertia.m20 -= mass * (-c.z * c.x);
+    inertia.m21 -= mass * (-c.z * c.y);
+
+    return inertia;
+}
+
+fn ShapeType Mesh.get_type(&self) @dynamic => ShapeType.CONVEX;
 
 
 // Plane structure for clipping
@@ -123,7 +223,7 @@ fn Plane Plane.from_points(&self, Vec3 p0, Vec3 p1, Vec3 p2) {
 }
 
 // MeshClipper functions
-fn void clip_triangle(Mesh* mesh, Triangle tri, Plane plane, Mesh* pos_mesh, Mesh* neg_mesh) {
+fn void clip_triangle(Mesh* mesh, Triangle tri, Plane plane, Mesh* pos_mesh, Mesh* neg_mesh) @local {
     Vec3 v0 = mesh.vertices[tri.x];
     Vec3 v1 = mesh.vertices[tri.y];
     Vec3 v2 = mesh.vertices[tri.z];
@@ -155,7 +255,7 @@ fn void clip_triangle(Mesh* mesh, Triangle tri, Plane plane, Mesh* pos_mesh, Mes
     }
 }
 
-fn void clip_mesh(Mesh* mesh, Plane plane, Mesh* pos_mesh, Mesh* neg_mesh) {
+fn void clip_mesh(Mesh* mesh, Plane plane, Mesh* pos_mesh, Mesh* neg_mesh) @local {
     foreach (tri : mesh.triangles) {
         clip_triangle(mesh, tri, plane, pos_mesh, neg_mesh);
     }
@@ -176,12 +276,12 @@ const DecomposeParameters DEFAULT_PARAMETERS = {
 	.max_depth = 10
 };
 
-struct MeshNode {
+struct MeshNode @local {
     Mesh mesh;
     int depth;
 }
 
-fn Plane find_best_split_plane(Mesh* mesh) {
+fn Plane find_best_split_plane(Mesh* mesh) @local {
     if (mesh.triangles.len() == 0) {
         return create_plane({1, 0, 0}, 0);
     }
@@ -215,7 +315,6 @@ fn List{Mesh} decompose(Mesh* mesh, DecomposeParameters params = DEFAULT_PARAMET
     
     // Simple queue using List
     List{MeshNode} queue;
- 
     defer queue.free();
     
     MeshNode start_node = { *mesh, 0 };
@@ -258,4 +357,48 @@ fn List{Mesh} decompose(Mesh* mesh, DecomposeParameters params = DEFAULT_PARAMET
     }
     
     return result;
+}
+
+
+fn Matrix3f compute_origin(Vec3 a, Vec3 b, Vec3 c, float density) @local {
+    Matrix3f inertia_tensor;
+
+    float detJ = a.dot(b.cross(c));
+
+    float v_mult_diag = (density * detJ) / (float)60.0;
+    float v_mult_off_diag = (density * detJ) / (float)120.0;
+
+    // Diagonal elements (Moments of Inertia)
+    inertia_tensor.m00 = v_mult_diag * (
+        (a.y*a.y + a.y*b.y + b.y*b.y + a.y*c.y + b.y*c.y + c.y*c.y) +
+        (a.z*a.z + a.z*b.z + b.z*b.z + a.z*c.z + b.z*c.z + c.z*c.z)
+    );
+
+    inertia_tensor.m11 = v_mult_diag * (
+        (a.x*a.x + a.x*b.x + b.x*b.x + a.x*c.x + b.x*c.x + c.x*c.x) +
+        (a.z*a.z + a.z*b.z + b.z*b.z + a.z*c.z + b.z*c.z + c.z*c.z)
+    );
+
+    inertia_tensor.m22 = v_mult_diag * (
+        (a.x*a.x + a.x*b.x + b.x*b.x + a.x*c.x + b.x*c.x + c.x*c.x) +
+        (a.y*a.y + a.y*b.y + b.y*b.y + a.y*c.y + b.y*c.y + c.y*c.y)
+    );
+
+    inertia_tensor.m01 = -v_mult_off_diag * (
+        (2*a.x*a.y + b.x*a.y + c.x*a.y) + (a.x*b.y + 2*b.x*b.y + c.x*b.y) + (a.x*c.y + b.x*c.y + 2*c.x*c.y)
+    );
+
+    inertia_tensor.m02 = -v_mult_off_diag * (
+        (2*a.x*a.z + b.x*a.z + c.x*a.z) + (a.x*b.z + 2*b.x*b.z + c.x*b.z) + (a.x*c.z + b.x*c.z + 2*c.x*c.z)
+    );
+
+    inertia_tensor.m12 = -v_mult_off_diag * (
+        (2*a.y*a.z + b.y*a.z + c.y*a.z) + (a.y*b.z + 2*b.y*b.z + c.y*b.z) + (a.y*c.z + b.y*c.z + 2*c.y*c.z)
+    );
+
+    inertia_tensor.m10 = inertia_tensor.m01;
+    inertia_tensor.m20 = inertia_tensor.m02;
+    inertia_tensor.m21 = inertia_tensor.m12;
+
+    return inertia_tensor;
 }
