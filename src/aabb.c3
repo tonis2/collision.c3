@@ -82,6 +82,8 @@ fn Aabb3 Aabb3.scale(self, Vec3 scale) @operator(*) {
     };
 }
 
+// Transform AABB from local space to world space
+// world = rotation * (local * scale) + translation
 fn Aabb3 Aabb3.transform(&self, Vec3 translation = {0, 0, 0}, Vec3 scale = {1, 1, 1}, Quaternionf rotation = {0, 0, 0, 1}, bool skip_rotation = false)
 {
     Vec3[8] corners = {
@@ -94,7 +96,7 @@ fn Aabb3 Aabb3.transform(&self, Vec3 translation = {0, 0, 0}, Vec3 scale = {1, 1
         {self.min.x, self.max.y, self.max.z},
         self.max
     };
-    
+
     Vec3 new_min = rotation * (corners[0] * scale) + translation;
     Vec3 new_max = rotation * (corners[7] * scale) + translation;
 
@@ -109,8 +111,36 @@ fn Aabb3 Aabb3.transform(&self, Vec3 translation = {0, 0, 0}, Vec3 scale = {1, 1
         new_max.y = math::max(point.y, new_max.y);
         new_max.z = math::max(point.z, new_max.z);
     }
-    
+
     return {new_min, new_max};
+}
+
+// Transform AABB from world space to local space (inverse of transform)
+// local = (inv_rot * (world - translation)) * inv_scale
+fn Aabb3 Aabb3.inverse_transform(&self, Vec3 translation = {0, 0, 0}, Vec3 scale = {1, 1, 1}, Quaternionf rotation = {0, 0, 0, 1})
+{
+    Quaternionf inv_rot = rotation.conjugate();
+    Vec3 inv_scale = { 1.0f / scale.x, 1.0f / scale.y, 1.0f / scale.z };
+
+    Vec3[8] corners = {
+        self.min,
+        {self.max.x, self.min.y, self.min.z},
+        {self.min.x, self.max.y, self.min.z},
+        {self.min.x, self.min.y, self.max.z},
+        {self.max.x, self.max.y, self.min.z},
+        {self.max.x, self.min.y, self.max.z},
+        {self.min.x, self.max.y, self.max.z},
+        self.max
+    };
+
+    Aabb3 local_aabb = NEW_AABB3;
+
+    foreach (corner : corners) {
+        Vec3 local_pt = (inv_rot * (corner - translation)) * inv_scale;
+        local_aabb.expand_by_point(local_pt);
+    }
+
+    return local_aabb;
 }
 
 fn Aabb3 Aabb3.child_bounds(self, uint index) {

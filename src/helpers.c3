@@ -26,7 +26,7 @@ struct HitInfo {
     bool collided;
     float depth;
     Vec3 normal;
-    Triangle triangle;
+    TriangleVerts triangle;
 }
 
 

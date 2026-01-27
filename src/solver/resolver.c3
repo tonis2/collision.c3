@@ -62,7 +62,6 @@ struct Material {
 
 struct Rigidbody {
     inline TransformedShape collider;
-    int bvh_node;
     usz id;
 
     float sleep_timer;
@@ -89,9 +88,6 @@ struct Rigidbody {
     //Vec3 inertia_diagonal;
     //QuaternionValue inertia_orientation;
     Matrix3f inertia;
-
-    // Compound collision - convex decomposition parts for concave meshes
-    List{Mesh} convex_parts;
 }
 
 struct PhysicsWorld {
@@ -107,11 +103,6 @@ struct PhysicsWorld {
 }
 
 fn void PhysicsWorld.free(&self) {
-
-	self.bodies.@each(;key, body) {
-		body.free();
-	};
-
     self.bodies.free();
     self.collisions.free();
     self.spatial_map.free();
@@ -153,10 +144,12 @@ fn void? PhysicsWorld.add_constraint(&self, GenericJoint3D joint) {
 fn void? PhysicsWorld.add_body(&self, Rigidbody body) {
     body.is_static = body.mass == 0;
     body.inverse_mass = !body.is_static ? 1.0f / body.mass : 0;
-   
+
     body.impulse_dir = (self.gravity * body.gravity_factor).z > 0 ? 1 : -1;
-	
+
+    // Compute AABB from collider
     body.aabb = body.collider.get_aabb();
+
     body.transformed_aabb = body.get_transformed_aabb();
     if (!body.is_static) body.inertia = body.aabb.scale(body.collider.scale).inertia_tensor(body.mass).inverse()!!;
 
@@ -175,14 +168,8 @@ fn void? PhysicsWorld.add_body(&self, Rigidbody body) {
 }
 
 fn Aabb3 Rigidbody.get_transformed_aabb(&self) {
-    bool skip_rotation = self.collider.get_type() == ShapeType.SPHERE;
-    return self.aabb.transform(translation: self.collider.translation, scale: self.collider.scale, rotation: self.collider.rotation, skip_rotation: skip_rotation);
-} 
-
-// fn void? PhysicsWorld.add_bvh_node(&self, Rigidbody body, Aabb3 aabb) {
-//     self.bodies.push(body);
-//     self.spatial_map.insert(aabb, body.id)!;
-// }
+    return self.aabb.transform(translation: self.collider.translation, scale: self.collider.scale, rotation: self.collider.rotation);
+}
 
 fn Matrix3f Rigidbody.get_inverse_world_inertia(self) {
     if (self.is_static) return MATRIX3F_IDENTITY;
@@ -222,22 +209,14 @@ fn void Rigidbody.stop_sleeping(&self) {
 }
 fn bool Rigidbody.is_active(self) => self.sleeping == false && self.is_static == false;
 
-// Set up convex decomposition for concave meshes
-fn void Rigidbody.set_convex_parts(&self, Mesh* mesh, DecomposeParameters params = DEFAULT_PARAMETERS) {
-    // Free existing parts if any
-   	self.free();
-    // Decompose the mesh into convex parts
-    self.convex_parts = decompose(mesh, params);
-}
 
-fn void Rigidbody.free(&self) {
-    foreach (&part : self.convex_parts) {
-        part.free();
+fn bool Rigidbody.has_mesh_bvh(&self) {
+    if (self.collider.get_type() == ShapeType.CONVEX) {
+        Mesh* mesh = (Mesh*)self.collider.shape;
+        return mesh.has_bvh();
     }
-    self.convex_parts.free();
+    return false;
 }
-
-fn bool Rigidbody.has_convex_parts(self) => self.convex_parts.len() > 0;
 
 <*
  @require self.bodies.len() > 0 : `Must have some bodies to simulate`
@@ -260,13 +239,13 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 20) {
             if (body_b.sleeping && body_a.is_active()) body_b.stop_sleeping();
 
             if (body_a.is_active() || body_b.is_active()) {
-                // Check for compound collisions (convex decomposition)
-                bool a_has_parts = body_a.convex_parts.len() > 0;
-                bool b_has_parts = body_b.convex_parts.len() > 0;
+                // Check for BVH mesh collisions
+                bool a_has_bvh = body_a.has_mesh_bvh();
+                bool b_has_bvh = body_b.has_mesh_bvh();
 
-                if (a_has_parts || b_has_parts) {
-                    // Compound collision - iterate through all convex parts
-                    self.check_compound_collision(body_a, body_b, pair);
+                if (a_has_bvh || b_has_bvh) {
+                    // BVH-accelerated mesh collision
+                    self.check_bvh_collision(body_a, body_b, pair);
                 } else {
                     // Check collision with GJK algorithm (simple convex vs convex)
                     CollisionInfo collision_info = collision::check_convex_collision(&body_a.collider, &body_b.collider, epa:true);
@@ -375,137 +354,142 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 20) {
     }
 }
 
-// Temporary storage for collecting compound collision contacts
-struct CompoundContact @local {
-    Vec3 normal;
-    Vec3[2] contact;
-    float depth;
-}
+// Check collisions using triangle BVH from Mesh
+// Queries BVH to find potentially colliding triangles, then runs GJK/EPA
+fn void PhysicsWorld.check_bvh_collision(&self, Rigidbody* body_a, Rigidbody* body_b, Pair pair) @local {
+    bool a_has_bvh = body_a.has_mesh_bvh();
+    bool b_has_bvh = body_b.has_mesh_bvh();
 
-// Check collisions between compound bodies (bodies with convex_parts)
-// Collects all contacts and merges them into a single collision
-fn void PhysicsWorld.check_compound_collision(&self, Rigidbody* body_a, Rigidbody* body_b, Pair pair) @local {
-    List{CompoundContact} contacts;
-    defer contacts.free();
+    // Find deepest contact
+    Vec3 best_normal;
+    Vec3[2] best_contact;
+    float max_depth = 0;
 
-    bool a_has_parts = body_a.convex_parts.len() > 0;
-    bool b_has_parts = body_b.convex_parts.len() > 0;
+    if (a_has_bvh && !b_has_bvh) {
+        // Body A has mesh BVH, body B is convex
+        Mesh* mesh_a = (Mesh*)body_a.collider.shape;
 
-    // Collect all contacts from part combinations
-    if (a_has_parts && b_has_parts) {
-        foreach (&part_a : body_a.convex_parts) {
-            TransformedShape shape_a = {
+        // Transform body_b's AABB to body_a's local space for BVH query
+        Aabb3 b_local_aabb = body_b.transformed_aabb.inverse_transform(
+            body_a.collider.translation,
+            body_a.collider.scale,
+            body_a.collider.rotation
+        );
+
+        // Query BVH for overlapping triangles
+        List{TriangleVerts} triangles;
+        defer triangles.free();
+        mesh_a.bvh.query_all_triangles(b_local_aabb, &triangles);
+
+        foreach (tri : triangles) {
+            // Create mesh from triangle vertices for GJK
+            Mesh tri_mesh;
+            tri_mesh.vertices.push(tri[0]);
+            tri_mesh.vertices.push(tri[1]);
+            tri_mesh.vertices.push(tri[2]);
+            tri_mesh.triangles.push({0, 1, 2});
+            defer tri_mesh.free();
+
+            TransformedShape tri_shape = {
                 .translation = body_a.collider.translation,
                 .scale = body_a.collider.scale,
                 .rotation = body_a.collider.rotation,
-                .shape = part_a,
+                .shape = &tri_mesh,
             };
 
-            foreach (&part_b : body_b.convex_parts) {
-                TransformedShape shape_b = {
-                    .translation = body_b.collider.translation,
-                    .scale = body_b.collider.scale,
-                    .rotation = body_b.collider.rotation,
-                    .shape = part_b,
-                };
-
-                collect_part_contact(&shape_a, &shape_b, &contacts);
+            CollisionInfo info = collision::check_convex_collision(&tri_shape, &body_b.collider, epa:true);
+            if (info.collided && info.depth > max_depth) {
+                max_depth = info.depth;
+                best_normal = info.normal;
+                best_contact = info.contact_points;
             }
         }
-    } else if (a_has_parts) {
-        foreach (&part_a : body_a.convex_parts) {
-            TransformedShape shape_a = {
-                .translation = body_a.collider.translation,
-                .scale = body_a.collider.scale,
-                .rotation = body_a.collider.rotation,
-                .shape = part_a,
-            };
+    } else if (b_has_bvh && !a_has_bvh) {
+        // Body B has mesh BVH, body A is convex
+        Mesh* mesh_b = (Mesh*)body_b.collider.shape;
 
-            collect_part_contact(&shape_a, &body_b.collider, &contacts);
-        }
-    } else {
-        foreach (&part_b : body_b.convex_parts) {
-            TransformedShape shape_b = {
+        Aabb3 a_local_aabb = body_a.transformed_aabb.inverse_transform(
+            body_b.collider.translation,
+            body_b.collider.scale,
+            body_b.collider.rotation
+        );
+
+        List{TriangleVerts} triangles;
+        defer triangles.free();
+        mesh_b.bvh.query_all_triangles(a_local_aabb, &triangles);
+
+        foreach (tri : triangles) {
+            Mesh tri_mesh;
+            tri_mesh.vertices.push(tri[0]);
+            tri_mesh.vertices.push(tri[1]);
+            tri_mesh.vertices.push(tri[2]);
+            tri_mesh.triangles.push({0, 1, 2});
+            defer tri_mesh.free();
+
+            TransformedShape tri_shape = {
                 .translation = body_b.collider.translation,
                 .scale = body_b.collider.scale,
                 .rotation = body_b.collider.rotation,
-                .shape = part_b,
+                .shape = &tri_mesh,
             };
 
-            collect_part_contact(&body_a.collider, &shape_b, &contacts);
+            CollisionInfo info = collision::check_convex_collision(&body_a.collider, &tri_shape, epa:true);
+            if (info.collided && info.depth > max_depth) {
+                max_depth = info.depth;
+                best_normal = info.normal;
+                best_contact = info.contact_points;
+            }
+        }
+    } else if (a_has_bvh && b_has_bvh) {
+        // Both have BVH - use body_a's BVH and check triangles against body_b's collider
+        Mesh* mesh_a = (Mesh*)body_a.collider.shape;
+
+        Aabb3 b_local_aabb = body_b.transformed_aabb.inverse_transform(
+            body_a.collider.translation,
+            body_a.collider.scale,
+            body_a.collider.rotation
+        );
+
+        List{TriangleVerts} triangles;
+        defer triangles.free();
+        mesh_a.bvh.query_all_triangles(b_local_aabb, &triangles);
+
+        foreach (tri : triangles) {
+            Mesh tri_mesh;
+            tri_mesh.vertices.push(tri[0]);
+            tri_mesh.vertices.push(tri[1]);
+            tri_mesh.vertices.push(tri[2]);
+            tri_mesh.triangles.push({0, 1, 2});
+            defer tri_mesh.free();
+
+            TransformedShape tri_shape = {
+                .translation = body_a.collider.translation,
+                .scale = body_a.collider.scale,
+                .rotation = body_a.collider.rotation,
+                .shape = &tri_mesh,
+            };
+
+            CollisionInfo info = collision::check_convex_collision(&tri_shape, &body_b.collider, epa:true);
+            if (info.collided && info.depth > max_depth) {
+                max_depth = info.depth;
+                best_normal = info.normal;
+                best_contact = info.contact_points;
+            }
         }
     }
 
-    // Merge contacts into a single collision
-    if (contacts.len() > 0) {
-        Collision merged = merge_compound_contacts(&contacts, pair);
-        self.collisions.push(merged);
-    }
-}
-
-fn void collect_part_contact(TransformedShape* shape_a, TransformedShape* shape_b, List{CompoundContact}* contacts) @local {
-    CollisionInfo info = collision::check_convex_collision(shape_a, shape_b, epa:true);
-
-    if (info.collided) {
-        contacts.push({
-            .normal = info.normal,
-            .contact = info.contact_points,
-            .depth = info.depth,
+    // Create collision with actual contact points from GJK/EPA
+    if (max_depth > 0) {
+        self.collisions.push({
+            .a = pair.a,
+            .b = pair.b,
+            .normal = best_normal,
+            .contact = best_contact,
+            .depth = max_depth,
         });
     }
 }
 
-// Merge multiple contacts into a single collision using depth-weighted average
-fn Collision merge_compound_contacts(List{CompoundContact}* contacts, Pair pair) @local {
-    if (contacts.len() == 1) {
-        CompoundContact c = contacts.get(0);
-        return {
-            .a = pair.a,
-            .b = pair.b,
-            .normal = c.normal,
-            .contact = c.contact,
-            .depth = c.depth,
-        };
-    }
-
-    // Find deepest contact for the primary normal direction
-    float max_depth = 0;
-    Vec3 primary_normal;
-    foreach (&c : *contacts) {
-        if (c.depth > max_depth) {
-            max_depth = c.depth;
-            primary_normal = c.normal;
-        }
-    }
-
-    // Weighted average of contact points (weighted by depth)
-    Vec3 avg_contact_a = {0, 0, 0};
-    Vec3 avg_contact_b = {0, 0, 0};
-    float total_weight = 0;
-
-    foreach (&c : *contacts) {
-        // Only merge contacts with similar normals (within ~45 degrees)
-        if (c.normal.dot(primary_normal) > 0.7) {
-            float weight = c.depth;
-            avg_contact_a += c.contact[0] * weight;
-            avg_contact_b += c.contact[1] * weight;
-            total_weight += weight;
-        }
-    }
-
-    if (total_weight > 0) {
-        avg_contact_a /= total_weight;
-        avg_contact_b /= total_weight;
-    }
-
-    return {
-        .a = pair.a,
-        .b = pair.b,
-        .normal = primary_normal.normalize(),
-        .contact = { avg_contact_a, avg_contact_b },
-        .depth = max_depth,
-    };
-}
 
 <*
  @require constraint.body_a != constraint.body_b : `Collision bodies should not be same index`
