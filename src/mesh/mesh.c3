@@ -46,8 +46,6 @@ struct Mesh (CollisionShape) {
     List{Vec3} vertices;
     List{Triangle} triangles;
     TriBVHNode* bvh;
-    Vec3* bvh_verts;
-    usz bvh_vert_count;
 }
 
 fn usz? Mesh.to_format(&self, Formatter* formatter) @dynamic {
@@ -67,23 +65,17 @@ fn Mesh create_mesh(Vec3[] vertices, uint[] indices) {
 }
 
 // Build BVH tree for accelerated collision detection
+// Uses indexed mode - references mesh vertices directly without copying
 fn void Mesh.build_bvh(&self) {
     if (self.triangles.len() == 0) return;
     if (self.bvh != null) return;  // Already built
 
-    // Flatten indexed mesh to vertex array for BVH
-    usz tri_count = self.triangles.len();
-    self.bvh_vert_count = tri_count * 3;
-    self.bvh_verts = mem::new_array(Vec3, self.bvh_vert_count);
-
-    for (usz i = 0; i < tri_count; i++) {
-        Triangle tri = self.triangles[i];
-        self.bvh_verts[i * 3] = self.vertices[tri.x];
-        self.bvh_verts[i * 3 + 1] = self.vertices[tri.y];
-        self.bvh_verts[i * 3 + 2] = self.vertices[tri.z];
-    }
-
-    self.bvh = create_tri_bvh(self.bvh_verts, self.bvh_vert_count);
+    // Use indexed BVH - no vertex duplication
+    self.bvh = create_indexed_tri_bvh(
+        self.vertices.entries,
+        self.triangles.entries,
+        self.triangles.len()
+    );
 }
 
 fn bool Mesh.has_bvh(&self) => self.bvh != null;
@@ -92,11 +84,8 @@ fn void Mesh.free(&self) @dynamic {
     self.vertices.free();
     self.triangles.free();
     if (self.bvh != null) {
-        self.bvh.free();
+        self.bvh.free_indexed();
         mem::free(self.bvh);
-    }
-    if (self.bvh_verts != null) {
-        mem::free(self.bvh_verts);
     }
 }
 

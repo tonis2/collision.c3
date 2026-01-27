@@ -6,127 +6,6 @@ import std::collections::list;
 
 const int MAX_PARTS_PER_LEAF = 4;
 
-// Info about a convex part for BVH building
-struct PartInfo @local {
-    usz index;      // Index into convex_parts list
-    Vec3 centroid;
-    Aabb3 aabb;
-}
-
-// BVH Node for convex parts collision
-struct BVHNode {
-    Aabb3 aabb;
-    BVHNode* left;
-    BVHNode* right;
-    usz start;      // Start index in sorted parts array
-    usz count;      // Number of parts in this node (leaf only)
-}
-
-fn bool BVHNode.is_leaf(&self) => self.left == null && self.right == null;
-
-fn void BVHNode.free(&self) {
-    if (self.left != null) {
-        self.left.free();
-        mem::free(self.left);
-    }
-
-    if (self.right != null) {
-        self.right.free();
-        mem::free(self.right);
-    }
-}
-
-fn int compare_parts(PartInfo a, PartInfo b, usz* axis) @local {
-    float val_a, val_b;
-
-    if (*axis == 0) {
-        val_a = a.centroid.x;
-        val_b = b.centroid.x;
-    } else if (*axis == 1) {
-        val_a = a.centroid.y;
-        val_b = b.centroid.y;
-    } else {
-        val_a = a.centroid.z;
-        val_b = b.centroid.z;
-    }
-
-    if (val_a < val_b) return -1;
-    if (val_a > val_b) return 1;
-    return 0;
-}
-
-fn BVHNode* build_bvh_recursive(PartInfo* parts, usz[] indices, usz start, usz count) @local {
-    BVHNode* node = mem::new(BVHNode, { .start = start, .count = count, .aabb = NEW_AABB3 });
-
-    // Compute AABB for all parts in this node
-    for (usz i = start; i < start + count; i++) {
-        node.aabb.expand_by_aabb(parts[indices[i]].aabb);
-    }
-
-    // If few enough parts, make a leaf
-    if (count <= MAX_PARTS_PER_LEAF) {
-        return node;
-    }
-
-    // Find split axis using centroid bounds
-    Aabb3 centroid_aabb = NEW_AABB3;
-    for (usz i = start; i < start + count; i++) {
-        centroid_aabb.expand_by_point(parts[indices[i]].centroid);
-    }
-
-    usz split_axis = centroid_aabb.longest_axis();
-
-    // Sort parts along split axis using simple bubble sort (parts count is usually small)
-    for (usz i = start; i < start + count - 1; i++) {
-        for (usz j = start; j < start + count - 1 - (i - start); j++) {
-            if (compare_parts(parts[indices[j]], parts[indices[j + 1]], &split_axis) > 0) {
-                usz tmp = indices[j];
-                indices[j] = indices[j + 1];
-                indices[j + 1] = tmp;
-            }
-        }
-    }
-
-    // Split at midpoint
-    usz mid = start + count / 2;
-
-    node.left = build_bvh_recursive(parts, indices, start, mid - start);
-    node.right = build_bvh_recursive(parts, indices, mid, start + count - mid);
-    node.count = 0;  // Internal nodes have count = 0
-
-    return node;
-}
-
-// Query BVH for parts that potentially collide with given AABB
-// Returns indices of potentially colliding parts
-fn List{usz} BVHNode.query_aabb(&self, Aabb3 query_aabb, usz[] sorted_indices) {
-    List{usz} result;
-    self.query_aabb_recursive(query_aabb, sorted_indices, &result);
-    return result;
-}
-
-fn void BVHNode.query_aabb_recursive(&self, Aabb3 query_aabb, usz[] sorted_indices, List{usz}* result) @local {
-    // Early out if AABBs don't overlap
-    if (!self.aabb.collides(query_aabb)) {
-        return;
-    }
-
-    // If leaf, add all parts in this node
-    if (self.is_leaf()) {
-        for (usz i = self.start; i < self.start + self.count; i++) {
-            result.push(sorted_indices[i]);
-        }
-        return;
-    }
-
-    // Recurse into children
-    if (self.left != null) {
-        self.left.query_aabb_recursive(query_aabb, sorted_indices, result);
-    }
-    if (self.right != null) {
-        self.right.query_aabb_recursive(query_aabb, sorted_indices, result);
-    }
-}
 
 // ============================================================================
 // Triangle BVH for concave mesh collision (original implementation, restored)
@@ -146,9 +25,15 @@ struct TriBVHNode {
     Aabb3 aabb;
     TriBVHNode* left;
     TriBVHNode* right;
-    Vec3* positions;
-    usz start;      // Start triangle index
+
+    // For indexed mode (memory efficient)
+    Vec3* vertices;
+    Triangle* triangles;
+    usz* sorted_indices;  // Sorted triangle indices for this subtree
+
+    usz start;      // Start index in sorted_indices
     usz count;      // Number of triangles (leaf only)
+    bool indexed;   // True if using indexed mode
 }
 
 fn bool TriBVHNode.is_leaf(&self) => self.left == null && self.right == null;
@@ -163,6 +48,14 @@ fn void TriBVHNode.free(&self) {
         self.right.free();
         mem::free(self.right);
     }
+}
+
+// Free indexed BVH including the sorted_indices array (called on root only)
+fn void TriBVHNode.free_indexed(&self) {
+    if (self.indexed && self.sorted_indices != null) {
+        mem::free(self.sorted_indices);
+    }
+    self.free();
 }
 
 fn int compare_triangles(TriangleInfo a, TriangleInfo b, usz* split_axis) @local {
@@ -184,105 +77,6 @@ fn int compare_triangles(TriangleInfo a, TriangleInfo b, usz* split_axis) @local
     return 0;
 }
 
-// Create BVH tree from triangle mesh vertices
-// vertices: array of Vec3 positions (every 3 = one triangle)
-// count: total number of vertices (must be divisible by 3)
-fn TriBVHNode* create_tri_bvh(Vec3* vertices, usz count) {
-    if (vertices == null || count < 3) return null;
-
-    usz triangle_count = count / 3;
-    TriangleInfo* triangles = mem::new_array(TriangleInfo, triangle_count);
-
-    for (usz i = 0; i < triangle_count; i++) {
-        usz v_idx = i * 3;
-
-        Vec3 v0 = vertices[v_idx];
-        Vec3 v1 = vertices[v_idx + 1];
-        Vec3 v2 = vertices[v_idx + 2];
-
-        TriangleInfo triangle = {
-            .v0 = v_idx,
-            .v1 = v_idx + 1,
-            .v2 = v_idx + 2,
-            .centroid = (v0 + v1 + v2) / 3.0f,
-            .aabb = NEW_AABB3
-        };
-
-        triangle.aabb.expand_by_point(v0);
-        triangle.aabb.expand_by_point(v1);
-        triangle.aabb.expand_by_point(v2);
-
-        triangles[i] = triangle;
-    }
-
-    TriBVHNode* tree = build_tri_bvh_recursive(triangles, vertices, 0, triangle_count);
-
-    // Reorder vertex buffer for cache locality
-    Vec3* new_positions = mem::new_array(Vec3, count);
-
-    for (usz i = 0; i < triangle_count; i++) {
-        usz old_v0 = triangles[i].v0;
-        usz old_v1 = triangles[i].v1;
-        usz old_v2 = triangles[i].v2;
-
-        usz index = i * 3;
-        new_positions[index] = vertices[old_v0];
-        new_positions[index + 1] = vertices[old_v1];
-        new_positions[index + 2] = vertices[old_v2];
-    }
-
-    mem::copy(vertices, new_positions, Vec3.sizeof * count);
-    mem::free(new_positions);
-    mem::free(triangles);
-
-    remap_tri_bvh(tree, vertices);
-
-    return tree;
-}
-
-fn void remap_tri_bvh(TriBVHNode* node, Vec3* positions) @local {
-    node.positions = positions;
-    if (node.left != null) remap_tri_bvh(node.left, positions);
-    if (node.right != null) remap_tri_bvh(node.right, positions);
-}
-
-fn TriBVHNode* build_tri_bvh_recursive(TriangleInfo* triangles, Vec3* vertices, usz start, usz count) @local {
-    TriBVHNode* node = mem::new(TriBVHNode, { .start = start, .count = count, .aabb = NEW_AABB3 });
-
-    for (usz i = start; i < start + count; i++) {
-        node.aabb.expand_by_aabb(triangles[i].aabb);
-    }
-
-    if (count <= MAX_TRIS_PER_LEAF) {
-        return node;
-    }
-
-    Aabb3 centroid_aabb = NEW_AABB3;
-    for (usz i = start; i < start + count; i++) {
-        centroid_aabb.expand_by_point(triangles[i].centroid);
-    }
-
-    usz split_axis = centroid_aabb.longest_axis();
-
-    // Simple bubble sort for triangles
-    for (usz i = start; i < start + count - 1; i++) {
-        for (usz j = start; j < start + count - 1 - (i - start); j++) {
-            if (compare_triangles(triangles[j], triangles[j + 1], &split_axis) > 0) {
-                TriangleInfo tmp = triangles[j];
-                triangles[j] = triangles[j + 1];
-                triangles[j + 1] = tmp;
-            }
-        }
-    }
-
-    usz mid = start + count / 2;
-
-    node.left = build_tri_bvh_recursive(triangles, vertices, start, mid - start);
-    node.right = build_tri_bvh_recursive(triangles, vertices, mid, start + count - mid);
-    node.count = 0;
-
-    return node;
-}
 
 // Query triangle BVH with AABB, returns hit info with first colliding triangle
 fn HitInfo TriBVHNode.box_intersects(&self, Aabb3 aabb) {
@@ -294,11 +88,16 @@ fn HitInfo TriBVHNode.box_intersects(&self, Aabb3 aabb) {
 
     if (self.is_leaf()) {
         for (usz i = 0; i < self.count; i++) {
-            usz offset = (self.start + i) * 3;
+            Vec3 v0, v1, v2;
 
-            Vec3 v0 = self.positions[offset];
-            Vec3 v1 = self.positions[offset + 1];
-            Vec3 v2 = self.positions[offset + 2];
+            if (self.indexed) {
+                // Indexed mode: look up triangle indices, then vertex positions
+                usz tri_idx = self.sorted_indices[self.start + i];
+                Triangle tri = self.triangles[tri_idx];
+                v0 = self.vertices[tri.x];
+                v1 = self.vertices[tri.y];
+                v2 = self.vertices[tri.z];
+            }
 
             TriangleVerts triangle = { v0, v1, v2 };
 
@@ -336,11 +135,16 @@ fn void TriBVHNode.query_all_triangles(&self, Aabb3 aabb, List{TriangleVerts}* r
 
     if (self.is_leaf()) {
         for (usz i = 0; i < self.count; i++) {
-            usz offset = (self.start + i) * 3;
+            Vec3 v0, v1, v2;
 
-            Vec3 v0 = self.positions[offset];
-            Vec3 v1 = self.positions[offset + 1];
-            Vec3 v2 = self.positions[offset + 2];
+            if (self.indexed) {
+                // Indexed mode: look up triangle indices, then vertex positions
+                usz tri_idx = self.sorted_indices[self.start + i];
+                Triangle tri = self.triangles[tri_idx];
+                v0 = self.vertices[tri.x];
+                v1 = self.vertices[tri.y];
+                v2 = self.vertices[tri.z];
+            }
 
             TriangleVerts triangle = { v0, v1, v2 };
 
@@ -359,6 +163,101 @@ fn void TriBVHNode.query_all_triangles(&self, Aabb3 aabb, List{TriangleVerts}* r
     }
 }
 
+// ============================================================================
+// Indexed Triangle BVH (memory efficient - uses mesh vertices directly)
+// ============================================================================
+
+// Create indexed BVH tree from mesh vertices and triangles
+// Does NOT copy vertex data - uses pointers to existing mesh data
+
+<*
+ @require vertices != null : `Vertices must have values`
+ @require triangles != null : `Triangles must have values`
+ @require tri_count > 0 : `Triangles must have values`
+*>
+fn TriBVHNode* create_indexed_tri_bvh(Vec3* vertices, Triangle* triangles, usz tri_count) {
+    // Build triangle info for sorting
+    TriangleInfo* tri_info = mem::new_array(TriangleInfo, tri_count);
+    usz* sorted_indices = mem::new_array(usz, tri_count);
+
+    for (usz i = 0; i < tri_count; i++) {
+        Triangle tri = triangles[i];
+        Vec3 v0 = vertices[tri.x];
+        Vec3 v1 = vertices[tri.y];
+        Vec3 v2 = vertices[tri.z];
+
+        tri_info[i] = {
+            .v0 = i,  // Store triangle index, not vertex index
+            .v1 = 0,
+            .v2 = 0,
+            .centroid = (v0 + v1 + v2) / 3.0f,
+            .aabb = NEW_AABB3
+        };
+
+        tri_info[i].aabb.expand_by_point(v0);
+        tri_info[i].aabb.expand_by_point(v1);
+        tri_info[i].aabb.expand_by_point(v2);
+
+        sorted_indices[i] = i;
+    }
+
+    TriBVHNode* tree = build_indexed_bvh_recursive(tri_info, sorted_indices, vertices, triangles, 0, tri_count);
+
+    mem::free(tri_info);
+
+    // Propagate shared data to all nodes
+    set_indexed_bvh_data(tree, vertices, triangles, sorted_indices);
+
+    return tree;
+}
+
+fn void set_indexed_bvh_data(TriBVHNode* node, Vec3* vertices, Triangle* triangles, usz* sorted_indices) @local {
+    node.vertices = vertices;
+    node.triangles = triangles;
+    node.sorted_indices = sorted_indices;
+    node.indexed = true;
+    if (node.left != null) set_indexed_bvh_data(node.left, vertices, triangles, sorted_indices);
+    if (node.right != null) set_indexed_bvh_data(node.right, vertices, triangles, sorted_indices);
+}
+
+fn TriBVHNode* build_indexed_bvh_recursive(TriangleInfo* tri_info, usz* sorted_indices, Vec3* vertices, Triangle* triangles, usz start, usz count) @local {
+    TriBVHNode* node = mem::new(TriBVHNode, { .start = start, .count = count, .aabb = NEW_AABB3, .indexed = true });
+
+    for (usz i = start; i < start + count; i++) {
+        node.aabb.expand_by_aabb(tri_info[sorted_indices[i]].aabb);
+    }
+
+    if (count <= MAX_TRIS_PER_LEAF) {
+        return node;
+    }
+
+    Aabb3 centroid_aabb = NEW_AABB3;
+    for (usz i = start; i < start + count; i++) {
+        centroid_aabb.expand_by_point(tri_info[sorted_indices[i]].centroid);
+    }
+
+    usz split_axis = centroid_aabb.longest_axis();
+
+    // Sort indices by centroid along split axis
+    for (usz i = start; i < start + count - 1; i++) {
+        for (usz j = start; j < start + count - 1 - (i - start); j++) {
+            if (compare_triangles(tri_info[sorted_indices[j]], tri_info[sorted_indices[j + 1]], &split_axis) > 0) {
+                usz tmp = sorted_indices[j];
+                sorted_indices[j] = sorted_indices[j + 1];
+                sorted_indices[j + 1] = tmp;
+            }
+        }
+    }
+
+    usz mid = start + count / 2;
+
+    node.left = build_indexed_bvh_recursive(tri_info, sorted_indices, vertices, triangles, start, mid - start);
+    node.right = build_indexed_bvh_recursive(tri_info, sorted_indices, vertices, triangles, mid, start + count - mid);
+    node.count = 0;
+
+    return node;
+}
+
 // Ray intersection with triangle BVH
 fn HitInfo TriBVHNode.ray_intersects(&self, Ray ray) {
     HitInfo hit_info = { .collided = false };
@@ -371,11 +270,16 @@ fn HitInfo TriBVHNode.ray_intersects(&self, Ray ray) {
         float closest_t = float.max;
 
         for (usz i = 0; i < self.count; i++) {
-            usz offset = (self.start + i) * 3;
+            Vec3 v0, v1, v2;
 
-            Vec3 v0 = self.positions[offset];
-            Vec3 v1 = self.positions[offset + 1];
-            Vec3 v2 = self.positions[offset + 2];
+            if (self.indexed) {
+                // Indexed mode: look up triangle indices, then vertex positions
+                usz tri_idx = self.sorted_indices[self.start + i];
+                Triangle tri = self.triangles[tri_idx];
+                v0 = self.vertices[tri.x];
+                v1 = self.vertices[tri.y];
+                v2 = self.vertices[tri.z];
+            }
 
             TriangleVerts triangle = { v0, v1, v2 };
             HitInfo hit = triangle.intersect_ray(ray);
