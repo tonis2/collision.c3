@@ -360,121 +360,67 @@ fn void PhysicsWorld.check_bvh_collision(&self, Rigidbody* body_a, Rigidbody* bo
     bool a_has_bvh = body_a.has_mesh_bvh();
     bool b_has_bvh = body_b.has_mesh_bvh();
 
+    // Determine which body has the mesh BVH to query
+    // Prefer body_a's BVH if both have one
+    Rigidbody* mesh_body;
+    Rigidbody* other_body;
+    bool mesh_is_a;
+
+    if (a_has_bvh) {
+        mesh_body = body_a;
+        other_body = body_b;
+        mesh_is_a = true;
+    } else {
+        mesh_body = body_b;
+        other_body = body_a;
+        mesh_is_a = false;
+    }
+
+    Mesh* mesh = (Mesh*)mesh_body.collider.shape;
+
+    // Transform other body's AABB to mesh body's local space for BVH query
+    Aabb3 local_aabb = other_body.transformed_aabb.inverse_transform(
+        mesh_body.collider.translation,
+        mesh_body.collider.scale,
+        mesh_body.collider.rotation
+    );
+
+    // Query BVH for overlapping triangles
+    List{TriangleVerts} triangles;
+    defer triangles.free();
+    mesh.bvh.query_all_triangles(local_aabb, &triangles);
+
     // Find deepest contact
     Vec3 best_normal;
     Vec3[2] best_contact;
     float max_depth = 0;
 
-    if (a_has_bvh && !b_has_bvh) {
-        // Body A has mesh BVH, body B is convex
-        Mesh* mesh_a = (Mesh*)body_a.collider.shape;
+    foreach (tri : triangles) {
+        // Create mesh from triangle vertices for GJK
+        Mesh tri_mesh;
+		tri_mesh.vertices.push_all({tri[0], tri[1], tri[2]});
+        tri_mesh.triangles.push({0, 1, 2});
+        defer tri_mesh.free();
 
-        // Transform body_b's AABB to body_a's local space for BVH query
-        Aabb3 b_local_aabb = body_b.transformed_aabb.inverse_transform(
-            body_a.collider.translation,
-            body_a.collider.scale,
-            body_a.collider.rotation
-        );
+        TransformedShape tri_shape = {
+            .translation = mesh_body.collider.translation,
+            .scale = mesh_body.collider.scale,
+            .rotation = mesh_body.collider.rotation,
+            .shape = &tri_mesh,
+        };
 
-        // Query BVH for overlapping triangles
-        List{TriangleVerts} triangles;
-        defer triangles.free();
-        mesh_a.bvh.query_all_triangles(b_local_aabb, &triangles);
-
-        foreach (tri : triangles) {
-            // Create mesh from triangle vertices for GJK
-            Mesh tri_mesh;
-            tri_mesh.vertices.push(tri[0]);
-            tri_mesh.vertices.push(tri[1]);
-            tri_mesh.vertices.push(tri[2]);
-            tri_mesh.triangles.push({0, 1, 2});
-            defer tri_mesh.free();
-
-            TransformedShape tri_shape = {
-                .translation = body_a.collider.translation,
-                .scale = body_a.collider.scale,
-                .rotation = body_a.collider.rotation,
-                .shape = &tri_mesh,
-            };
-
-            CollisionInfo info = collision::check_convex_collision(&tri_shape, &body_b.collider, epa:true);
-            if (info.collided && info.depth > max_depth) {
-                max_depth = info.depth;
-                best_normal = info.normal;
-                best_contact = info.contact_points;
-            }
+        // Check collision with correct argument order
+        CollisionInfo info;
+        if (mesh_is_a) {
+            info = collision::check_convex_collision(&tri_shape, &other_body.collider, epa:true);
+        } else {
+            info = collision::check_convex_collision(&other_body.collider, &tri_shape, epa:true);
         }
-    } else if (b_has_bvh && !a_has_bvh) {
-        // Body B has mesh BVH, body A is convex
-        Mesh* mesh_b = (Mesh*)body_b.collider.shape;
 
-        Aabb3 a_local_aabb = body_a.transformed_aabb.inverse_transform(
-            body_b.collider.translation,
-            body_b.collider.scale,
-            body_b.collider.rotation
-        );
-
-        List{TriangleVerts} triangles;
-        defer triangles.free();
-        mesh_b.bvh.query_all_triangles(a_local_aabb, &triangles);
-
-        foreach (tri : triangles) {
-            Mesh tri_mesh;
-            tri_mesh.vertices.push(tri[0]);
-            tri_mesh.vertices.push(tri[1]);
-            tri_mesh.vertices.push(tri[2]);
-            tri_mesh.triangles.push({0, 1, 2});
-            defer tri_mesh.free();
-
-            TransformedShape tri_shape = {
-                .translation = body_b.collider.translation,
-                .scale = body_b.collider.scale,
-                .rotation = body_b.collider.rotation,
-                .shape = &tri_mesh,
-            };
-
-            CollisionInfo info = collision::check_convex_collision(&body_a.collider, &tri_shape, epa:true);
-            if (info.collided && info.depth > max_depth) {
-                max_depth = info.depth;
-                best_normal = info.normal;
-                best_contact = info.contact_points;
-            }
-        }
-    } else if (a_has_bvh && b_has_bvh) {
-        // Both have BVH - use body_a's BVH and check triangles against body_b's collider
-        Mesh* mesh_a = (Mesh*)body_a.collider.shape;
-
-        Aabb3 b_local_aabb = body_b.transformed_aabb.inverse_transform(
-            body_a.collider.translation,
-            body_a.collider.scale,
-            body_a.collider.rotation
-        );
-
-        List{TriangleVerts} triangles;
-        defer triangles.free();
-        mesh_a.bvh.query_all_triangles(b_local_aabb, &triangles);
-
-        foreach (tri : triangles) {
-            Mesh tri_mesh;
-            tri_mesh.vertices.push(tri[0]);
-            tri_mesh.vertices.push(tri[1]);
-            tri_mesh.vertices.push(tri[2]);
-            tri_mesh.triangles.push({0, 1, 2});
-            defer tri_mesh.free();
-
-            TransformedShape tri_shape = {
-                .translation = body_a.collider.translation,
-                .scale = body_a.collider.scale,
-                .rotation = body_a.collider.rotation,
-                .shape = &tri_mesh,
-            };
-
-            CollisionInfo info = collision::check_convex_collision(&tri_shape, &body_b.collider, epa:true);
-            if (info.collided && info.depth > max_depth) {
-                max_depth = info.depth;
-                best_normal = info.normal;
-                best_contact = info.contact_points;
-            }
+        if (info.collided && info.depth > max_depth) {
+            max_depth = info.depth;
+            best_normal = info.normal;
+            best_contact = info.contact_points;
         }
     }
 
