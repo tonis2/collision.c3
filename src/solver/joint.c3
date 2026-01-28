@@ -38,17 +38,17 @@ struct GenericJoint3D {
 
    float dampening;
    float stifness;
+
+   Vec3 impulse;
 }
 
-fn void GenericJoint3D.create_constraint(joint, PhysicsWorld* world, float dt) @local {
+fn void GenericJoint3D.create_constraint(&joint, PhysicsWorld* world, float dt) @local {
     Rigidbody* a = world.find_body(joint.body_a)!!;
     Rigidbody* b = world.find_body(joint.body_b)!!;
 
     // if (a.sleeping || b.sleeping) return;
 
-    world.contact_cache.set({joint.body_a, joint.body_b}, {});
-
-    Vec3* impulse_cache = world.contact_cache.get_ref({joint.body_a, joint.body_b})!!;
+    Vec3* impulse_cache = &joint.impulse;
 
     float inverse_mass_sum = a.inverse_mass + b.inverse_mass;
 

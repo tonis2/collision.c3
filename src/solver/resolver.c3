@@ -10,7 +10,6 @@ import std::collections::map;
 const EPSILON @local = 0.001f;
 
 alias CollisionFilter = HashMap{Pair, bool};
-alias CollisionCache = HashMap{Pair, Vec3};
 alias RigidBodyMap = LinkedHashMap{usz, Rigidbody};
 alias RigidBodyIterator = LinkedHashMapValueIterator{usz, Rigidbody};
 
@@ -97,7 +96,6 @@ struct PhysicsWorld {
     List{GenericJoint3D} joints;
     SpatialHash3D spatial_map;
     CollisionFilter filters;
-    CollisionCache contact_cache;
     Vec3 gravity;
     float sleep_timer;
 }
@@ -108,7 +106,7 @@ fn void PhysicsWorld.free(&self) {
     self.spatial_map.free();
     self.constraints.free();
     self.filters.free();
-    self.contact_cache.free();
+    self.joints.free();
 }
 
 fn PhysicsWorld create_world(float cell_size = 2.0, Vec3 gravity = {0.0f, 0.0f, -9.8f}, float sleep_timer = 5.0) {
@@ -268,21 +266,13 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 20) {
     };
 
  
-    foreach (collision: self.collisions) {
-
-        // Create the impulse cache
-        Pair key = {collision.a, collision.b};
-        self.contact_cache.set(key, {});
-        if (!self.contact_cache.has_key(key)) {
-            self.contact_cache.set(key, {});
-        }
-
+    foreach (&collision: self.collisions) {
         // Create normal / distance contraint for collision
         collision.create_constraint(self, time);
     }
 
     // Create joint constraints
-    foreach (joint: self.joints) {
+    foreach (&joint: self.joints) {
         joint.create_constraint(self, time);
     }
 
@@ -291,19 +281,6 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 20) {
         foreach (&contraint: self.constraints) {
             self.solve_constraint(contraint);
         }
-    }
-
-    // Maintenance for collision cache, so will get impulses from last frame
-    foreach (&collision: self.collisions) {
-        collision.impulse = self.contact_cache[{collision.a, collision.b}]!!;
-    }
-
-    // Clear and rebuild contact cache
-    self.contact_cache.clear();
-    
-    foreach (collision: self.collisions) {
-        Pair key = {collision.a, collision.b};
-        self.contact_cache.set(key, collision.impulse);
     }
 
     self.collisions.clear();
@@ -464,12 +441,10 @@ fn void PhysicsWorld.solve_constraint(&self, Constraint* constraint) @local {
     float old_impulse = cache[0][constraint.impulse_offset];
 
     // Apply min / max impulse constraints to the new impulse
-    float new_impulse = math::max(constraint.min, math::min(lambda + old_impulse, constraint.max));
+    float new_impulse = math::max(constraint.min, math::min(lambda, constraint.max));
 
     // Store impulse to it's cache
     cache[0][constraint.impulse_offset] = new_impulse;
-
-    new_impulse = (new_impulse - old_impulse);
 
     // Apply impulses
     if (!a.is_static) {
@@ -492,12 +467,12 @@ fn float Constraint.relative_velocity(self) {
             + self.angular_b.dot(b.angular_velocity);
 }
 
-fn void Collision.create_constraint(collision, PhysicsWorld* world, float dt) @local {
+fn void Collision.create_constraint(&collision, PhysicsWorld* world, float dt) @local {
     Rigidbody* a = world.find_body(collision.a)!!;
     Rigidbody* b = world.find_body(collision.b)!!;
     Vec3 normal = collision.normal.normalize();
 
-    Vec3* impulse_cache = world.contact_cache.get_ref({collision.a, collision.b})!!;
+    Vec3* impulse_cache = &collision.impulse;
 
     float inverse_mass_sum = a.inverse_mass + b.inverse_mass;
     float restitution = math::max(a.material.restitution, b.material.restitution);      
