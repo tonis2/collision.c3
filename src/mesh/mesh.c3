@@ -59,7 +59,6 @@ fn Mesh create_mesh(Vec3[] vertices, uint[] indices) {
 	Mesh mesh;
 	mesh.vertices.push_all(vertices);
 	mesh.set_indices(indices);
-	mesh.center_at_origin();
 	return mesh;
 }
 
@@ -109,16 +108,6 @@ fn Vec3 Mesh.get_center(&self) {
     return center / self.vertices.len();
 }
 
-// Center all vertices at origin (required for proper collision detection)
-// Returns the offset that was applied (original center position)
-// You should add this offset to the body's translation when creating the rigid body
-fn Vec3 Mesh.center_at_origin(&self) {
-    Vec3 center = self.get_center();
-    foreach (i, v : self.vertices) {
-		self.vertices[i] = v - center;
-    }
-    return center;
-}
 
 // Validate mesh triangles, removing any with out-of-bounds indices
 fn void Mesh.validate(&self) {

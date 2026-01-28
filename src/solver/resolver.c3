@@ -172,7 +172,7 @@ fn void? PhysicsWorld.add_body(&self, Rigidbody body) {
 
     body.transformed_aabb = body.get_transformed_aabb();
     // Use AABB-based inertia - consistent for all shape types including mesh
-    if (!body.is_static && &body.collider.shape.inertia_tensor) body.inertia = body.aabb.scale(body.collider.scale).inertia_tensor(body.mass).inverse()!!;
+    if (!body.is_static && &body.collider.shape.inertia_tensor) body.inertia = body.aabb.inertia_tensor(body.mass).inverse()!!;
 
     self.bodies.set(body.id, body);
     self.spatial_map.insert(body.transformed_aabb, body.id)!;

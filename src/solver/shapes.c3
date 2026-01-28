@@ -110,6 +110,24 @@ fn Vec3 Capsule.furthest_point(&self, Vec3 direction) @dynamic {
 fn Matrix3f TransformedShape.inertia_tensor(&self, float mass) @dynamic {
     Matrix3f local_inertia = self.shape.inertia_tensor(mass);
 
+    // Apply scale to inertia tensor
+    // Diagonal elements: I_xx involves y² and z², scale accordingly
+    // Products of inertia: I_xy scales as sx * sy
+    float sx2 = self.scale.x * self.scale.x;
+    float sy2 = self.scale.y * self.scale.y;
+    float sz2 = self.scale.z * self.scale.z;
+
+    local_inertia.m00 *= (sy2 + sz2) * 0.5f;
+    local_inertia.m11 *= (sx2 + sz2) * 0.5f;
+    local_inertia.m22 *= (sx2 + sy2) * 0.5f;
+
+    local_inertia.m01 *= self.scale.x * self.scale.y;
+    local_inertia.m02 *= self.scale.x * self.scale.z;
+    local_inertia.m12 *= self.scale.y * self.scale.z;
+    local_inertia.m10 = local_inertia.m01;
+    local_inertia.m20 = local_inertia.m02;
+    local_inertia.m21 = local_inertia.m12;
+
     // Apply rotation to transform inertia to world space
     Matrix4f matrix = self.rotation.normalize().to_matrixf();
 
