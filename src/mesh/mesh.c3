@@ -59,6 +59,7 @@ fn Mesh create_mesh(Vec3[] vertices, uint[] indices) {
 	Mesh mesh;
 	mesh.vertices.push_all(vertices);
 	mesh.set_indices(indices);
+	mesh.center_at_origin();
 	return mesh;
 }
 
@@ -104,10 +105,19 @@ fn void Mesh.set_indices(&self, uint[] indices) {
 }
 fn Vec3 Mesh.get_center(&self) {
     Vec3 center = {0, 0, 0};
-    foreach (v : self.vertices) {
-        center += v;
-    }
+    foreach (v : self.vertices) center += v;
     return center / self.vertices.len();
+}
+
+// Center all vertices at origin (required for proper collision detection)
+// Returns the offset that was applied (original center position)
+// You should add this offset to the body's translation when creating the rigid body
+fn Vec3 Mesh.center_at_origin(&self) {
+    Vec3 center = self.get_center();
+    foreach (i, v : self.vertices) {
+		self.vertices[i] = v - center;
+    }
+    return center;
 }
 
 // Validate mesh triangles, removing any with out-of-bounds indices
@@ -220,56 +230,74 @@ fn Vec3 Mesh.furthest_point(&self, Vec3 direction) @dynamic {
 }
 
 fn Vec3 Mesh.center_of_mass(self) {
-    float total_detJ = 0;
+    float total_volume = 0;
     Vec3 weighted_com = {0, 0, 0};
-    Vec3 final_com = {0, 0, 0};
 
-	foreach (triangle: self.triangles) {
-		Vec3 v1 = self.vertices[triangle.x].xyz;
+    foreach (triangle: self.triangles) {
+        Vec3 v1 = self.vertices[triangle.x].xyz;
         Vec3 v2 = self.vertices[triangle.y].xyz;
         Vec3 v3 = self.vertices[triangle.z].xyz;
 
-        total_detJ += v1.dot(v2.cross(v3));
+        // Signed volume of tetrahedron from origin to triangle
+        float detJ = v1.dot(v2.cross(v3));
+        total_volume += detJ;
 
-        weighted_com.x += total_detJ * (v1.x + v2.x + v3.x);
-        weighted_com.y += total_detJ * (v1.y + v2.y + v3.y);
-        weighted_com.z += total_detJ * (v1.z + v2.z + v3.z);
-	}
+        // Centroid of tetrahedron is at (v1 + v2 + v3) / 4 (origin is 4th vertex)
+        // Weight by tetrahedron volume (detJ/6), but we factor out the /6
+        weighted_com.x += detJ * (v1.x + v2.x + v3.x);
+        weighted_com.y += detJ * (v1.y + v2.y + v3.y);
+        weighted_com.z += detJ * (v1.z + v2.z + v3.z);
+    }
 
-    if (math::abs(total_detJ) > VEC_EPSILON) final_com = 0.25 * weighted_com / total_detJ;
-
-    return final_com;
+    if (math::abs(total_volume) > VEC_EPSILON) {
+        return weighted_com / (4.0f * total_volume);
+    }
+    return {0, 0, 0};
 }
 
 fn Matrix3f Mesh.inertia_tensor(&self, float mass) @dynamic {
-    Matrix3f inertia = MATRIX3F_IDENTITY;
+    Matrix3f inertia = {};  // Start with zeros, not identity
 
-    float density = 1.0;
-
-    Vec3 c = self.center_of_mass();
-
+    // Compute with density=1, then scale by actual density
     foreach (triangle: self.triangles) {
-		Vec3 v1 = self.vertices[triangle.x].xyz;
+        Vec3 v1 = self.vertices[triangle.x].xyz;
         Vec3 v2 = self.vertices[triangle.y].xyz;
         Vec3 v3 = self.vertices[triangle.z].xyz;
 
-        float tetra_mass;
-        Matrix3f tetra_I_origin = MATRIX3F_IDENTITY;
+        inertia += compute_inertia_contribution(v1, v2, v3, 1.0f);
+    }
 
-        inertia += compute_inertia_contribution(v1, v2, v3, density);
-	}
+    // Scale inertia by actual density (mass / volume)
+    double volume = self.get_volume();
+    if (volume > VEC_EPSILON) {
+        float density = mass / (float)volume;
+        inertia.m00 *= density;
+        inertia.m11 *= density;
+        inertia.m22 *= density;
+        inertia.m01 *= density;
+        inertia.m02 *= density;
+        inertia.m12 *= density;
+        inertia.m10 *= density;
+        inertia.m20 *= density;
+        inertia.m21 *= density;
+    }
+
+    // Parallel axis theorem: shift from origin to center of mass
+    // I_cm = I_origin - m * d^2  (for diagonal)
+    // I_xy_cm = I_xy_origin - m * x * y  (for off-diagonal)
+    Vec3 c = self.center_of_mass();
 
     inertia.m00 -= mass * (c.y * c.y + c.z * c.z);
     inertia.m11 -= mass * (c.x * c.x + c.z * c.z);
     inertia.m22 -= mass * (c.x * c.x + c.y * c.y);
 
-    inertia.m01 -= mass * (-c.x * c.y);
-    inertia.m02 -= mass * (-c.x * c.z);
-    inertia.m12 -= mass * (-c.y * c.z);
+    inertia.m01 -= mass * c.x * c.y;
+    inertia.m02 -= mass * c.x * c.z;
+    inertia.m12 -= mass * c.y * c.z;
 
-    inertia.m10 -= mass * (-c.y * c.x);
-    inertia.m20 -= mass * (-c.z * c.x);
-    inertia.m21 -= mass * (-c.z * c.y);
+    inertia.m10 = inertia.m01;
+    inertia.m20 = inertia.m02;
+    inertia.m21 = inertia.m12;
 
     return inertia;
 }

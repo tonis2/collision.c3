@@ -45,7 +45,7 @@ struct Collision {
     Vec3 impulse;
 }
 
-enum PhysicsCombine {
+enum PhysicsCombine: inline uint {
     AVERAGE,
     MINIMUM,
     MAXIMUM,
@@ -56,8 +56,8 @@ struct Material {
     float static_friction;
     float dynamic_friction;
     float restitution;
-    PhysicsCombine friction_combine;
-    PhysicsCombine restitution_combine;
+    uint friction_combine;
+    uint restitution_combine;
 }
 
 struct Rigidbody {
@@ -84,6 +84,7 @@ struct Rigidbody {
     float gravity_factor;
     float linear_dampening;
     float angular_dampening;
+	float sleep_delta;
 
     Vec3 mass_center;
     //Vec3 inertia_diagonal;
@@ -103,6 +104,7 @@ struct PhysicsWorld {
 	float linear_dampening;
     Vec3 gravity;
     float sleep_timer;
+	float sleep_delta;
     bool islands_dirty;
 }
 
@@ -121,7 +123,9 @@ fn PhysicsWorld create_world(
 	float cell_size = 2.0, 
 	float sleep_timer = 5.0, 
 	float linear_dampening = 0.9, 
-	float angular_dampening = 0.9) 
+	float angular_dampening = 0.9,
+	float sleep_delta = 0.1
+) 
 {
     PhysicsWorld world = {
         .gravity = gravity,
@@ -129,6 +133,7 @@ fn PhysicsWorld create_world(
         .sleep_timer = sleep_timer,
 		.linear_dampening = linear_dampening,
 		.angular_dampening = angular_dampening,
+		.sleep_delta = sleep_delta,
     };
 
     return world;
@@ -163,8 +168,10 @@ fn void? PhysicsWorld.add_body(&self, Rigidbody body) {
 
     // Compute AABB from collider
     body.aabb = body.collider.get_aabb();
+	body.sleep_delta = self.sleep_delta;
 
     body.transformed_aabb = body.get_transformed_aabb();
+    // Use AABB-based inertia - consistent for all shape types including mesh
     if (!body.is_static && &body.collider.shape.inertia_tensor) body.inertia = body.aabb.scale(body.collider.scale).inertia_tensor(body.mass).inverse()!!;
 
     self.bodies.set(body.id, body);
@@ -204,8 +211,8 @@ fn float Rigidbody.get_intertia(self, Vec3 point, Vec3 normal) {
 
 fn Vec3 Rigidbody.relative_velocity(self, Vec3 point) => self.linear_velocity + self.angular_velocity.cross(point);
 
-fn bool Rigidbody.is_rotating(self) => self.angular_velocity.sq_magnitude() > 0.1f;
-fn bool Rigidbody.is_moving(self) => self.linear_velocity.sq_magnitude() > 0.1f;
+fn bool Rigidbody.is_rotating(self) => self.angular_velocity.sq_magnitude() > self.sleep_delta;
+fn bool Rigidbody.is_moving(self) => self.linear_velocity.sq_magnitude() > self.sleep_delta;
 fn bool Rigidbody.is_sleeping(self) => self.sleeping;
 fn void Rigidbody.stop_sleeping(&self) {
     self.sleeping = false;
@@ -579,13 +586,15 @@ fn void PhysicsWorld.solve_constraint(&self, Constraint* constraint) @local {
         constraint.max = max_friction;
     }
 
-    // Clamp impulse to min/max bounds
+    // Accumulate impulse with clamping (for proper friction based on total normal force)
+    float old_impulse = cache[constraint.impulse_offset];
     float new_impulse = math::max(constraint.min, math::min(lambda, constraint.max));
+    // float impulse_delta = new_impulse - old_impulse;
 
-    // Store impulse for friction constraints (they need normal impulse from cache[0])
+    // Store accumulated impulse (friction constraints need total normal impulse from cache[0])
     cache[constraint.impulse_offset] = new_impulse;
 
-    // Apply impulses
+    // Apply impulse delta (not the accumulated total)
     if (!a.is_static) {
         a.apply_linear_impulse(constraint.linear_a * new_impulse);
         a.apply_angular_impulse(constraint.angular_a * new_impulse);
@@ -606,6 +615,16 @@ fn float Constraint.relative_velocity(self) {
             + self.angular_b.dot(b.angular_velocity);
 }
 
+fn float combine_values(float a, float b, PhysicsCombine mode) @local {
+    switch (mode) {
+        case AVERAGE: return (a + b) * 0.5f;
+        case MINIMUM: return math::min(a, b);
+        case MAXIMUM: return math::max(a, b);
+        case MULTIPLY:	return a * b;
+		default: return a * b;
+    }
+}
+
 fn void Collision.create_constraint(&collision, PhysicsWorld* world, float dt) @local {
     Rigidbody* a = world.find_body(collision.a)!!;
     Rigidbody* b = world.find_body(collision.b)!!;
@@ -614,8 +633,13 @@ fn void Collision.create_constraint(&collision, PhysicsWorld* world, float dt) @
     float* impulse_cache = (float*)&collision.impulse;
 
     float inverse_mass_sum = a.inverse_mass + b.inverse_mass;
-    float restitution = math::max(a.material.restitution, b.material.restitution);      
-    float static_friction = a.material.static_friction * b.material.static_friction;
+
+    // Combine material properties using the specified combine mode from GLTF materials
+    PhysicsCombine friction_mode = (PhysicsCombine)math::max((int)a.material.friction_combine, (int)b.material.friction_combine);
+    PhysicsCombine restitution_mode = (PhysicsCombine)math::max((int)a.material.restitution_combine, (int)b.material.restitution_combine);
+
+    float restitution = combine_values(a.material.restitution, b.material.restitution, restitution_mode);
+    float static_friction = combine_values(a.material.static_friction, b.material.static_friction, friction_mode);
 
     Vec3 rA = collision.contact[0] - a.collider.translation;
     Vec3 rB = collision.contact[1] - b.collider.translation;
@@ -686,7 +710,7 @@ fn void Collision.create_constraint(&collision, PhysicsWorld* world, float dt) @
         .effective_mass = 1 / (inverse_mass_sum + tangent_inertia),
         .impulse_offset = 1,  
     };
-    
+  
     Constraint tangent_constraint_2 = {
         ...normal_constraint,
         .friction = static_friction,

@@ -110,8 +110,9 @@ fn Vec3 Capsule.furthest_point(&self, Vec3 direction) @dynamic {
 fn Matrix3f TransformedShape.inertia_tensor(&self, float mass) @dynamic {
     Matrix3f local_inertia = self.shape.inertia_tensor(mass);
 
+    // Apply rotation to transform inertia to world space
     Matrix4f matrix = self.rotation.normalize().to_matrixf();
-    
+
     Matrix3f r = (Matrix3f){
         matrix.m00, matrix.m01, matrix.m02,
         matrix.m10, matrix.m11, matrix.m12,

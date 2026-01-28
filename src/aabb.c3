@@ -74,7 +74,7 @@ fn void Aabb3.expand_by_aabb(&self, Aabb3 box) {
 
 fn Aabb3 Aabb3.scale(self, Vec3 scale) @operator(*) {
     Vec3 center = self.center();
-    Vec3 half_size = self.extent();
+    Vec3 half_size = self.extent() * scale;
 
     return {
         center - half_size,
