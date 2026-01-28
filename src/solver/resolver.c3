@@ -149,7 +149,7 @@ fn void? PhysicsWorld.add_body(&self, Rigidbody body) {
     body.aabb = body.collider.get_aabb();
 
     body.transformed_aabb = body.get_transformed_aabb();
-    if (!body.is_static) body.inertia = body.aabb.scale(body.collider.scale).inertia_tensor(body.mass).inverse()!!;
+    if (!body.is_static && &body.collider.shape.inertia_tensor) body.inertia = body.aabb.scale(body.collider.scale).inertia_tensor(body.mass).inverse()!!;
 
     if (body.linear_dampening == 0) body.linear_dampening = 1;
     if (body.angular_dampening == 0) body.angular_dampening = 1;

@@ -17,9 +17,9 @@ enum ShapeType {
 interface CollisionShape
 {
     fn Vec3 furthest_point(Vec3 direction);
-    fn Matrix3f inertia_tensor(float mass);
     fn Aabb3 get_aabb();
     fn ShapeType get_type();
+	fn Matrix3f inertia_tensor(float mass) @optional;
     fn void free() @optional;
 }
 
