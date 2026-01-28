@@ -360,7 +360,6 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 20) {
         }
     };
 
- 
     foreach (&collision: self.collisions) {
         // Create normal / distance contraint for collision
         collision.create_constraint(self, time);
@@ -568,12 +567,10 @@ fn void PhysicsWorld.solve_constraint(&self, Constraint* constraint) @local {
 
     float* cache = constraint.impulse_cache;
 
-    // Total velocity diffence (angular + linear)
+    // Total velocity difference (angular + linear)
     float relative_velocity = constraint.relative_velocity();
 
-    // assert(relative_velocity < 100000, "Velocity to high, error with bodies %s %s", a.id, b.id);
-
-    // 2. Calculate Lambda (The corrective impulse magnitude)
+    // Calculate Lambda (The corrective impulse magnitude)
     float lambda = -(relative_velocity + constraint.bias + constraint.bounce) * constraint.effective_mass;
 
     if (constraint.friction != 0) {
@@ -582,15 +579,11 @@ fn void PhysicsWorld.solve_constraint(&self, Constraint* constraint) @local {
         constraint.max = max_friction;
     }
 
-    float old_impulse = cache[constraint.impulse_offset];
-
-    // Apply min / max impulse constraints to the new impulse
+    // Clamp impulse to min/max bounds
     float new_impulse = math::max(constraint.min, math::min(lambda, constraint.max));
 
-    // Store impulse to it's cache
+    // Store impulse for friction constraints (they need normal impulse from cache[0])
     cache[constraint.impulse_offset] = new_impulse;
-
-	// new_impulse = (new_impulse - old_impulse);
 
     // Apply impulses
     if (!a.is_static) {
@@ -601,13 +594,13 @@ fn void PhysicsWorld.solve_constraint(&self, Constraint* constraint) @local {
     if (!b.is_static) {
         b.apply_linear_impulse(constraint.linear_b * new_impulse);
         b.apply_angular_impulse(constraint.angular_b * new_impulse);
-    }       
+    }
 }
 
 fn float Constraint.relative_velocity(self) {
     Rigidbody* a = self.body_a;
     Rigidbody* b = self.body_b;
-    return self.linear_a.dot(a.linear_velocity) 
+    return self.linear_a.dot(a.linear_velocity)
             + self.angular_a.dot(a.angular_velocity)
             + self.linear_b.dot(b.linear_velocity)
             + self.angular_b.dot(b.angular_velocity);
@@ -628,10 +621,10 @@ fn void Collision.create_constraint(&collision, PhysicsWorld* world, float dt) @
     Vec3 rB = collision.contact[1] - b.collider.translation;
     
     float beta = 0.2f;
-    float slop = 0.01f;
+    float slop = 0.005f;
     int impulse_dir = math::min(a.impulse_dir, b.impulse_dir);
 
-    float bias = ((beta / dt) * math::max(collision.depth - slop, 0.0f)) * impulse_dir;
+    float bias = (beta / dt) * math::max(collision.depth - slop, 0.0f) * impulse_dir;
 
     float normal_inertia;
     if (!a.is_static) normal_inertia += a.get_intertia(rA, -normal);
