@@ -12,12 +12,13 @@ const EPSILON @local = 0.001f;
 alias CollisionFilter = HashMap{Pair, bool};
 alias RigidBodyMap = LinkedHashMap{usz, Rigidbody};
 alias RigidBodyIterator = LinkedHashMapValueIterator{usz, Rigidbody};
+alias UnionFindMap = HashMap{usz, usz};
 
 struct Constraint {
     Rigidbody* body_a;
     Rigidbody* body_b;
 
-    Vec3* impulse_cache;
+    float* impulse_cache;
 
     float min;
     float max;
@@ -62,6 +63,7 @@ struct Material {
 struct Rigidbody {
     inline TransformedShape collider;
     usz id;
+    usz island_id;
 
     float sleep_timer;
 
@@ -96,8 +98,12 @@ struct PhysicsWorld {
     List{GenericJoint3D} joints;
     SpatialHash3D spatial_map;
     CollisionFilter filters;
+    UnionFindMap island_parent;
+	float angular_dampening;
+	float linear_dampening;
     Vec3 gravity;
     float sleep_timer;
+    bool islands_dirty;
 }
 
 fn void PhysicsWorld.free(&self) {
@@ -107,13 +113,22 @@ fn void PhysicsWorld.free(&self) {
     self.constraints.free();
     self.filters.free();
     self.joints.free();
+    self.island_parent.free();
 }
 
-fn PhysicsWorld create_world(float cell_size = 2.0, Vec3 gravity = {0.0f, 0.0f, -9.8f}, float sleep_timer = 5.0) {
+fn PhysicsWorld create_world(
+	Vec3 gravity = {0.0f, 0.0f, -9.8f},
+	float cell_size = 2.0, 
+	float sleep_timer = 5.0, 
+	float linear_dampening = 0.9, 
+	float angular_dampening = 0.9) 
+{
     PhysicsWorld world = {
         .gravity = gravity,
         .spatial_map.cell_size = cell_size,
-        .sleep_timer = sleep_timer
+        .sleep_timer = sleep_timer,
+		.linear_dampening = linear_dampening,
+		.angular_dampening = angular_dampening,
     };
 
     return world;
@@ -132,6 +147,7 @@ fn void? PhysicsWorld.add_constraint(&self, GenericJoint3D joint) {
     }
 
     self.joints.push(joint);
+    self.islands_dirty = true;
 }
 
 <*
@@ -150,16 +166,6 @@ fn void? PhysicsWorld.add_body(&self, Rigidbody body) {
 
     body.transformed_aabb = body.get_transformed_aabb();
     if (!body.is_static && &body.collider.shape.inertia_tensor) body.inertia = body.aabb.scale(body.collider.scale).inertia_tensor(body.mass).inverse()!!;
-
-    if (body.linear_dampening == 0) body.linear_dampening = 1;
-    if (body.angular_dampening == 0) body.angular_dampening = 1;
-
-    // Don't let joint bodies sleep for now
-    foreach (joint: self.joints) {
-        if (joint.body_a == body.id || joint.body_b == body.id) {
-            body.can_sleep = false;
-        }
-    }
 
     self.bodies.set(body.id, body);
     self.spatial_map.insert(body.transformed_aabb, body.id)!;
@@ -207,6 +213,92 @@ fn void Rigidbody.stop_sleeping(&self) {
 }
 fn bool Rigidbody.is_active(self) => self.sleeping == false && self.is_static == false;
 
+// Union-Find: find root with path compression
+fn usz PhysicsWorld.island_find(&self, usz id) {
+    if (!self.island_parent.has_key(id)) {
+        self.island_parent.set(id, id);
+        return id;
+    }
+
+    usz parent = self.island_parent.get(id)!!;
+    if (parent != id) {
+        // Path compression: point directly to root
+        usz root = self.island_find(parent);
+        self.island_parent.set(id, root);
+        return root;
+    }
+    return id;
+}
+
+// Union-Find: merge two bodies into same island
+fn void PhysicsWorld.island_union(&self, usz a, usz b) {
+    usz root_a = self.island_find(a);
+    usz root_b = self.island_find(b);
+
+    if (root_a != root_b) {
+        // Use smaller id as root for consistency
+        if (root_a < root_b) {
+            self.island_parent.set(root_b, root_a);
+        } else {
+            self.island_parent.set(root_a, root_b);
+        }
+    }
+}
+
+// Compute islands from joints - call when islands_dirty is true
+fn void PhysicsWorld.compute_islands(&self) {
+    if (!self.islands_dirty) return;
+
+    // Reset parent map
+    self.island_parent.clear();
+
+    // Each body starts as its own island
+    RigidBodyIterator iter = self.bodies.value_iter();
+    while (iter.next()) {
+        Rigidbody* body = iter.get()!!;
+        self.island_parent.set(body.id, body.id);
+    }
+
+    // Union bodies connected by joints
+    foreach (&joint: self.joints) {
+        // Only union non-static bodies
+        Rigidbody*? a = self.find_body(joint.body_a);
+        Rigidbody*? b = self.find_body(joint.body_b);
+
+        if (try body_a = a) {
+            if (try body_b = b) {
+                if (!body_a.is_static && !body_b.is_static) {
+                    self.island_union(joint.body_a, joint.body_b);
+                }
+            }
+        }
+    }
+
+    // Assign island_id to each body
+    RigidBodyIterator assign_iter = self.bodies.value_iter();
+    while (assign_iter.next()) {
+        Rigidbody* body = assign_iter.get()!!;
+        body.island_id = self.island_find(body.id);
+    }
+
+    self.islands_dirty = false;
+}
+
+// Wake all bodies in the same island - O(n) where n is total bodies
+fn void PhysicsWorld.wake_island(&self, Rigidbody* body) {
+    if (!body.sleeping) return;
+
+    usz target_island = body.island_id;
+
+    RigidBodyIterator iter = self.bodies.value_iter();
+    while (iter.next()) {
+        Rigidbody* other = iter.get()!!;
+        if (other.island_id == target_island && other.sleeping) {
+            other.stop_sleeping();
+        }
+    }
+}
+
 
 fn bool Rigidbody.has_mesh_bvh(&self) {
     if (self.collider.get_type() == ShapeType.CONVEX) {
@@ -221,6 +313,9 @@ fn bool Rigidbody.has_mesh_bvh(&self) {
 *>
 fn void PhysicsWorld.run_step(&self, float time, uint step_count = 20) {
 
+    // Recompute islands if joint topology changed
+    self.compute_islands();
+
     // Create collisions
     self.spatial_map.@get_pairs(;Pair pair) {
         Rigidbody* body_a = self.find_body(pair.a)!!;
@@ -232,9 +327,9 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 20) {
         // Check if aabb boxes collide first
         if (!has_filter && body_a.transformed_aabb.collides(body_b.transformed_aabb)) {
 
-            // If contact happens and one body is asleep, but other is awake, wake up sleeping body
-            if (body_a.sleeping && body_b.is_active()) body_a.stop_sleeping();
-            if (body_b.sleeping && body_a.is_active()) body_b.stop_sleeping();
+            // If contact happens and one body is asleep, but other is awake, wake up sleeping body and its island
+            if (body_a.sleeping && body_b.is_active()) self.wake_island(body_a);
+            if (body_b.sleeping && body_a.is_active()) self.wake_island(body_b);
 
             if (body_a.is_active() || body_b.is_active()) {
                 // Check for BVH mesh collisions
@@ -307,8 +402,17 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 20) {
         body.apply_linear_impulse(self.gravity * body.gravity_factor * body.mass * time);
 
         // Apply dampening friction (Wind friction ..etc)
-        body.angular_velocity *= math::pow(body.angular_dampening, time);
-        body.linear_velocity *= math::pow(body.linear_dampening, time);
+        body.angular_velocity *= math::pow(self.angular_dampening, time);
+        body.linear_velocity *= math::pow(self.linear_dampening, time);
+
+        // Clamp very small velocities to zero to prevent numerical noise accumulation
+        const float VELOCITY_CLAMP_SQ = 0.01f;  // ~0.1 units/sec threshold
+        if (body.linear_velocity.sq_magnitude() < VELOCITY_CLAMP_SQ) {
+            body.linear_velocity = {0, 0, 0};
+        }
+        if (body.angular_velocity.sq_magnitude() < VELOCITY_CLAMP_SQ) {
+            body.angular_velocity = {0, 0, 0};
+        }
 
         bool rotating = body.is_rotating();
         bool moving = body.is_moving();
@@ -320,14 +424,55 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 20) {
             body.transformed_aabb = new_aabb;
         }
 
-        // Sleeping is broken cause of joints currently
+        // Increment sleep timer when body is at rest
         if (body.can_sleep == true && moving == false && rotating == false) {
             body.sleep_timer += time;
-            if (body.sleep_timer > self.sleep_timer) {
-                // body.sleeping = true;
-                // body.sleep_timer = 0;
-            };
-        };
+        } else {
+            body.sleep_timer = 0;
+        }
+    }
+
+    // Check island sleeping - bodies connected by joints sleep together
+    // Group bodies by island_id and check if entire islands can sleep
+    HashMap{usz, bool} island_can_sleep;
+    HashMap{usz, bool} island_checked;
+    defer island_can_sleep.free();
+    defer island_checked.free();
+
+    // First pass: determine which islands can sleep
+    RigidBodyIterator sleep_check = self.bodies.value_iter();
+    while (sleep_check.next()) {
+        Rigidbody* body = sleep_check.get()!!;
+
+        if (body.is_static) continue;
+
+        usz island = body.island_id;
+
+        // Initialize island as can_sleep = true if not yet checked
+        if (!island_checked.has_key(island)) {
+            island_checked.set(island, true);
+            island_can_sleep.set(island, true);
+        }
+
+        // If any body in island can't sleep, mark island as can't sleep
+        if (!body.can_sleep || body.is_moving() || body.is_rotating() || body.sleep_timer < self.sleep_timer) {
+            island_can_sleep.set(island, false);
+        }
+    }
+
+    // Second pass: put entire islands to sleep
+    RigidBodyIterator sleep_apply = self.bodies.value_iter();
+    while (sleep_apply.next()) {
+        Rigidbody* body = sleep_apply.get()!!;
+
+        if (body.is_static || body.sleeping) continue;
+
+        if (try can_sleep = island_can_sleep.get(body.island_id)) {
+            if (can_sleep) {
+                body.sleeping = true;
+                body.sleep_timer = 0;
+            }
+        }
     }
 }
 
@@ -421,7 +566,7 @@ fn void PhysicsWorld.solve_constraint(&self, Constraint* constraint) @local {
     Rigidbody* a = constraint.body_a;
     Rigidbody* b = constraint.body_b;
 
-    Vec3* cache = constraint.impulse_cache;
+    float* cache = constraint.impulse_cache;
 
     // Total velocity diffence (angular + linear)
     float relative_velocity = constraint.relative_velocity();
@@ -432,19 +577,20 @@ fn void PhysicsWorld.solve_constraint(&self, Constraint* constraint) @local {
     float lambda = -(relative_velocity + constraint.bias + constraint.bounce) * constraint.effective_mass;
 
     if (constraint.friction != 0) {
-        float max_friction = constraint.friction * cache.x;
+        float max_friction = constraint.friction * cache[0];
         constraint.min = -max_friction;
         constraint.max = max_friction;
     }
 
-    // Todo: fix hot starting
-    float old_impulse = cache[0][constraint.impulse_offset];
+    float old_impulse = cache[constraint.impulse_offset];
 
     // Apply min / max impulse constraints to the new impulse
     float new_impulse = math::max(constraint.min, math::min(lambda, constraint.max));
 
     // Store impulse to it's cache
-    cache[0][constraint.impulse_offset] = new_impulse;
+    cache[constraint.impulse_offset] = new_impulse;
+
+	// new_impulse = (new_impulse - old_impulse);
 
     // Apply impulses
     if (!a.is_static) {
@@ -472,7 +618,7 @@ fn void Collision.create_constraint(&collision, PhysicsWorld* world, float dt) @
     Rigidbody* b = world.find_body(collision.b)!!;
     Vec3 normal = collision.normal.normalize();
 
-    Vec3* impulse_cache = &collision.impulse;
+    float* impulse_cache = (float*)&collision.impulse;
 
     float inverse_mass_sum = a.inverse_mass + b.inverse_mass;
     float restitution = math::max(a.material.restitution, b.material.restitution);      
@@ -514,7 +660,13 @@ fn void Collision.create_constraint(&collision, PhysicsWorld* world, float dt) @
 
     float relative_velocity = normal_constraint.relative_velocity();
 
-    normal_constraint.bounce = (relative_velocity * restitution);
+    // Only apply restitution above velocity threshold to prevent micro-bouncing at rest
+    const float BOUNCE_THRESHOLD = 1.0f;
+    if (math::abs(relative_velocity) > BOUNCE_THRESHOLD) {
+        normal_constraint.bounce = relative_velocity * restitution;
+    } else {
+        normal_constraint.bounce = 0;
+    }
 
     Vec3 helper = (math::abs(normal.y) > 0.99)
         ? {1.0f, 0.0f, 0.0f}

@@ -658,3 +658,434 @@ fn bool TiledHeightmap.collide_sphere(&self, Vec3 center, float radius, Vec3* co
 
     return any_collision;
 }
+
+// Collide capsule against all loaded tiles
+fn bool TiledHeightmap.collide_capsule(&self, Vec3 capsule_base, Vec3 capsule_tip, float radius, Vec3* contact_point, Vec3* contact_normal, float* penetration) {
+    // Find tiles that the capsule might touch
+    float min_x = math::min(capsule_base.x, capsule_tip.x) - radius;
+    float max_x = math::max(capsule_base.x, capsule_tip.x) + radius;
+    float min_z = math::min(capsule_base.z, capsule_tip.z) - radius;
+    float max_z = math::max(capsule_base.z, capsule_tip.z) + radius;
+
+    int tx0, tz0, tx1, tz1;
+    self.world_to_tile(min_x, min_z, &tx0, &tz0);
+    self.world_to_tile(max_x, max_z, &tx1, &tz1);
+
+    bool any_collision = false;
+    float max_penetration = 0;
+    Vec3 best_contact;
+    Vec3 best_normal;
+
+    for (int tz = tz0; tz <= tz1; tz++) {
+        for (int tx = tx0; tx <= tx1; tx++) {
+            if (try tile = self.find_tile(tx, tz)) {
+                Vec3 cp, cn;
+                float pen;
+                if (tile.heightmap.collide_capsule(capsule_base, capsule_tip, radius, &cp, &cn, &pen)) {
+                    any_collision = true;
+                    if (pen > max_penetration) {
+                        max_penetration = pen;
+                        best_contact = cp;
+                        best_normal = cn;
+                    }
+                }
+            }
+        }
+    }
+
+    if (any_collision) {
+        *contact_point = best_contact;
+        *contact_normal = best_normal;
+        *penetration = max_penetration;
+    }
+
+    return any_collision;
+}
+
+// ============================================================================
+// Multi-Entity Support
+// ============================================================================
+
+// Result of terrain collision test
+struct TerrainContact {
+    bool collided;
+    Vec3 point;         // Contact point on terrain
+    Vec3 normal;        // Surface normal at contact
+    float penetration;  // How deep into terrain
+    float ground_height;// Terrain height at entity position
+}
+
+// Test any entity against terrain - returns contact info
+fn TerrainContact TiledHeightmap.test_collision(&self, Vec3 position, float radius) {
+    TerrainContact result;
+
+    result.ground_height = self.get_height(position.x, position.z);
+    result.normal = self.get_normal(position.x, position.z);
+
+    result.collided = self.collide_sphere(position, radius, &result.point, &result.normal, &result.penetration);
+
+    return result;
+}
+
+// Test capsule entity (standing character) against terrain
+fn TerrainContact TiledHeightmap.test_capsule(&self, Vec3 base, Vec3 tip, float radius) {
+    TerrainContact result;
+
+    // Use base position for ground height
+    result.ground_height = self.get_height(base.x, base.z);
+    result.normal = self.get_normal(base.x, base.z);
+
+    result.collided = self.collide_capsule(base, tip, radius, &result.point, &result.normal, &result.penetration);
+
+    return result;
+}
+
+// Same for single Heightmap
+fn TerrainContact Heightmap.test_collision(&self, Vec3 position, float radius) {
+    TerrainContact result;
+
+    result.ground_height = self.get_height(position.x, position.z);
+    result.normal = self.get_normal(position.x, position.z);
+
+    result.collided = self.collide_sphere(position, radius, &result.point, &result.normal, &result.penetration);
+
+    return result;
+}
+
+fn TerrainContact Heightmap.test_capsule(&self, Vec3 base, Vec3 tip, float radius) {
+    TerrainContact result;
+
+    result.ground_height = self.get_height(base.x, base.z);
+    result.normal = self.get_normal(base.x, base.z);
+
+    result.collided = self.collide_capsule(base, tip, radius, &result.point, &result.normal, &result.penetration);
+
+    return result;
+}
+
+// Update tiles based on multiple positions (player + active NPCs)
+fn void TiledHeightmap.update_multi(&self, Vec3[] positions) {
+    if (positions.len == 0) return;
+
+    // Unload tiles that are far from ALL positions
+    for (isz i = (isz)self.tiles.len() - 1; i >= 0; i--) {
+        HeightmapTile* tile = &self.tiles[(usz)i];
+
+        float tile_center_x = self.origin.x + (tile.tile_x + 0.5f) * self.tile_world_size;
+        float tile_center_z = self.origin.z + (tile.tile_z + 0.5f) * self.tile_world_size;
+
+        // Check if tile is within range of ANY position
+        bool keep_loaded = false;
+        foreach (pos : positions) {
+            float dx = tile_center_x - pos.x;
+            float dz = tile_center_z - pos.z;
+            float dist = math::sqrt(dx * dx + dz * dz);
+
+            if (dist <= self.unload_radius) {
+                keep_loaded = true;
+                break;
+            }
+        }
+
+        if (!keep_loaded) {
+            tile.heightmap.free();
+            self.tiles.remove_at((usz)i);
+        }
+    }
+
+    // Load tiles near any position
+    foreach (pos : positions) {
+        int pos_tx, pos_tz;
+        self.world_to_tile(pos.x, pos.z, &pos_tx, &pos_tz);
+
+        int tile_radius = (int)math::ceil(self.load_radius / self.tile_world_size) + 1;
+
+        for (int tz = pos_tz - tile_radius; tz <= pos_tz + tile_radius; tz++) {
+            for (int tx = pos_tx - tile_radius; tx <= pos_tx + tile_radius; tx++) {
+                float tile_center_x = self.origin.x + (tx + 0.5f) * self.tile_world_size;
+                float tile_center_z = self.origin.z + (tz + 0.5f) * self.tile_world_size;
+
+                float dx = tile_center_x - pos.x;
+                float dz = tile_center_z - pos.z;
+                float dist = math::sqrt(dx * dx + dz * dz);
+
+                if (dist <= self.load_radius) {
+                    self.load_tile(tx, tz);
+                }
+            }
+        }
+    }
+}
+
+// Ensure tile is loaded for a specific position (for NPCs outside normal load radius)
+fn void TiledHeightmap.ensure_loaded(&self, Vec3 position) {
+    int tx, tz;
+    self.world_to_tile(position.x, position.z, &tx, &tz);
+    self.load_tile(tx, tz);
+}
+
+// ============================================================================
+// Mesh to Heightmap Conversion
+// ============================================================================
+
+// Context for mesh-based height sampling
+struct MeshHeightSampler {
+    Mesh* mesh;                 // Source mesh (must have BVH built)
+    TransformedShape* shape;    // Optional: transformed shape for world-space mesh
+    float ray_start_height;     // Y position to start rays from (above terrain)
+    float default_height;       // Height to use when ray misses
+}
+
+// Create a sampler for converting mesh to heightmap
+fn MeshHeightSampler create_mesh_sampler(Mesh* mesh, float ray_start_height = 1000.0f, float default_height = 0.0f) {
+    return {
+        .mesh = mesh,
+        .shape = null,
+        .ray_start_height = ray_start_height,
+        .default_height = default_height
+    };
+}
+
+// Create a sampler with transform (for GLTF meshes that have world transforms)
+fn MeshHeightSampler create_mesh_sampler_transformed(Mesh* mesh, TransformedShape* shape, float ray_start_height = 1000.0f, float default_height = 0.0f) {
+    return {
+        .mesh = mesh,
+        .shape = shape,
+        .ray_start_height = ray_start_height,
+        .default_height = default_height
+    };
+}
+
+// Sample a single height from mesh at world position (wx, wz)
+fn float MeshHeightSampler.sample_height(&self, float wx, float wz) {
+    if (self.mesh == null || !self.mesh.has_bvh()) {
+        return self.default_height;
+    }
+
+    // Create downward ray
+    Ray ray = {
+        .origin = { wx, self.ray_start_height, wz },
+        .direction = { 0, -1, 0 }
+    };
+
+    // If we have a transform, convert ray to local space
+    if (self.shape != null) {
+        // Transform ray origin to local space
+        Vec3 local_origin = self.shape.rotation.conjugate() * (ray.origin - self.shape.translation);
+        local_origin = local_origin / self.shape.scale;
+
+        // Transform ray direction to local space (direction only, no translation)
+        Vec3 local_dir = self.shape.rotation.conjugate() * ray.direction;
+
+        ray.origin = local_origin;
+        ray.direction = local_dir.normalize();
+    }
+
+    // Query BVH
+    HitInfo hit = self.mesh.bvh.ray_intersects(ray);
+
+    if (hit.collided) {
+        // Calculate world-space hit point
+        Vec3 local_hit = ray.origin + ray.direction * hit.depth;
+
+        if (self.shape != null) {
+            // Transform back to world space
+            Vec3 world_hit = self.shape.rotation * (local_hit * self.shape.scale) + self.shape.translation;
+            return world_hit.y;
+        } else {
+            return local_hit.y;
+        }
+    }
+
+    return self.default_height;
+}
+
+// Fill a height array by sampling mesh (for use with TiledHeightmap callback)
+fn void MeshHeightSampler.sample_region(&self, float[] heights, uint width, uint depth, float cell_size, Vec3 origin) {
+    for (uint gz = 0; gz < depth; gz++) {
+        for (uint gx = 0; gx < width; gx++) {
+            float wx = origin.x + gx * cell_size;
+            float wz = origin.z + gz * cell_size;
+
+            heights[gz * width + gx] = self.sample_height(wx, wz);
+        }
+    }
+}
+
+// Create a complete heightmap from mesh by sampling
+fn Heightmap create_heightmap_from_mesh(Mesh* mesh, uint width, uint depth, float cell_size, Vec3 origin = {0, 0, 0}, float ray_start_height = 1000.0f) {
+    // Build BVH if not already built
+    if (!mesh.has_bvh()) {
+        mesh.build_bvh();
+    }
+
+    Heightmap hm = create_heightmap(width, depth, cell_size, origin);
+
+    MeshHeightSampler sampler = create_mesh_sampler(mesh, ray_start_height);
+    sampler.sample_region(hm.heights.array_view(), width, depth, cell_size, origin);
+
+    hm.update_height_bounds();
+    return hm;
+}
+
+// Create heightmap from transformed mesh (GLTF with world transform)
+fn Heightmap create_heightmap_from_transformed_mesh(Mesh* mesh, TransformedShape* shape, uint width, uint depth, float cell_size, Vec3 origin = {0, 0, 0}, float ray_start_height = 1000.0f) {
+    // Build BVH if not already built
+    if (!mesh.has_bvh()) {
+        mesh.build_bvh();
+    }
+
+    Heightmap hm = create_heightmap(width, depth, cell_size, origin);
+
+    MeshHeightSampler sampler = create_mesh_sampler_transformed(mesh, shape, ray_start_height);
+    sampler.sample_region(hm.heights.array_view(), width, depth, cell_size, origin);
+
+    hm.update_height_bounds();
+    return hm;
+}
+
+// Callback helper for TiledHeightmap - use MeshHeightSampler as user_data
+fn void mesh_tile_load_callback(int tile_x, int tile_z, float[] heights, void* user_data) {
+    MeshHeightSampler* sampler = (MeshHeightSampler*)user_data;
+
+    // This requires knowing the tile parameters - caller must set these up
+    // For a complete solution, use MeshTileLoader below
+}
+
+// Complete tile loader that knows about the tiled heightmap configuration
+struct MeshTileLoader {
+    MeshHeightSampler sampler;
+    TiledHeightmap* terrain;    // Pointer to terrain for tile size info
+}
+
+fn MeshTileLoader create_mesh_tile_loader(Mesh* mesh, TiledHeightmap* terrain, float ray_start_height = 1000.0f) {
+    // Build BVH if needed
+    if (!mesh.has_bvh()) {
+        mesh.build_bvh();
+    }
+
+    return {
+        .sampler = create_mesh_sampler(mesh, ray_start_height),
+        .terrain = terrain
+    };
+}
+
+fn MeshTileLoader create_mesh_tile_loader_transformed(Mesh* mesh, TransformedShape* shape, TiledHeightmap* terrain, float ray_start_height = 1000.0f) {
+    // Build BVH if needed
+    if (!mesh.has_bvh()) {
+        mesh.build_bvh();
+    }
+
+    return {
+        .sampler = create_mesh_sampler_transformed(mesh, shape, ray_start_height),
+        .terrain = terrain
+    };
+}
+
+// Tile load callback that uses MeshTileLoader
+fn void mesh_tile_loader_callback(int tile_x, int tile_z, float[] heights, void* user_data) {
+    MeshTileLoader* loader = (MeshTileLoader*)user_data;
+
+    Vec3 tile_origin = loader.terrain.tile_origin(tile_x, tile_z);
+
+    loader.sampler.sample_region(
+        heights,
+        loader.terrain.tile_width,
+        loader.terrain.tile_depth,
+        loader.terrain.cell_size,
+        tile_origin
+    );
+}
+
+// ============================================================================
+// Usage Examples (commented)
+// ============================================================================
+
+// Single heightmap (small terrain)                                                                                                                  
+//   Heightmap terrain = create_heightmap(256, 256, 1.0f);  // 256x256 grid, 1m spacing                                                                   
+//   terrain.set_height_at_grid(100, 100, 5.0f);  // Set a point                                                                                          
+//   float h = terrain.get_height(50.5f, 75.2f);   // Get interpolated height                                                                             
+                                                                                                                                                       
+//   // Character ground check                                                                                                                            
+//   Vec3 contact, normal;                                                                                                                                
+//   float penetration;                                                                                                                                   
+//   if (terrain.collide_capsule(char_base, char_tip, 0.5f, &contact, &normal, &penetration)) {                                                           
+//       // Push character out of ground                                                                                                                  
+//       character.translation += normal * penetration;                                                                                                   
+//   }                                                                                                                                                    
+                                                                                                                                                       
+//   // Tiled heightmap (large streaming terrain)                                                                                                         
+//   TiledHeightmap world = create_tiled_heightmap(65, 65, 2.0f);  // 65x65 tiles, 2m cells                                                               
+//   world.load_callback = &my_tile_loader;                                                                                                               
+//   world.load_radius = 300.0f;                                                                                                                          
+                                                                                                                                                       
+//   // Each frame                                                                                                                                        
+//   world.update(player_position);  // Loads/unloads tiles automatically                                                                                 
+//   float ground_height = world.get_height(player.x, player.z);                                                                                          
+                                                                                                                                                                                  
+                                                                                                                                                       
+//   // Your GLTF ground mesh                                                                                                                             
+//   Mesh* ground = &gltf_scene.meshes[ground_index];                                                                                                     
+                                                                                                                                                       
+//   // Create heightmap by sampling the mesh (64x64 grid, 2m spacing)                                                                                    
+//   Heightmap terrain = create_heightmap_from_mesh(                                                                                                      
+//       ground,                                                                                                                                          
+//       width: 64,                                                                                                                                       
+//       depth: 64,                                                                                                                                       
+//       cell_size: 2.0f,                                                                                                                                 
+//       origin: {-64, 0, -64}  // Center the terrain                                                                                                     
+//   );                                                                                                                                                   
+                                                                                                                                                       
+//   With GLTF Transform                                                                                                                                  
+                                                                                                                                                       
+//   // If mesh has a world transform from GLTF                                                                                                           
+//   TransformedShape shape = {                                                                                                                           
+//       .translation = gltf_node.translation,                                                                                                            
+//       .rotation = gltf_node.rotation,                                                                                                                  
+//       .scale = gltf_node.scale,                                                                                                                        
+//       .shape = ground                                                                                                                                  
+//   };                                                                                                                                                   
+                                                                                                                                                       
+//   Heightmap terrain = create_heightmap_from_transformed_mesh(                                                                                          
+//       ground,                                                                                                                                          
+//       &shape,                                                                                                                                          
+//       width: 128,                                                                                                                                      
+//       depth: 128,                                                                                                                                      
+//       cell_size: 1.0f                                                                                                                                  
+//   );                                                                                                                                                   
+                                                                                                                                                       
+//   Tiled/Streaming Terrain                                                                                                                              
+                                                                                                                                                       
+//   // Create tiled terrain                                                                                                                              
+//   TiledHeightmap terrain = create_tiled_heightmap(                                                                                                     
+//       tile_width: 65,                                                                                                                                  
+//       tile_depth: 65,                                                                                                                                  
+//       cell_size: 2.0f                                                                                                                                  
+//   );                                                                                                                                                   
+//   terrain.load_radius = 200.0f;                                                                                                                        
+//   terrain.unload_radius = 300.0f;                                                                                                                      
+                                                                                                                                                       
+//   // Create the loader (holds mesh + terrain reference)                                                                                                
+//   MeshTileLoader loader = create_mesh_tile_loader(ground_mesh, &terrain);                                                                              
+                                                                                                                                                       
+//   // Or with transform:                                                                                                                                
+//   // MeshTileLoader loader = create_mesh_tile_loader_transformed(ground_mesh, &shape, &terrain);                                                       
+                                                                                                                                                       
+//   // Set up callback                                                                                                                                   
+//   terrain.load_callback = &mesh_tile_loader_callback;                                                                                                  
+//   terrain.user_data = &loader;                                                                                                                         
+                                                                                                                                                       
+//   // In game loop - tiles load/unload automatically                                                                                                    
+//   terrain.update(player.position);                                                                                                                     
+//   float ground_height = terrain.get_height(player.x, player.z);                                                                                        
+                                                                                                                                                       
+//   What Happens                                                                                                                                         
+                                                                                                                                                       
+//   1. When player enters a new tile's load_radius:                                                                                                      
+//     - mesh_tile_loader_callback is called                                                                                                              
+//     - It raycasts downward at each grid point                                                                                                          
+//     - Heights are filled into the tile's heightmap                                                                                                     
+//   2. When player leaves a tile's unload_radius:                                                                                                        
+//     - Tile heightmap is freed automatically                                                                                                            
+                                                                                                                                                       
+//   The mesh BVH is built once and shared - only the height samples are stored per tile.   

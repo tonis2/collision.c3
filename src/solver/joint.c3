@@ -39,16 +39,14 @@ struct GenericJoint3D {
    float dampening;
    float stifness;
 
-   Vec3 impulse;
+   float[6] impulse;
 }
 
 fn void GenericJoint3D.create_constraint(&joint, PhysicsWorld* world, float dt) @local {
     Rigidbody* a = world.find_body(joint.body_a)!!;
     Rigidbody* b = world.find_body(joint.body_b)!!;
 
-    // if (a.sleeping || b.sleeping) return;
-
-    Vec3* impulse_cache = &joint.impulse;
+    float* impulse_cache = &joint.impulse;
 
     float inverse_mass_sum = a.inverse_mass + b.inverse_mass;
 
@@ -137,26 +135,29 @@ fn void GenericJoint3D.create_constraint(&joint, PhysicsWorld* world, float dt) 
 
     foreach (limit: joint.angular_limits) {
         Vec3 normal = joint.relative_orientation * limit.axes * impulse_dir;
-        Vec3 world_axis = a.collider.rotation * normal ;
+        Vec3 world_axis = a.collider.rotation * normal;
 
-        usz offset = 0;
+        usz offset = 3;
 
-        if (limit.axes.y != 0) offset = 1;
-        if (limit.axes.z != 0) offset = 2;
+        if (limit.axes.y != 0) offset = 4;
+        if (limit.axes.z != 0) offset = 5;
 
-        float normal_inertia;
-        if (!a.is_static) normal_inertia += a.get_intertia(rA, -world_axis);
-        if (!b.is_static) normal_inertia += b.get_intertia(rB, world_axis);
+        // For angular-only constraints, compute inertia directly (no lever arm)
+        float angular_inertia;
+        if (!a.is_static) {
+            Vec3 accel = a.get_inverse_world_inertia() * world_axis;
+            angular_inertia += accel.dot(world_axis);
+        }
+        if (!b.is_static) {
+            Vec3 accel = b.get_inverse_world_inertia() * world_axis;
+            angular_inertia += accel.dot(world_axis);
+        }
 
         float denom = (0.2 / dt);
         float rotation_error = world_error.dot(world_axis);
-        
-        float rigid_denom = inverse_mass_sum + normal_inertia;
 
-        // float softness_denom = (limit.damping / dt) + (limit.stiffness * dt);
-        // float total_denom = rigid_denom + softness_denom;
-
-        // float bounce = (limit.stiffness * dt) / total_denom * rotation_error;
+        // Keep inverse_mass_sum for numerical stability
+        float rigid_denom = inverse_mass_sum + angular_inertia;
         float bias = (0.2 / dt);
 
         Constraint axis_constraint = {

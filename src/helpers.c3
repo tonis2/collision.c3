@@ -123,19 +123,3 @@ macro uint Pair.hash(&self) {
 }
 
 macro bool QuaternionValue.equals(self, QuaternionValue b) @operator(==) => self.v.xyzw == b.v.xyzw;
-
-fn float Face.get_area(self, List{Vec3} vertices) {
-	Vec3 a = vertices[self.a];
-    Vec3 b = vertices[self.b];
-    Vec3 c = vertices[self.c];
-
-	Vec3 ab = { b.x - a.x, b.y - a.y, b.z - a.z };
-    Vec3 ac = { c.x - a.x, c.y - a.y, c.z - a.z };
-
-	return ab.cross(ac).sq_magnitude();
-}
-
-fn bool Vertices.is_face_visible(self, Face face, Vec3 point) {
-	Vec3 ap = point - self[face.a];
-	return face.normal.dot(ap) > 1e-6;
-}
