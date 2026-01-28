@@ -311,7 +311,7 @@ fn bool Rigidbody.has_mesh_bvh(&self) {
 <*
  @require self.bodies.len() > 0 : `Must have some bodies to simulate`
 *>
-fn void PhysicsWorld.run_step(&self, float time, uint step_count = 20) {
+fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
 
     // Recompute islands if joint topology changed
     self.compute_islands();
@@ -619,13 +619,11 @@ fn void Collision.create_constraint(&collision, PhysicsWorld* world, float dt) @
 
     Vec3 rA = collision.contact[0] - a.collider.translation;
     Vec3 rB = collision.contact[1] - b.collider.translation;
-    
-    float beta = 0.2f;
-    float slop = 0.005f;
+ 	float beta = 0.2f;
+    float slop = 0.01f;
     int impulse_dir = math::min(a.impulse_dir, b.impulse_dir);
 
     float bias = (beta / dt) * math::max(collision.depth - slop, 0.0f) * impulse_dir;
-
     float normal_inertia;
     if (!a.is_static) normal_inertia += a.get_intertia(rA, -normal);
     if (!b.is_static) normal_inertia += b.get_intertia(rB, normal);
