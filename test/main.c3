@@ -231,3 +231,115 @@ fn void test_remesh() {
     assert(vertices.len() == 4);
     assert(indices.len() == 3);
 }
+
+fn void test_spatial_hash_update() {
+    SpatialHash3D spatial_map = { .cell_size = 1.0 };
+    defer spatial_map.free();
+
+    // Insert a box at position (0,0,0) to (1,1,1)
+    Aabb3 box1_old = {{0, 0, 0}, {0.9, 0.9, 0.9}};
+    spatial_map.insert(box1_old, 0)!!;
+
+    // Insert another box that overlaps
+    Aabb3 box2 = {{0.5, 0.5, 0.5}, {1.5, 1.5, 1.5}};
+    spatial_map.insert(box2, 1)!!;
+
+    // Verify they form a pair (both in cell 0,0,0)
+    usz pair_count = 0;
+    spatial_map.@get_pairs(; Pair pair) {
+        pair_count++;
+        assert(pair.first == 0 && pair.second == 1);
+    };
+    assert(pair_count == 1);
+
+    // Move box1 to a non-overlapping position
+    Aabb3 box1_new = {{5, 5, 5}, {5.9, 5.9, 5.9}};
+    spatial_map.update(box1_old, box1_new, 0)!!;
+
+    // Verify no pairs after move
+    pair_count = 0;
+    spatial_map.@get_pairs(; Pair pair) {
+        pair_count++;
+    };
+    assert(pair_count == 0);
+}
+
+fn void test_spatial_hash_update_same_cell() {
+    SpatialHash3D spatial_map = { .cell_size = 2.0 };
+    defer spatial_map.free();
+
+    // Insert a box
+    Aabb3 box_old = {{0.1, 0.1, 0.1}, {0.5, 0.5, 0.5}};
+    spatial_map.insert(box_old, 0)!!;
+
+    // Move within the same cell (both positions map to cell 0,0,0)
+    Aabb3 box_new = {{0.2, 0.2, 0.2}, {0.6, 0.6, 0.6}};
+    spatial_map.update(box_old, box_new, 0)!!;
+
+    // Should still be in the map
+    usz count = 0;
+    spatial_map.@get_nearby_objects({0.3, 0.3, 0.3}; usz id) {
+        if (id == 0) count++;
+    };
+    assert(count >= 1);
+}
+
+fn void test_spatial_hash_update_cross_cells() {
+    SpatialHash3D spatial_map = { .cell_size = 1.0 };
+    defer spatial_map.free();
+
+    // Insert a box spanning cells (0,0,0) and (1,0,0)
+    Aabb3 box_old = {{0.5, 0.5, 0.5}, {1.5, 0.9, 0.9}};
+    spatial_map.insert(box_old, 0)!!;
+
+    // Insert a stationary box in cell (2,0,0)
+    Aabb3 box_stationary = {{2.1, 0.5, 0.5}, {2.9, 0.9, 0.9}};
+    spatial_map.insert(box_stationary, 1)!!;
+
+    // Initially no collision (boxes don't share cells)
+    usz pair_count = 0;
+    spatial_map.@get_pairs(; Pair pair) {
+        pair_count++;
+    };
+    assert(pair_count == 0);
+
+    // Move box to span cells (1,0,0) and (2,0,0) - now overlaps with stationary box's cell
+    Aabb3 box_new = {{1.5, 0.5, 0.5}, {2.5, 0.9, 0.9}};
+    spatial_map.update(box_old, box_new, 0)!!;
+
+    // Should now have a pair
+    pair_count = 0;
+    spatial_map.@get_pairs(; Pair pair) {
+        pair_count++;
+    };
+    assert(pair_count == 1);
+}
+
+fn void test_spatial_hash_multiple_updates() {
+    SpatialHash3D spatial_map = { .cell_size = 1.0 };
+    defer spatial_map.free();
+
+    Aabb3 box = {{0, 0, 0}, {0.9, 0.9, 0.9}};
+    spatial_map.insert(box, 0)!!;
+
+    // Perform multiple sequential updates
+    for (int i = 1; i <= 5; i++) {
+        Aabb3 new_box = {{(float)i, 0, 0}, {(float)i + 0.9, 0.9, 0.9}};
+        spatial_map.update(box, new_box, 0)!!;
+        box = new_box;
+    }
+
+    // Verify the box is now at position (5,0,0)
+    usz count = 0;
+    spatial_map.@get_nearby_objects({5.5, 0.5, 0.5}; usz id) {
+        if (id == 0) count++;
+    };
+    assert(count >= 1);
+
+    // Verify it's NOT at the old position
+    count = 0;
+    spatial_map.@get_nearby_objects({0.5, 0.5, 0.5}; usz id) {
+        if (id == 0) count++;
+    };
+    assert(count == 0);
+}
