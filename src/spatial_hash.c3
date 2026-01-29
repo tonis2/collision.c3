@@ -42,22 +42,18 @@ fn void? SpatialHash3D.insert(&self, Aabb3 box, usz id) {
     Vec3 min_cell = self.world_to_grid(box.min);
     Vec3 max_cell = self.world_to_grid(box.max);
 
-    for (float x = min_cell.x; x <= max_cell.x; ++x) {
-        for (float y = min_cell.y; y <= max_cell.y; ++y) {
-            for (float z = min_cell.z; z <= max_cell.z; ++z) {
-                usz cell_id = self.world_to_grid({x, y, z}).hash();
+    for (int x = (int)min_cell.x; x <= (int)max_cell.x; ++x) {
+        for (int y = (int)min_cell.y; y <= (int)max_cell.y; ++y) {
+            for (int z = (int)min_cell.z; z <= (int)max_cell.z; ++z) {
+                usz cell_id = (Vec3){(float)x, (float)y, (float)z}.hash();
                 if (!self.table.has_key(cell_id)) {
                     self.table.set(cell_id, {});
-                };
-
+                }
                 self.table.get_ref(cell_id)!.push(id);
             }
         }
     }
 }
-
-alias CellIDs = ElasticArray{usz, 60};
-
 
 <*
  Updates box location in spatial map
@@ -66,51 +62,65 @@ alias CellIDs = ElasticArray{usz, 60};
  @param id : `Box id`
  @require old_box.size().sq_magnitude() < 10000 && old_box.size().sq_magnitude() > 0.1 : `Aabb box size invalid, could be because memory errors`
  @require new_box.size().sq_magnitude() < 10000 && new_box.size().sq_magnitude() > 0.1 : `Aabb box size invalid, could be because memory errors`
-*>    
+*>
 fn void? SpatialHash3D.update(&self, Aabb3 old_box, Aabb3 new_box, usz id) {
-    if (old_box == new_box) return;
+    Vec3 old_min_cell = self.world_to_grid(old_box.min);
+    Vec3 old_max_cell = self.world_to_grid(old_box.max);
 
     Vec3 new_min_cell = self.world_to_grid(new_box.min);
     Vec3 new_max_cell = self.world_to_grid(new_box.max);
 
-    Vec3 old_min_cell = self.world_to_grid(old_box.min);
-    Vec3 old_max_cell = self.world_to_grid(old_box.max);
+    // Early exit if grid cells haven't changed
+    if (old_min_cell == new_min_cell && old_max_cell == new_max_cell) return;
 
-    CellIDs old_ids, new_ids;
-    
-    for (float x = old_min_cell.x; x <= old_max_cell.x; ++x) {
-        for (float y = old_min_cell.y; y <= old_max_cell.y; ++y) {
-            for (float z = old_min_cell.z; z <= old_max_cell.z; ++z) {
-                usz cell_id = self.world_to_grid({x, y, z}).hash();
-                old_ids.push(cell_id);
+    int old_min_x = (int)old_min_cell.x;
+    int old_max_x = (int)old_max_cell.x;
+    int old_min_y = (int)old_min_cell.y;
+    int old_max_y = (int)old_max_cell.y;
+    int old_min_z = (int)old_min_cell.z;
+    int old_max_z = (int)old_max_cell.z;
+
+    int new_min_x = (int)new_min_cell.x;
+    int new_max_x = (int)new_max_cell.x;
+    int new_min_y = (int)new_min_cell.y;
+    int new_max_y = (int)new_max_cell.y;
+    int new_min_z = (int)new_min_cell.z;
+    int new_max_z = (int)new_max_cell.z;
+
+    // Remove from old cells that are NOT in new range
+    for (int x = old_min_x; x <= old_max_x; ++x) {
+        for (int y = old_min_y; y <= old_max_y; ++y) {
+            for (int z = old_min_z; z <= old_max_z; ++z) {
+                bool in_new = x >= new_min_x && x <= new_max_x &&
+                              y >= new_min_y && y <= new_max_y &&
+                              z >= new_min_z && z <= new_max_z;
+                if (!in_new) {
+                    usz cell_id = (Vec3){(float)x, (float)y, (float)z}.hash();
+                    CellList*? cells = self.table.get_ref(cell_id);
+                    if (try cells) {
+                        cells.remove_using_test(fn (id, ctx) => *id == *(usz*)ctx, &&id);
+                        if (cells.is_empty()) self.table.remove(cell_id);
+                    }
+                }
             }
         }
     }
 
-    for (float x = new_min_cell.x; x <= new_max_cell.x; ++x) {
-        for (float y = new_min_cell.y; y <= new_max_cell.y; ++y) {
-            for (float z = new_min_cell.z; z <= new_max_cell.z; ++z) {
-                usz cell_id = self.world_to_grid({x, y, z}).hash();
-                new_ids.push(cell_id);      
+    // Add to new cells that were NOT in old range
+    for (int x = new_min_x; x <= new_max_x; ++x) {
+        for (int y = new_min_y; y <= new_max_y; ++y) {
+            for (int z = new_min_z; z <= new_max_z; ++z) {
+                bool in_old = x >= old_min_x && x <= old_max_x &&
+                              y >= old_min_y && y <= old_max_y &&
+                              z >= old_min_z && z <= old_max_z;
+                if (!in_old) {
+                    usz cell_id = (Vec3){(float)x, (float)y, (float)z}.hash();
+                    if (!self.table.has_key(cell_id)) {
+                        self.table.set(cell_id, {});
+                    }
+                    self.table.get_ref(cell_id)!.push(id);
+                }
             }
-        }
-    }
-
-    foreach (cell: old_ids) {
-        CellList*? cells = self.table.get_ref(cell);
-        if (try cells) {
-            cells.remove_using_test(fn (id, ctx) => *id == *(usz*)ctx, &&id);
-            if (cells.is_empty()) self.table.remove(cell);
-        };
-    }
-
-    foreach (cell: new_ids) {
-        if (old_ids.contains(cell)) {
-            if (!self.table.has_key(cell)) {
-                self.table.set(cell, {});
-            };
-
-            self.table.get_ref(cell)!.push(id);
         }
     }
 }
