@@ -14,6 +14,7 @@ import std::core::mem;
 const EPSILON @local = 0.001f;
 const MAX_COLLISION_TASKS @local = 1024;
 const NUM_WORKER_THREADS @local = 8;
+const MAX_CONTACTS_PER_PAIR @local = 8;  // Max contacts per collision pair
 
 alias CollisionFilter = HashMap{Pair, bool};
 alias RigidBodyMap = LinkedHashMap{usz, Rigidbody};
@@ -130,18 +131,18 @@ struct PhysicsWorld {
     SpatialHash3D spatial_map;
     CollisionFilter filters;
     UnionFindMap island_parent;
-	float angular_dampening;
-	float linear_dampening;
+	bool islands_dirty;
+
     Vec3 gravity;
     float sleep_timer;
 	float sleep_delta;
-    bool islands_dirty;
+	float angular_dampening;
+	float linear_dampening;
 
     // Threading support
     // Template param sets both queue size AND thread count
     ThreadPool{NUM_WORKER_THREADS} thread_pool;
     Mutex collision_mutex;
-    bool threaded;           // Enable/disable threading
     bool thread_pool_initialized;
 
     // Reusable task lists (avoid per-frame allocations)
@@ -151,13 +152,9 @@ struct PhysicsWorld {
     List{IntegrationTask} integration_tasks;
     List{Rigidbody*} active_bodies;
 
-    // BVH collision cache (avoid per-triangle allocations)
-    List{TriangleVerts} bvh_query_cache;
-    Mesh tri_mesh_cache;
-    bool bvh_cache_initialized;
-    // Contact sorting cache (keep deepest N contacts)
-    Collision[8] bvh_contact_cache;
-    usz bvh_contact_count;
+    // Contact sorting cache (keep deepest N contacts per pair)
+    Collision[MAX_CONTACTS_PER_PAIR] contact_cache;
+    usz contact_cache_count;
 }
 
 fn void PhysicsWorld.free(&self) {
@@ -178,12 +175,6 @@ fn void PhysicsWorld.free(&self) {
     self.island_tasks.free();
     self.integration_tasks.free();
     self.active_bodies.free();
-    // Free BVH cache
-    self.bvh_query_cache.free();
-    if (self.bvh_cache_initialized) {
-        self.tri_mesh_cache.vertices.free();
-        self.tri_mesh_cache.triangles.free();
-    }
 }
 
 const PhysicsWorld DEFAULT_PHYSICS_WORLD = {
@@ -193,7 +184,6 @@ const PhysicsWorld DEFAULT_PHYSICS_WORLD = {
 	.linear_dampening = 0.9,
 	.angular_dampening = 0.9,
 	.sleep_delta = 0.1,
-	.threaded = true,
 };
 
 <*
@@ -504,75 +494,6 @@ fn void solve_constraint_internal(Constraint* constraint) @local {
  @require self.bodies.len() > 0 : `Must have some bodies to simulate`
 *>
 fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
-    if (self.threaded) {
-        self.run_step_parallel(time, step_count);
-    } else {
-        self.run_step_sequential(time, step_count);
-    }
-}
-
-// Sequential (single-threaded) physics step - original implementation
-fn void PhysicsWorld.run_step_sequential(&self, float time, uint step_count) @local {
-    // Recompute islands if joint topology changed
-    self.compute_islands();
-
-    // Create collisions
-    self.spatial_map.@get_pairs(;Pair pair) {
-        Rigidbody* body_a = self.find_body(pair.a)!!;
-        Rigidbody* body_b = self.find_body(pair.b)!!;
-
-        bool has_filter = self.filters.has_key({body_a.id, body_b.id}) == true;
-
-        if (!has_filter && body_a.transformed_aabb.collides(body_b.transformed_aabb)) {
-            if (body_a.sleeping && body_b.is_active()) self.wake_island(body_a);
-            if (body_b.sleeping && body_a.is_active()) self.wake_island(body_b);
-
-            if (body_a.is_active() || body_b.is_active()) {
-                bool a_has_compound = body_a.has_compound();
-                bool b_has_compound = body_b.has_compound();
-
-                if (a_has_compound || b_has_compound) {
-                    self.check_coacd_collision(body_a, body_b, pair);
-                } else {
-                    CollisionInfo collision_info = collision::check_convex_collision(&body_a.collider, &body_b.collider, epa:true);
-
-                    if (collision_info.collided) {
-                        self.collisions.push({
-                            .a = pair.a,
-                            .b = pair.b,
-                            .normal = collision_info.normal,
-                            .contact = collision_info.contact_points,
-                            .depth = collision_info.depth,
-                        });
-                    }
-                }
-            }
-        }
-    };
-
-    foreach (&collision: self.collisions) {
-        collision.create_constraint(self, time);
-    }
-
-    foreach (&joint: self.joints) {
-        joint.create_constraint(self, time);
-    }
-
-    for (usz i; i < step_count; i++) {
-        foreach (&contraint: self.constraints) {
-            self.solve_constraint(contraint);
-        }
-    }
-
-    self.collisions.clear();
-    self.constraints.clear();
-
-    self.integrate_bodies(time);
-    self.update_sleep_state();
-}
-
-// Parallel (multi-threaded) physics step
-fn void PhysicsWorld.run_step_parallel(&self, float time, uint step_count) @local {
     // Lazy init thread pool (can't do in create_world because workers get pointer before move)
     if (!self.thread_pool_initialized) {
         self.thread_pool.init()!!;
@@ -940,47 +861,6 @@ fn void PhysicsWorld.update_sleep_state(&self) @local {
     }
 }
 
-<*
- @require constraint.body_a != constraint.body_b : `Collision bodies should not be same index`
-*>
-fn void PhysicsWorld.solve_constraint(&self, Constraint* constraint) @local {
-    Rigidbody* a = constraint.body_a;
-    Rigidbody* b = constraint.body_b;
-
-    float* cache = constraint.impulse_cache;
-
-    // Total velocity difference (angular + linear)
-    float relative_velocity = constraint.relative_velocity();
-
-    // Calculate Lambda (The corrective impulse magnitude)
-    float lambda = -(relative_velocity + constraint.bias + constraint.bounce) * constraint.effective_mass;
-
-    if (constraint.friction != 0) {
-        float max_friction = constraint.friction * cache[0];
-        constraint.min = -max_friction;
-        constraint.max = max_friction;
-    }
-
-    // Accumulate impulse with clamping (for proper friction based on total normal force)
-    float old_impulse = cache[constraint.impulse_offset];
-    float new_impulse = math::max(constraint.min, math::min(lambda, constraint.max));
-    // float impulse_delta = new_impulse - old_impulse;
-
-    // Store accumulated impulse (friction constraints need total normal impulse from cache[0])
-    cache[constraint.impulse_offset] = new_impulse;
-
-    // Apply impulse delta (not the accumulated total)
-    if (!a.is_static) {
-        a.apply_linear_impulse(constraint.linear_a * new_impulse);
-        a.apply_angular_impulse(constraint.angular_a * new_impulse);
-    }
-
-    if (!b.is_static) {
-        b.apply_linear_impulse(constraint.linear_b * new_impulse);
-        b.apply_angular_impulse(constraint.angular_b * new_impulse);
-    }
-}
-
 fn float Constraint.relative_velocity(self) {
     Rigidbody* a = self.body_a;
     Rigidbody* b = self.body_b;
@@ -1099,4 +979,262 @@ fn void Collision.create_constraint(&collision, PhysicsWorld* world, float dt) @
     };
 
     world.constraints.push_all({normal_constraint, tangent_constraint, tangent_constraint_2});
+}
+
+
+<*
+ @require constraint.body_a != constraint.body_b : `Collision bodies should not be same index`
+*>
+fn void PhysicsWorld.solve_constraint(&self, Constraint* constraint) @local {
+    Rigidbody* a = constraint.body_a;
+    Rigidbody* b = constraint.body_b;
+
+    float* cache = constraint.impulse_cache;
+
+    // Total velocity difference (angular + linear)
+    float relative_velocity = constraint.relative_velocity();
+
+    // Calculate Lambda (The corrective impulse magnitude)
+    float lambda = -(relative_velocity + constraint.bias + constraint.bounce) * constraint.effective_mass;
+
+    if (constraint.friction != 0) {
+        float max_friction = constraint.friction * cache[0];
+        constraint.min = -max_friction;
+        constraint.max = max_friction;
+    }
+
+    // Accumulate impulse with clamping (for proper friction based on total normal force)
+    float old_impulse = cache[constraint.impulse_offset];
+    float new_impulse = math::max(constraint.min, math::min(lambda, constraint.max));
+    // float impulse_delta = new_impulse - old_impulse;
+
+    // Store accumulated impulse (friction constraints need total normal impulse from cache[0])
+    cache[constraint.impulse_offset] = new_impulse;
+
+    // Apply impulse delta (not the accumulated total)
+    if (!a.is_static) {
+        a.apply_linear_impulse(constraint.linear_a * new_impulse);
+        a.apply_angular_impulse(constraint.angular_a * new_impulse);
+    }
+
+    if (!b.is_static) {
+        b.apply_linear_impulse(constraint.linear_b * new_impulse);
+        b.apply_angular_impulse(constraint.angular_b * new_impulse);
+    }
+}
+
+
+// Check collisions using CoACD decomposed convex pieces
+// Each piece is tested as a convex-convex collision (much faster than BVH triangles)
+fn void PhysicsWorld.check_coacd_collision(&self, Rigidbody* body_a, Rigidbody* body_b, Pair pair) {
+    bool a_has_compound = body_a.collider.get_type() == ShapeType.COMPOUND;
+    bool b_has_compound = body_b.collider.get_type() == ShapeType.COMPOUND;
+
+    // Determine which body has the compound shape
+    Rigidbody* compound_body;
+    Rigidbody* other_body;
+    bool compound_is_a;
+
+    if (a_has_compound) {
+        compound_body = body_a;
+        other_body = body_b;
+        compound_is_a = true;
+    } else if (b_has_compound) {
+        compound_body = body_b;
+        other_body = body_a;
+        compound_is_a = false;
+    } else {
+        // Neither has compound - fall back to regular convex collision
+        CollisionInfo info = collision::check_convex_collision(&body_a.collider, &body_b.collider, epa:true);
+        if (info.collided) {
+            self.collisions.push({
+                .a = pair.a,
+                .b = pair.b,
+                .normal = info.normal,
+                .contact = info.contact_points,
+                .depth = info.depth,
+            });
+        }
+        return;
+    }
+
+    CompoundShape* compound = (CompoundShape*)compound_body.collider.shape;
+
+    // Reset contact cache
+    self.contact_cache_count = 0;
+
+    // Test each convex piece against the other body
+    foreach (&piece : compound.shapes) {
+        // Create transformed shape for this piece
+        // Piece transform is relative to compound body
+        TransformedShape piece_shape = {
+            .translation = compound_body.collider.translation + compound_body.collider.rotation * piece.offset,
+            .scale = compound_body.collider.scale,
+            .rotation = compound_body.collider.rotation,
+            .shape = piece.shape,
+        };
+
+        // Early AABB rejection (use transformed AABB for world-space comparison)
+        Aabb3 piece_aabb = piece_shape.get_transformed_aabb();
+        if (!piece_aabb.collides(other_body.transformed_aabb)) continue;
+
+        // Check collision
+        CollisionInfo info;
+        if (compound_is_a) {
+            info = collision::check_convex_collision(&piece_shape, &other_body.collider, epa:true);
+        } else {
+            info = collision::check_convex_collision(&other_body.collider, &piece_shape, epa:true);
+        }
+
+        if (info.collided && info.depth > 0) {
+            Collision new_contact = {
+                .a = pair.a,
+                .b = pair.b,
+                .normal = info.normal,
+                .contact = info.contact_points,
+                .depth = info.depth,
+            };
+
+            // Insert into sorted cache (deepest first), same as BVH
+            if (self.contact_cache_count < MAX_CONTACTS_PER_PAIR) {
+                usz insert_pos = self.contact_cache_count;
+                for (usz i = 0; i < self.contact_cache_count; i++) {
+                    if (info.depth > self.contact_cache[i].depth) {
+                        insert_pos = i;
+                        break;
+                    }
+                }
+                for (usz i = self.contact_cache_count; i > insert_pos; i--) {
+                    self.contact_cache[i] = self.contact_cache[i - 1];
+                }
+                self.contact_cache[insert_pos] = new_contact;
+                self.contact_cache_count++;
+            } else if (info.depth > self.contact_cache[MAX_CONTACTS_PER_PAIR - 1].depth) {
+                usz insert_pos = MAX_CONTACTS_PER_PAIR - 1;
+                for (usz i = 0; i < MAX_CONTACTS_PER_PAIR - 1; i++) {
+                    if (info.depth > self.contact_cache[i].depth) {
+                        insert_pos = i;
+                        break;
+                    }
+                }
+                for (usz i = MAX_CONTACTS_PER_PAIR - 1; i > insert_pos; i--) {
+                    self.contact_cache[i] = self.contact_cache[i - 1];
+                }
+                self.contact_cache[insert_pos] = new_contact;
+            }
+        }
+    }
+
+    // Push the best contacts to collision list
+    for (usz i = 0; i < self.contact_cache_count; i++) {
+        self.collisions.push(self.contact_cache[i]);
+    }
+}
+
+// Thread-safe version of check_bvh_collision that returns result instead of pushing to list
+fn Collision? PhysicsWorld.test_bvh_collision(&self, Rigidbody* body_a, Rigidbody* body_b, Pair pair) @local {
+    bool a_has_bvh = body_a.has_mesh_bvh();
+
+    Rigidbody* mesh_body;
+    Rigidbody* other_body;
+    bool mesh_is_a;
+
+    if (a_has_bvh) {
+        mesh_body = body_a;
+        other_body = body_b;
+        mesh_is_a = true;
+    } else {
+        mesh_body = body_b;
+        other_body = body_a;
+        mesh_is_a = false;
+    }
+
+    Mesh* mesh = (Mesh*)mesh_body.collider.shape;
+
+    // Pre-compute transform values for AABB calculation
+    Vec3 mesh_translation = mesh_body.collider.translation;
+    Vec3 mesh_scale = mesh_body.collider.scale;
+    QuaternionValue mesh_rotation = mesh_body.collider.rotation;
+
+    Aabb3 local_aabb = other_body.transformed_aabb.inverse_transform(
+        mesh_translation,
+        mesh_scale,
+        mesh_rotation
+    );
+
+    List{TriangleVerts} triangles;
+    defer triangles.free();
+    mesh.bvh.query_all_triangles(local_aabb, &triangles);
+
+    // Create reusable triangle mesh once (thread-local, no shared state)
+    Mesh tri_mesh;
+    tri_mesh.vertices.push({0,0,0});
+    tri_mesh.vertices.push({0,0,0});
+    tri_mesh.vertices.push({0,0,0});
+    tri_mesh.triangles.push({0, 1, 2});
+    defer tri_mesh.free();
+
+    TransformedShape tri_shape = {
+        .translation = mesh_translation,
+        .scale = mesh_scale,
+        .rotation = mesh_rotation,
+        .shape = &tri_mesh,
+    };
+
+    Vec3 best_normal;
+    Vec3[2] best_contact;
+    float max_depth = 0;
+
+    foreach (tri : triangles) {
+        // Early AABB rejection: compute triangle world AABB
+        Vec3 v0 = mesh_rotation * (tri[0] * mesh_scale) + mesh_translation;
+        Vec3 v1 = mesh_rotation * (tri[1] * mesh_scale) + mesh_translation;
+        Vec3 v2 = mesh_rotation * (tri[2] * mesh_scale) + mesh_translation;
+
+        Aabb3 tri_aabb = {
+            .min = {
+                math::min(v0.x, math::min(v1.x, v2.x)),
+                math::min(v0.y, math::min(v1.y, v2.y)),
+                math::min(v0.z, math::min(v1.z, v2.z))
+            },
+            .max = {
+                math::max(v0.x, math::max(v1.x, v2.x)),
+                math::max(v0.y, math::max(v1.y, v2.y)),
+                math::max(v0.z, math::max(v1.z, v2.z))
+            }
+        };
+
+        // Skip GJK if triangle AABB doesn't overlap other body's AABB
+        if (!tri_aabb.collides(other_body.transformed_aabb)) continue;
+
+        // Update mesh vertices in-place (no allocation)
+        tri_mesh.vertices[0] = tri[0];
+        tri_mesh.vertices[1] = tri[1];
+        tri_mesh.vertices[2] = tri[2];
+
+        CollisionInfo info;
+        if (mesh_is_a) {
+            info = collision::check_convex_collision(&tri_shape, &other_body.collider, epa:true);
+        } else {
+            info = collision::check_convex_collision(&other_body.collider, &tri_shape, epa:true);
+        }
+
+        if (info.collided && info.depth > max_depth) {
+            max_depth = info.depth;
+            best_normal = info.normal;
+            best_contact = info.contact_points;
+        }
+    }
+
+    if (max_depth > 0) {
+        return {
+            .a = pair.a,
+            .b = pair.b,
+            .normal = best_normal,
+            .contact = best_contact,
+            .depth = max_depth,
+        };
+    }
+
+    return {};
 }

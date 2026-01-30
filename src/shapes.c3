@@ -16,6 +16,8 @@ enum ShapeType {
     COMPOUND
 }
 
+alias CollisionShapes = List{CollisionShape};
+
 interface CollisionShape
 {
     fn Vec3 furthest_point(Vec3 direction);
@@ -99,6 +101,14 @@ fn void CompoundShape.free(&self) @dynamic {
         piece.shape.free();
     }
     self.shapes.free();
+}
+
+fn void CollisionShapes.release(&self) {
+	foreach (shape: self) {
+		if (&shape.free) shape.free();
+		mem::free(shape);
+	};
+	self.free();
 }
 
 fn Matrix3f CompoundShape.inertia_tensor(&self, float mass) @dynamic {
@@ -286,8 +296,6 @@ fn Aabb3 Cylinder.get_aabb(&self) @dynamic {
         .max = {radius_max, self.height, radius_max}
     };
 }
-
-
 
 fn Vec3 TransformedShape.get_world_center_of_mass(&self, Vec3 center_of_mass) => self.rotation * center_of_mass + self.translation;
 

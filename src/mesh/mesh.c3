@@ -12,6 +12,12 @@ fn bool Vec3.equals(Vec3* self, Vec3 v) {
 
 // Triangle structure
 alias Triangle = uint[<3>];
+alias MeshList = List{Mesh};
+
+fn void MeshList.release(&self) {
+	foreach (&piece : self) piece.free();
+	self.free();
+}
 
 fn Vec3 Triangle.get_normal(Triangle* self, Vec3[] vertices) {
     // Bounds check
@@ -44,6 +50,7 @@ struct Mesh (CollisionShape) {
     List{Vec3} vertices;
     List{Triangle} triangles;
     TriBVHNode* bvh;
+	Aabb3 aabb;
 }
 
 fn usz? Mesh.to_format(&self, Formatter* formatter) @dynamic {
@@ -59,6 +66,7 @@ fn Mesh create_mesh(Vec3[] vertices, uint[] indices) {
 	Mesh mesh;
 	mesh.vertices.push_all(vertices);
 	mesh.set_indices(indices);
+	mesh.aabb = mesh.get_aabb();
 	return mesh;
 }
 

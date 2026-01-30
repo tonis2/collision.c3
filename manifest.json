@@ -11,10 +11,10 @@
     "src/mesh/remesh.c3",
     "src/mesh/mesh.c3",
 
-    "src/solver/shapes.c3",
     "src/solver/resolver.c3",
     "src/solver/joint.c3",
 
+    "src/shapes.c3",
     "src/aabb.c3", 
     "src/helpers.c3",
     "src/spatial_hash.c3"

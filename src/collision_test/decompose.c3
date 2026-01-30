@@ -533,8 +533,9 @@ fn List{Mesh} coacd_decompose(Mesh* mesh, CoacdParameters params = COACD_MEDIUM)
     Aabb3 bounds = mesh.get_aabb();
     float diagonal = bounds.size().length();
 
-    // No filtering - keep all valid hulls to ensure full coverage
-    // Complex meshes like carts need all pieces for proper collision
+    // Minimal filtering - only remove truly tiny pieces (0.5% of diagonal)
+    // This prevents degenerate corner pieces while keeping thin surfaces like floors
+    double min_hull_diagonal = diagonal * 0.005;
 
     // Working queue
     List{DecompPart} queue;
@@ -569,9 +570,14 @@ fn List{Mesh} coacd_decompose(Mesh* mesh, CoacdParameters params = COACD_MEDIUM)
         if (part.depth >= max_depth || part.mesh.is_convex()) {
             Mesh hull = quickhull(part.mesh.vertices.array_view());
             if (hull.vertices.len() >= 4) {
-                io::printfn("  Adding hull at depth %d: %d verts, convex=%s",
-                    part.depth, hull.vertices.len(), part.mesh.is_convex() ? "yes" : "no(max_depth)");
-                result.push(hull);
+                double hull_diag = hull.get_aabb().size().length();
+                if (hull_diag >= min_hull_diagonal) {
+                    io::printfn("  Adding hull at depth %d: %d verts, convex=%s",
+                        part.depth, hull.vertices.len(), part.mesh.is_convex() ? "yes" : "no(max_depth)");
+                    result.push(hull);
+                } else {
+                    hull.free();
+                }
             } else {
                 hull.free();
             }
@@ -599,7 +605,12 @@ fn List{Mesh} coacd_decompose(Mesh* mesh, CoacdParameters params = COACD_MEDIUM)
             // Can't split further - add hull to results
             Mesh hull = quickhull(part.mesh.vertices.array_view());
             if (hull.vertices.len() >= 4) {
-                result.push(hull);
+                double hull_diag = hull.get_aabb().size().length();
+                if (hull_diag >= min_hull_diagonal) {
+                    result.push(hull);
+                } else {
+                    hull.free();
+                }
             } else {
                 hull.free();
             }
@@ -639,7 +650,12 @@ fn List{Mesh} coacd_decompose(Mesh* mesh, CoacdParameters params = COACD_MEDIUM)
 
         Mesh hull = quickhull(part.mesh.vertices.array_view());
         if (hull.vertices.len() >= 4) {
-            result.push(hull);
+            double hull_diag = hull.get_aabb().size().length();
+            if (hull_diag >= min_hull_diagonal) {
+                result.push(hull);
+            } else {
+                hull.free();
+            }
         } else {
             hull.free();
         }
