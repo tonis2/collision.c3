@@ -6,13 +6,43 @@ import std::math;
 import std::collections::list;
 import std::time;
 import std::collections::map;
+import std::thread::pool;
+import std::thread;
+import std::atomic;
+import std::core::mem;
 
 const EPSILON @local = 0.001f;
+const MAX_COLLISION_TASKS @local = 1024;
+const NUM_WORKER_THREADS @local = 8;
 
 alias CollisionFilter = HashMap{Pair, bool};
 alias RigidBodyMap = LinkedHashMap{usz, Rigidbody};
 alias RigidBodyIterator = LinkedHashMapValueIterator{usz, Rigidbody};
 alias UnionFindMap = HashMap{usz, usz};
+
+// Task structure for parallel collision testing
+struct CollisionTask {
+    PhysicsWorld* world;
+    Pair pair;
+    Collision* result;       // Where to store result
+    bool has_collision;      // Flag if collision was found
+}
+
+// Task structure for parallel integration
+struct IntegrationTask {
+    PhysicsWorld* world;
+    Rigidbody** bodies;      // Array of body pointers to process
+    usz count;               // Number of bodies in this batch
+    float time;
+}
+
+// Task structure for island constraint solving
+struct IslandSolveTask {
+    PhysicsWorld* world;
+    Constraint** constraints; // Constraints for this island
+    usz count;               // Number of constraints
+    uint iterations;         // Solver iterations
+}
 
 struct Constraint {
     Rigidbody* body_a;
@@ -106,9 +136,27 @@ struct PhysicsWorld {
     float sleep_timer;
 	float sleep_delta;
     bool islands_dirty;
+
+    // Threading support
+    // Template param sets both queue size AND thread count
+    ThreadPool{NUM_WORKER_THREADS} thread_pool;
+    Mutex collision_mutex;
+    bool threaded;           // Enable/disable threading
+    bool thread_pool_initialized;
+
+    // Reusable task lists (avoid per-frame allocations)
+    List{CollisionTask} collision_tasks;
+    List{Collision} collision_results;
+    List{IslandSolveTask} island_tasks;
+    List{IntegrationTask} integration_tasks;
+    List{Rigidbody*} active_bodies;
 }
 
 fn void PhysicsWorld.free(&self) {
+    if (self.thread_pool_initialized) {
+        self.thread_pool.stop_and_destroy()!!;
+        self.collision_mutex.destroy()!!;
+    }
     self.bodies.free();
     self.collisions.free();
     self.spatial_map.free();
@@ -116,28 +164,25 @@ fn void PhysicsWorld.free(&self) {
     self.filters.free();
     self.joints.free();
     self.island_parent.free();
+    // Free reusable task lists
+    self.collision_tasks.free();
+    self.collision_results.free();
+    self.island_tasks.free();
+    self.integration_tasks.free();
+    self.active_bodies.free();
 }
 
-fn PhysicsWorld create_world(
-	Vec3 gravity = {0.0f, 0.0f, -9.8f},
-	float cell_size = 2.0, 
-	float sleep_timer = 5.0, 
-	float linear_dampening = 0.9, 
-	float angular_dampening = 0.9,
-	float sleep_delta = 0.1
-) 
-{
-    PhysicsWorld world = {
-        .gravity = gravity,
-        .spatial_map.cell_size = cell_size,
-        .sleep_timer = sleep_timer,
-		.linear_dampening = linear_dampening,
-		.angular_dampening = angular_dampening,
-		.sleep_delta = sleep_delta,
-    };
 
-    return world;
-}
+
+const PhysicsWorld DEFAULT_PHYSICS_WORLD = {
+	.gravity = {0.0f, 0.0f, -9.8f},
+	.spatial_map.cell_size = 2.0,
+	.sleep_timer = 5.0,
+	.linear_dampening = 0.9,
+	.angular_dampening = 0.9,
+	.sleep_delta = 0.1,
+	.threaded = true,
+};
 
 <*
  @require self.bodies.len() > 0 : `Must have rigid bodies`
@@ -315,11 +360,216 @@ fn bool Rigidbody.has_mesh_bvh(&self) {
     return false;
 }
 
+// Worker function for parallel collision testing (convex vs convex)
+fn int collision_test_worker(void* arg) @local {
+    CollisionTask* task = (CollisionTask*)arg;
+    PhysicsWorld* world = task.world;
+
+    Rigidbody* body_a = world.find_body(task.pair.a)!!;
+    Rigidbody* body_b = world.find_body(task.pair.b)!!;
+
+    // Check for BVH mesh collisions
+    bool a_has_bvh = body_a.has_mesh_bvh();
+    bool b_has_bvh = body_b.has_mesh_bvh();
+
+    if (a_has_bvh || b_has_bvh) {
+        // BVH collision - store result directly (thread-safe via separate result slots)
+        Collision? collision = world.test_bvh_collision(body_a, body_b, task.pair);
+        if (try c = collision) {
+            *task.result = c;
+            task.has_collision = true;
+        }
+    } else {
+        // GJK collision test
+        CollisionInfo info = collision::check_convex_collision(&body_a.collider, &body_b.collider, epa:true);
+
+        if (info.collided) {
+            *task.result = {
+                .a = task.pair.a,
+                .b = task.pair.b,
+                .normal = info.normal,
+                .contact = info.contact_points,
+                .depth = info.depth,
+            };
+            task.has_collision = true;
+        }
+    }
+    return 0;
+}
+
+// Worker function for parallel integration
+fn int integration_worker(void* arg) @local {
+    IntegrationTask* task = (IntegrationTask*)arg;
+    PhysicsWorld* world = task.world;
+    float time = task.time;
+
+    for (usz i = 0; i < task.count; i++) {
+        Rigidbody* body = task.bodies[i];
+
+        // Apply linear velocity and translation
+        body.collider.translation += body.linear_velocity * time;
+
+        // Apply angular velocity as rotation
+        Vec3 axis = body.angular_velocity * (time * 0.5);
+        if (axis != {0,0,0}) {
+            body.collider.rotation = (body.collider.rotation + (QuaternionValue){...axis, 0} * body.collider.rotation).normalize();
+        }
+
+        // Apply gravity
+        body.apply_linear_impulse(world.gravity * body.gravity_factor * body.mass * time);
+
+        // Apply dampening friction
+        body.angular_velocity *= math::pow(world.angular_dampening, time);
+        body.linear_velocity *= math::pow(world.linear_dampening, time);
+
+        // Clamp very small velocities to zero
+        const float VELOCITY_CLAMP_SQ = 0.01f;
+        if (body.linear_velocity.sq_magnitude() < VELOCITY_CLAMP_SQ) {
+            body.linear_velocity = {0, 0, 0};
+        }
+        if (body.angular_velocity.sq_magnitude() < VELOCITY_CLAMP_SQ) {
+            body.angular_velocity = {0, 0, 0};
+        }
+    }
+    return 0;
+}
+
+// Worker function for island-parallel constraint solving
+fn int island_solve_worker(void* arg) @local {
+    IslandSolveTask* task = (IslandSolveTask*)arg;
+
+    for (uint iter = 0; iter < task.iterations; iter++) {
+        for (usz i = 0; i < task.count; i++) {
+            Constraint* constraint = task.constraints[i];
+            solve_constraint_internal(constraint);
+        }
+    }
+    return 0;
+}
+
+// Internal constraint solver (no PhysicsWorld needed)
+fn void solve_constraint_internal(Constraint* constraint) @local {
+    Rigidbody* a = constraint.body_a;
+    Rigidbody* b = constraint.body_b;
+
+    float* cache = constraint.impulse_cache;
+
+    // Total velocity difference (angular + linear)
+    float relative_velocity = constraint.relative_velocity();
+
+    // Calculate Lambda (The corrective impulse magnitude)
+    float lambda = -(relative_velocity + constraint.bias + constraint.bounce) * constraint.effective_mass;
+
+    if (constraint.friction != 0) {
+        float max_friction = constraint.friction * cache[0];
+        constraint.min = -max_friction;
+        constraint.max = max_friction;
+    }
+
+    // Accumulate impulse with clamping
+    float new_impulse = math::max(constraint.min, math::min(lambda, constraint.max));
+
+    cache[constraint.impulse_offset] = new_impulse;
+
+    // Apply impulse
+    if (!a.is_static) {
+        a.apply_linear_impulse(constraint.linear_a * new_impulse);
+        a.apply_angular_impulse(constraint.angular_a * new_impulse);
+    }
+
+    if (!b.is_static) {
+        b.apply_linear_impulse(constraint.linear_b * new_impulse);
+        b.apply_angular_impulse(constraint.angular_b * new_impulse);
+    }
+}
+
+// Thread-safe version of check_bvh_collision that returns result instead of pushing to list
+fn Collision? PhysicsWorld.test_bvh_collision(&self, Rigidbody* body_a, Rigidbody* body_b, Pair pair) @local {
+    bool a_has_bvh = body_a.has_mesh_bvh();
+
+    Rigidbody* mesh_body;
+    Rigidbody* other_body;
+    bool mesh_is_a;
+
+    if (a_has_bvh) {
+        mesh_body = body_a;
+        other_body = body_b;
+        mesh_is_a = true;
+    } else {
+        mesh_body = body_b;
+        other_body = body_a;
+        mesh_is_a = false;
+    }
+
+    Mesh* mesh = (Mesh*)mesh_body.collider.shape;
+
+    Aabb3 local_aabb = other_body.transformed_aabb.inverse_transform(
+        mesh_body.collider.translation,
+        mesh_body.collider.scale,
+        mesh_body.collider.rotation
+    );
+
+    List{TriangleVerts} triangles;
+    defer triangles.free();
+    mesh.bvh.query_all_triangles(local_aabb, &triangles);
+
+    Vec3 best_normal;
+    Vec3[2] best_contact;
+    float max_depth = 0;
+
+    foreach (tri : triangles) {
+        Mesh tri_mesh;
+        tri_mesh.vertices.push_all({tri[0], tri[1], tri[2]});
+        tri_mesh.triangles.push({0, 1, 2});
+        defer tri_mesh.free();
+
+        TransformedShape tri_shape = {
+            .translation = mesh_body.collider.translation,
+            .scale = mesh_body.collider.scale,
+            .rotation = mesh_body.collider.rotation,
+            .shape = &tri_mesh,
+        };
+
+        CollisionInfo info;
+        if (mesh_is_a) {
+            info = collision::check_convex_collision(&tri_shape, &other_body.collider, epa:true);
+        } else {
+            info = collision::check_convex_collision(&other_body.collider, &tri_shape, epa:true);
+        }
+
+        if (info.collided && info.depth > max_depth) {
+            max_depth = info.depth;
+            best_normal = info.normal;
+            best_contact = info.contact_points;
+        }
+    }
+
+    if (max_depth > 0) {
+        return {
+            .a = pair.a,
+            .b = pair.b,
+            .normal = best_normal,
+            .contact = best_contact,
+            .depth = max_depth,
+        };
+    }
+
+    return {};
+}
+
 <*
  @require self.bodies.len() > 0 : `Must have some bodies to simulate`
 *>
 fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
+    if (self.threaded) {
+        self.run_step_parallel(time, step_count);
+    } else {
+        self.run_step_sequential(time, step_count);
+    }
+}
 
+// Sequential (single-threaded) physics step - original implementation
+fn void PhysicsWorld.run_step_sequential(&self, float time, uint step_count) @local {
     // Recompute islands if joint topology changed
     self.compute_islands();
 
@@ -327,40 +577,30 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
     self.spatial_map.@get_pairs(;Pair pair) {
         Rigidbody* body_a = self.find_body(pair.a)!!;
         Rigidbody* body_b = self.find_body(pair.b)!!;
-        
-        // Check if collision filters have this combo of rigid bodies, if true skip the collision check
+
         bool has_filter = self.filters.has_key({body_a.id, body_b.id}) == true;
 
-        // Check if aabb boxes collide first
         if (!has_filter && body_a.transformed_aabb.collides(body_b.transformed_aabb)) {
-
-            // If contact happens and one body is asleep, but other is awake, wake up sleeping body and its island
             if (body_a.sleeping && body_b.is_active()) self.wake_island(body_a);
             if (body_b.sleeping && body_a.is_active()) self.wake_island(body_b);
 
             if (body_a.is_active() || body_b.is_active()) {
-                // Check for BVH mesh collisions
                 bool a_has_bvh = body_a.has_mesh_bvh();
                 bool b_has_bvh = body_b.has_mesh_bvh();
 
                 if (a_has_bvh || b_has_bvh) {
-                    // BVH-accelerated mesh collision
                     self.check_bvh_collision(body_a, body_b, pair);
                 } else {
-                    // Check collision with GJK algorithm (simple convex vs convex)
                     CollisionInfo collision_info = collision::check_convex_collision(&body_a.collider, &body_b.collider, epa:true);
 
                     if (collision_info.collided) {
-                        // Create collision, so distance constraint can be created for it later
-                        Collision collision = {
+                        self.collisions.push({
                             .a = pair.a,
                             .b = pair.b,
                             .normal = collision_info.normal,
                             .contact = collision_info.contact_points,
                             .depth = collision_info.depth,
-                        };
-
-                        self.collisions.push(collision);
+                        });
                     }
                 }
             }
@@ -368,16 +608,13 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
     };
 
     foreach (&collision: self.collisions) {
-        // Create normal / distance contraint for collision
         collision.create_constraint(self, time);
     }
 
-    // Create joint constraints
     foreach (&joint: self.joints) {
         joint.create_constraint(self, time);
     }
 
-    // Solve contraints for step counts
     for (usz i; i < step_count; i++) {
         foreach (&contraint: self.constraints) {
             self.solve_constraint(contraint);
@@ -387,12 +624,291 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
     self.collisions.clear();
     self.constraints.clear();
 
-    // Apply the calculated impulses as rotation / position changes, plus do other maintenance
+    self.integrate_bodies(time);
+    self.update_sleep_state();
+}
+
+// Parallel (multi-threaded) physics step
+fn void PhysicsWorld.run_step_parallel(&self, float time, uint step_count) @local {
+    // Lazy init thread pool (can't do in create_world because workers get pointer before move)
+    if (!self.thread_pool_initialized) {
+        self.thread_pool.init()!!;
+        self.collision_mutex.init()!!;
+        self.thread_pool_initialized = true;
+    }
+
+    // Recompute islands if joint topology changed
+    self.compute_islands();
+
+    // === PHASE 1: Broad-phase - collect candidate pairs (sequential, fast) ===
+    List{Pair} candidate_pairs;
+    defer candidate_pairs.free();
+
+    self.spatial_map.@get_pairs(;Pair pair) {
+        Rigidbody* body_a = self.find_body(pair.a)!!;
+        Rigidbody* body_b = self.find_body(pair.b)!!;
+
+        bool has_filter = self.filters.has_key({body_a.id, body_b.id}) == true;
+
+        if (!has_filter && body_a.transformed_aabb.collides(body_b.transformed_aabb)) {
+            // Wake sleeping bodies (must be sequential due to island wake)
+            if (body_a.sleeping && body_b.is_active()) self.wake_island(body_a);
+            if (body_b.sleeping && body_a.is_active()) self.wake_island(body_b);
+
+            if (body_a.is_active() || body_b.is_active()) {
+                candidate_pairs.push(pair);
+            }
+        }
+    };
+
+    // === PHASE 2: Narrow-phase collision testing ===
+    // BVH collisions run sequentially (allocator not thread-safe)
+    // Convex-only collisions can run in parallel
+    usz num_pairs = candidate_pairs.len();
+
+    if (num_pairs > 0) {
+        // Separate BVH and convex-only pairs
+        List{Pair} convex_pairs;
+        List{Pair} bvh_pairs;
+        defer convex_pairs.free();
+        defer bvh_pairs.free();
+
+        for (usz i = 0; i < num_pairs; i++) {
+            Pair pair = candidate_pairs[i];
+            Rigidbody* body_a = self.find_body(pair.a)!!;
+            Rigidbody* body_b = self.find_body(pair.b)!!;
+
+            if (body_a.has_mesh_bvh() || body_b.has_mesh_bvh()) {
+                bvh_pairs.push(pair);
+            } else {
+                convex_pairs.push(pair);
+            }
+        }
+
+        // Process convex pairs in parallel
+        usz num_convex = convex_pairs.len();
+        if (num_convex > 0) {
+            self.collision_tasks.clear();
+            self.collision_results.clear();
+
+            for (usz i = 0; i < num_convex; i++) {
+                self.collision_results.push({});
+            }
+
+            for (usz i = 0; i < num_convex; i++) {
+                self.collision_tasks.push({
+                    .world = self,
+                    .pair = convex_pairs[i],
+                    .result = &self.collision_results[i],
+                    .has_collision = false,
+                });
+            }
+
+            for (usz i = 0; i < num_convex; i++) {
+                self.thread_pool.push(&collision_test_worker, &self.collision_tasks[i])!!;
+            }
+
+            self.thread_pool.join()!!;
+
+            for (usz i = 0; i < num_convex; i++) {
+                if (self.collision_tasks[i].has_collision) {
+                    self.collisions.push(*self.collision_tasks[i].result);
+                }
+            }
+        }
+
+        // Process BVH pairs sequentially (thread-safe)
+        foreach (pair : bvh_pairs) {
+            Rigidbody* body_a = self.find_body(pair.a)!!;
+            Rigidbody* body_b = self.find_body(pair.b)!!;
+            self.check_bvh_collision(body_a, body_b, pair);
+        }
+    }
+
+    // === PHASE 3: Create constraints (sequential, fast) ===
+    foreach (&collision: self.collisions) {
+        collision.create_constraint(self, time);
+    }
+
+    foreach (&joint: self.joints) {
+        joint.create_constraint(self, time);
+    }
+
+    // === PHASE 4: Solve constraints - island-parallel ===
+    self.solve_constraints_parallel(step_count);
+
+    self.collisions.clear();
+    self.constraints.clear();
+
+    // === PHASE 5: Integration (parallel physics, sequential spatial map) ===
+    self.integrate_bodies_parallel(time);
+
+    // === PHASE 6: Sleep management (sequential) ===
+    self.update_sleep_state();
+}
+
+// Island-parallel constraint solving
+fn void PhysicsWorld.solve_constraints_parallel(&self, uint step_count) @local {
+    if (self.constraints.len() == 0) return;
+
+    // Group constraints by island
+    HashMap{usz, List{Constraint*}} island_constraints;
+    defer {
+        island_constraints.@each(; usz id, List{Constraint*} list) {
+            list.free();
+        };
+        island_constraints.free();
+    }
+
+    for (usz i = 0; i < self.constraints.len(); i++) {
+        Constraint* constraint = &self.constraints[i];
+        // Use body_a's island (both bodies should be in same island if connected)
+        usz island_id = constraint.body_a.island_id;
+
+        if (!island_constraints.has_key(island_id)) {
+            island_constraints.set(island_id, {});
+        }
+        island_constraints.get_ref(island_id)!!.push(constraint);
+    }
+
+    // Count islands
+    usz num_islands = island_constraints.len();
+
+    if (num_islands <= 1) {
+        // Single island or no islands - run sequential
+        for (usz i; i < step_count; i++) {
+            foreach (&contraint: self.constraints) {
+                solve_constraint_internal(contraint);
+            }
+        }
+        return;
+    }
+
+    // Create island solve tasks (reuse list)
+    self.island_tasks.clear();
+
+    island_constraints.@each(; usz id, List{Constraint*} list) {
+        Constraint*[] arr = list.array_view();
+
+        self.island_tasks.push({
+            .world = self,
+            .constraints = arr.ptr,
+            .count = arr.len,
+            .iterations = step_count,
+        });
+    };
+
+    // Submit island solving tasks
+    for (usz i = 0; i < num_islands; i++) {
+        self.thread_pool.push(&island_solve_worker, &self.island_tasks[i])!!;
+    }
+
+    // Wait for all islands to be solved
+    self.thread_pool.join()!!;
+}
+
+// Parallel integration - physics updates in parallel, spatial map sequential
+fn void PhysicsWorld.integrate_bodies_parallel(&self, float time) @local {
+    // Collect active bodies for parallel processing (reuse list)
+    self.active_bodies.clear();
+
+    RigidBodyIterator collect_iter = self.bodies.value_iter();
+    while (collect_iter.next()) {
+        Rigidbody* body = collect_iter.get()!!;
+        if (body.is_active()) {
+            self.active_bodies.push(body);
+        }
+    }
+
+    usz num_active = self.active_bodies.len();
+    if (num_active == 0) return;
+
+    // Determine batch size for parallel work
+    usz batch_size = (num_active + NUM_WORKER_THREADS - 1) / NUM_WORKER_THREADS;
+
+    // Only parallelize if we have enough bodies
+    if (num_active >= NUM_WORKER_THREADS * 2) {
+        // Create integration tasks (reuse list)
+        usz num_tasks = (num_active + batch_size - 1) / batch_size;
+        self.integration_tasks.clear();
+
+        Rigidbody** all_bodies_ptr = self.active_bodies.array_view().ptr;
+
+        for (usz i = 0; i < num_tasks; i++) {
+            usz start = i * batch_size;
+            usz count = math::min(batch_size, num_active - start);
+
+            self.integration_tasks.push({
+                .world = self,
+                .bodies = all_bodies_ptr + start,
+                .count = count,
+                .time = time,
+            });
+        }
+
+        // Submit integration tasks
+        for (usz i = 0; i < num_tasks; i++) {
+            self.thread_pool.push(&integration_worker, &self.integration_tasks[i])!!;
+        }
+
+        // Wait for physics updates to complete
+        self.thread_pool.join()!!;
+    } else {
+        // Too few bodies - just do physics updates inline
+        foreach (body : self.active_bodies) {
+            // Apply linear velocity and translation
+            body.collider.translation += body.linear_velocity * time;
+
+            // Apply angular velocity as rotation
+            Vec3 axis = body.angular_velocity * (time * 0.5);
+            if (axis != {0,0,0}) {
+                body.collider.rotation = (body.collider.rotation + (QuaternionValue){...axis, 0} * body.collider.rotation).normalize();
+            }
+
+            // Apply gravity
+            body.apply_linear_impulse(self.gravity * body.gravity_factor * body.mass * time);
+
+            // Apply dampening friction
+            body.angular_velocity *= math::pow(self.angular_dampening, time);
+            body.linear_velocity *= math::pow(self.linear_dampening, time);
+
+            // Clamp very small velocities to zero
+            const float VELOCITY_CLAMP_SQ = 0.01f;
+            if (body.linear_velocity.sq_magnitude() < VELOCITY_CLAMP_SQ) {
+                body.linear_velocity = {0, 0, 0};
+            }
+            if (body.angular_velocity.sq_magnitude() < VELOCITY_CLAMP_SQ) {
+                body.angular_velocity = {0, 0, 0};
+            }
+        }
+    }
+
+    // Sequential: Update spatial map and sleep timers (requires shared data structure access)
+    foreach (body : self.active_bodies) {
+        bool rotating = body.is_rotating();
+        bool moving = body.is_moving();
+
+        if (rotating || moving) {
+            Aabb3 new_aabb = body.get_transformed_aabb();
+            self.spatial_map.update(body.transformed_aabb, new_aabb, body.id)!!;
+            body.transformed_aabb = new_aabb;
+        }
+
+        // Increment sleep timer when body is at rest
+        if (body.can_sleep == true && moving == false && rotating == false) {
+            body.sleep_timer += time;
+        } else {
+            body.sleep_timer = 0;
+        }
+    }
+}
+
+// Shared integration logic (sequential version)
+fn void PhysicsWorld.integrate_bodies(&self, float time) @local {
     RigidBodyIterator rigid_bodies = self.bodies.value_iter();
     while (rigid_bodies.next()) {
         Rigidbody* body = rigid_bodies.get()!!;
 
-        // If body is sleeping skip it
         if (!body.is_active()) continue;
 
         // Apply linear velocity and translation
@@ -407,12 +923,12 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
         // Apply gravity
         body.apply_linear_impulse(self.gravity * body.gravity_factor * body.mass * time);
 
-        // Apply dampening friction (Wind friction ..etc)
+        // Apply dampening friction
         body.angular_velocity *= math::pow(self.angular_dampening, time);
         body.linear_velocity *= math::pow(self.linear_dampening, time);
 
-        // Clamp very small velocities to zero to prevent numerical noise accumulation
-        const float VELOCITY_CLAMP_SQ = 0.01f;  // ~0.1 units/sec threshold
+        // Clamp very small velocities to zero
+        const float VELOCITY_CLAMP_SQ = 0.01f;
         if (body.linear_velocity.sq_magnitude() < VELOCITY_CLAMP_SQ) {
             body.linear_velocity = {0, 0, 0};
         }
@@ -423,7 +939,7 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
         bool rotating = body.is_rotating();
         bool moving = body.is_moving();
 
-        // Update the spatial map AABB boxes,for searching the rigid bodies that are close together 
+        // Update spatial map (must be sequential)
         if (rotating || moving) {
             Aabb3 new_aabb = body.get_transformed_aabb();
             self.spatial_map.update(body.transformed_aabb, new_aabb, body.id)!!;
@@ -437,9 +953,10 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
             body.sleep_timer = 0;
         }
     }
+}
 
-    // Check island sleeping - bodies connected by joints sleep together
-    // Group bodies by island_id and check if entire islands can sleep
+// Shared sleep state update logic
+fn void PhysicsWorld.update_sleep_state(&self) @local {
     HashMap{usz, bool} island_can_sleep;
     HashMap{usz, bool} island_checked;
     defer island_can_sleep.free();
@@ -454,13 +971,11 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
 
         usz island = body.island_id;
 
-        // Initialize island as can_sleep = true if not yet checked
         if (!island_checked.has_key(island)) {
             island_checked.set(island, true);
             island_can_sleep.set(island, true);
         }
 
-        // If any body in island can't sleep, mark island as can't sleep
         if (!body.can_sleep || body.is_moving() || body.is_rotating() || body.sleep_timer < self.sleep_timer) {
             island_can_sleep.set(island, false);
         }
