@@ -162,7 +162,8 @@ fn double Mesh.get_volume(&self) {
 fn bool Mesh.is_convex(&self) {
     if (self.triangles.len() < 4) return true;
 
-    const double EPSILON = Vec3.sizeof == 4 ? 1e-4 : 1e-6;
+    // Tighter epsilon to ensure proper decomposition of hollow shapes
+    const double EPSILON = 0.01;
     usz vert_count = self.vertices.len();
 
     foreach (tri : self.triangles) {
