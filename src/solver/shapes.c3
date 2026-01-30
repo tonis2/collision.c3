@@ -2,6 +2,7 @@ module collision;
 
 import std::math;
 import std::io;
+import std::collections::list;
 
 const float EPSILON @local = 0.0001;
 
@@ -11,7 +12,8 @@ enum ShapeType {
     CYLINDER,
     BOX,
     CONVEX,
-    TRIANGLE
+    TRIANGLE,
+    COMPOUND
 }
 
 interface CollisionShape
@@ -48,6 +50,60 @@ struct Capsule (CollisionShape) {
     float height;
     float radius_top;
     float radius_bottom;
+}
+
+// A single piece in a compound shape
+struct CompoundPiece {
+    CollisionShape shape;
+    Vec3 offset;  // Local offset from compound center
+}
+
+// Compound shape: multiple convex pieces from CoACD decomposition
+struct CompoundShape (CollisionShape) {
+    List{CompoundPiece} shapes;
+    Aabb3 aabb;  // Cached combined AABB
+}
+
+fn void CompoundShape.add_piece(&self, CollisionShape shape, Vec3 offset = {0,0,0}) {
+    self.shapes.push({ .shape = shape, .offset = offset });
+    // Update combined AABB
+    Aabb3 piece_aabb = shape.get_aabb();
+    piece_aabb.min += offset;
+    piece_aabb.max += offset;
+    if (self.shapes.len() == 1) {
+        self.aabb = piece_aabb;
+    } else {
+        self.aabb.expand_by_aabb(piece_aabb);
+    }
+}
+
+fn Vec3 CompoundShape.furthest_point(&self, Vec3 direction) @dynamic {
+    Vec3 furthest = {0, 0, 0};
+    float max_dot = -float.max;
+    foreach (&piece : self.shapes) {
+        Vec3 point = piece.shape.furthest_point(direction) + piece.offset;
+        float d = point.dot(direction);
+        if (d > max_dot) {
+            max_dot = d;
+            furthest = point;
+        }
+    }
+    return furthest;
+}
+
+fn Aabb3 CompoundShape.get_aabb(&self) @dynamic => self.aabb;
+fn ShapeType CompoundShape.get_type(&self) @dynamic => ShapeType.COMPOUND;
+
+fn void CompoundShape.free(&self) @dynamic {
+    foreach (&piece : self.shapes) {
+        piece.shape.free();
+    }
+    self.shapes.free();
+}
+
+fn Matrix3f CompoundShape.inertia_tensor(&self, float mass) @dynamic {
+    // Approximate: use AABB-based inertia
+    return self.aabb.inertia_tensor(mass);
 }
 
 // Shapes

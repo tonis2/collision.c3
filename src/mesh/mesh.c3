@@ -136,6 +136,11 @@ fn void Mesh.remesh(&self) {
     weld_remesh(&self.vertices, &self.triangles);
 }
 
+// Decompose concave mesh into convex pieces using CoACD algorithm
+fn List{Mesh} Mesh.decompose(&self, CoacdParameters params = COACD_MEDIUM) {
+    return coacd_decompose(self, params);
+}
+
 fn double Mesh.get_volume(&self) {
     double volume = 0.0;
     usz vert_count = self.vertices.len();
@@ -320,7 +325,7 @@ fn Plane Plane.from_points(&self, Vec3 p0, Vec3 p1, Vec3 p2) {
 }
 
 // Compute intersection point between two vertices across a plane
-fn Vec3 intersect_edge(Vec3 v0, Vec3 v1, double d0, double d1) @local {
+fn Vec3 intersect_edge(Vec3 v0, Vec3 v1, double d0, double d1) {
     double t = d0 / (d0 - d1);
     return v0 + (v1 - v0) * (float)t;
 }

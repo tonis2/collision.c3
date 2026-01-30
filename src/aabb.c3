@@ -205,7 +205,7 @@ fn Aabb3 Aabb3.get_aabb(&self) @dynamic => *self;
 fn ShapeType Aabb3.get_type(&self) @dynamic => ShapeType.BOX;
 
 fn Matrix3f Aabb3.inertia_tensor(&self, float mass) @dynamic {
-    Vec3 size = self.size() * 2;
+    Vec3 size = self.size() * self.size();
 
     float ix = (1 / 12.0f) * mass * (size.y + size.z);
     float iy = (1 / 12.0f) * mass * (size.x + size.z);
