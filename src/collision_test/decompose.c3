@@ -518,11 +518,8 @@ fn List{Mesh} coacd_decompose(Mesh* mesh, CoacdParameters params = COACD_MEDIUM)
     mesh.validate();
     mesh.remesh();
 
-    io::printfn("CoACD: Input mesh: %d tris, %d verts", mesh.triangles.len(), mesh.vertices.len());
-
     // If already convex, return hull directly
     if (mesh.is_convex()) {
-        io::printfn("CoACD: Mesh is already convex");
         Mesh hull = quickhull(mesh.vertices.array_view());
         if (hull.vertices.len() >= 4) {
             result.push(hull);
@@ -572,8 +569,6 @@ fn List{Mesh} coacd_decompose(Mesh* mesh, CoacdParameters params = COACD_MEDIUM)
             if (hull.vertices.len() >= 4) {
                 double hull_diag = hull.get_aabb().size().length();
                 if (hull_diag >= min_hull_diagonal) {
-                    io::printfn("  Adding hull at depth %d: %d verts, convex=%s",
-                        part.depth, hull.vertices.len(), part.mesh.is_convex() ? "yes" : "no(max_depth)");
                     result.push(hull);
                 } else {
                     hull.free();
@@ -661,16 +656,6 @@ fn List{Mesh} coacd_decompose(Mesh* mesh, CoacdParameters params = COACD_MEDIUM)
         }
         part.mesh.free();
         part.mesh = {};
-    }
-
-    io::printfn("CoACD: Complete - %d hulls in %d iterations", result.len(), iteration);
-
-    // Debug: show hull info
-    foreach (i, &hull : result) {
-        Aabb3 hb = hull.get_aabb();
-        Vec3 size = hb.size();
-        io::printfn("  Hull %d: %d verts, size=(%.2f, %.2f, %.2f)",
-            i, hull.vertices.len(), size.x, size.y, size.z);
     }
 
     return result;
