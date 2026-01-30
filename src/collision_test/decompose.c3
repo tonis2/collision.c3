@@ -294,9 +294,9 @@ const CoacdParameters COACD_VERY_FAST = {
 
 const CoacdParameters COACD_FAST = {
     .threshold = 0.04,
-    .max_hulls = 12,
+    .max_hulls = 32,
     .plane_candidates = 5,
-    .max_iterations = 30,
+    .max_iterations = 100,
     .k = 0.3
 };
 
@@ -533,10 +533,8 @@ fn List{Mesh} coacd_decompose(Mesh* mesh, CoacdParameters params = COACD_MEDIUM)
     Aabb3 bounds = mesh.get_aabb();
     float diagonal = bounds.size().length();
 
-    // Minimum volume threshold - hulls smaller than this are filtered out
-    // This prevents tiny degenerate pieces but keeps thin wall sections
-    double total_volume = mesh.get_volume();
-    double min_hull_volume = total_volume * 0.001;  // 0.1% of total volume (very small)
+    // No filtering - keep all valid hulls to ensure full coverage
+    // Complex meshes like carts need all pieces for proper collision
 
     // Working queue
     List{DecompPart} queue;
@@ -559,7 +557,6 @@ fn List{Mesh} coacd_decompose(Mesh* mesh, CoacdParameters params = COACD_MEDIUM)
 
     int max_depth = 8;  // Need more splits to properly separate hollow box walls
     int iteration = 0;
-    int filtered_count = 0;  // Track how many small hulls were filtered
 
     while (queue.len() > 0 && result.len() < params.max_hulls && iteration < params.max_iterations) {
         iteration++;
@@ -571,13 +568,11 @@ fn List{Mesh} coacd_decompose(Mesh* mesh, CoacdParameters params = COACD_MEDIUM)
         // If convex or max depth, add to results
         if (part.depth >= max_depth || part.mesh.is_convex()) {
             Mesh hull = quickhull(part.mesh.vertices.array_view());
-            // Only add hulls with sufficient volume (filter out tiny corner pieces)
-            if (hull.vertices.len() >= 4 && hull.get_volume() >= min_hull_volume) {
+            if (hull.vertices.len() >= 4) {
                 io::printfn("  Adding hull at depth %d: %d verts, convex=%s",
                     part.depth, hull.vertices.len(), part.mesh.is_convex() ? "yes" : "no(max_depth)");
                 result.push(hull);
             } else {
-                filtered_count++;
                 hull.free();
             }
             part.free();
@@ -601,12 +596,11 @@ fn List{Mesh} coacd_decompose(Mesh* mesh, CoacdParameters params = COACD_MEDIUM)
         bool neg_valid = neg_mesh.vertices.len() >= 4 && neg_mesh.triangles.len() >= 2;
 
         if (!pos_valid && !neg_valid) {
-            // Can't split further - add hull to results if large enough
+            // Can't split further - add hull to results
             Mesh hull = quickhull(part.mesh.vertices.array_view());
-            if (hull.vertices.len() >= 4 && hull.get_volume() >= min_hull_volume) {
+            if (hull.vertices.len() >= 4) {
                 result.push(hull);
             } else {
-                filtered_count++;
                 hull.free();
             }
             part.free();
@@ -644,25 +638,23 @@ fn List{Mesh} coacd_decompose(Mesh* mesh, CoacdParameters params = COACD_MEDIUM)
         if (result.len() >= params.max_hulls) break;
 
         Mesh hull = quickhull(part.mesh.vertices.array_view());
-        if (hull.vertices.len() >= 4 && hull.get_volume() >= min_hull_volume) {
+        if (hull.vertices.len() >= 4) {
             result.push(hull);
         } else {
-            filtered_count++;
             hull.free();
         }
         part.mesh.free();
         part.mesh = {};
     }
 
-    io::printfn("CoACD: Complete - %d hulls in %d iterations (filtered %d small, min_vol=%.4f)", result.len(), iteration, filtered_count, min_hull_volume);
+    io::printfn("CoACD: Complete - %d hulls in %d iterations", result.len(), iteration);
 
     // Debug: show hull info
     foreach (i, &hull : result) {
         Aabb3 hb = hull.get_aabb();
-        double vol = hull.get_volume();
-        io::printfn("  Hull %d: %d verts, vol=%.4f, size=(%.2f, %.2f, %.2f)",
-            i, hull.vertices.len(), vol,
-            hb.max.x - hb.min.x, hb.max.y - hb.min.y, hb.max.z - hb.min.z);
+        Vec3 size = hb.size();
+        io::printfn("  Hull %d: %d verts, size=(%.2f, %.2f, %.2f)",
+            i, hull.vertices.len(), size.x, size.y, size.z);
     }
 
     return result;
