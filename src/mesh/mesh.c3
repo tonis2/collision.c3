@@ -130,6 +130,12 @@ fn void Mesh.validate(&self) {
     }
 }
 
+// Weld duplicate vertices and remove degenerate triangles
+fn void Mesh.remesh(&self) {
+    if (self.vertices.is_empty() || self.triangles.is_empty()) return;
+    weld_remesh(&self.vertices, &self.triangles);
+}
+
 fn double Mesh.get_volume(&self) {
     double volume = 0.0;
     usz vert_count = self.vertices.len();

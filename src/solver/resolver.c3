@@ -14,6 +14,7 @@ import std::core::mem;
 const EPSILON @local = 0.001f;
 const MAX_COLLISION_TASKS @local = 1024;
 const NUM_WORKER_THREADS @local = 8;
+const MAX_BVH_CONTACTS @local = 8;  // Max contacts per BVH mesh pair
 
 alias CollisionFilter = HashMap{Pair, bool};
 alias RigidBodyMap = LinkedHashMap{usz, Rigidbody};
@@ -150,6 +151,14 @@ struct PhysicsWorld {
     List{IslandSolveTask} island_tasks;
     List{IntegrationTask} integration_tasks;
     List{Rigidbody*} active_bodies;
+
+    // BVH collision cache (avoid per-triangle allocations)
+    List{TriangleVerts} bvh_query_cache;
+    Mesh tri_mesh_cache;
+    bool bvh_cache_initialized;
+    // Contact sorting cache (keep deepest N contacts)
+    Collision[MAX_BVH_CONTACTS] bvh_contact_cache;
+    usz bvh_contact_count;
 }
 
 fn void PhysicsWorld.free(&self) {
@@ -170,9 +179,13 @@ fn void PhysicsWorld.free(&self) {
     self.island_tasks.free();
     self.integration_tasks.free();
     self.active_bodies.free();
+    // Free BVH cache
+    self.bvh_query_cache.free();
+    if (self.bvh_cache_initialized) {
+        self.tri_mesh_cache.vertices.free();
+        self.tri_mesh_cache.triangles.free();
+    }
 }
-
-
 
 const PhysicsWorld DEFAULT_PHYSICS_WORLD = {
 	.gravity = {0.0f, 0.0f, -9.8f},
@@ -1028,29 +1041,62 @@ fn void PhysicsWorld.check_bvh_collision(&self, Rigidbody* body_a, Rigidbody* bo
         mesh_body.collider.rotation
     );
 
-    // Query BVH for overlapping triangles
-    List{TriangleVerts} triangles;
-    defer triangles.free();
-    mesh.bvh.query_all_triangles(local_aabb, &triangles);
+    // Lazy init BVH cache (single triangle mesh reused for all checks)
+    if (!self.bvh_cache_initialized) {
+        self.tri_mesh_cache.vertices.push({0,0,0});
+        self.tri_mesh_cache.vertices.push({0,0,0});
+        self.tri_mesh_cache.vertices.push({0,0,0});
+        self.tri_mesh_cache.triangles.push({0, 1, 2});
+        self.bvh_cache_initialized = true;
+    }
 
-    // Find deepest contact
-    Vec3 best_normal;
-    Vec3[2] best_contact;
-    float max_depth = 0;
+    // Query BVH for overlapping triangles (reuse cache list)
+    self.bvh_query_cache.clear();
+    mesh.bvh.query_all_triangles(local_aabb, &self.bvh_query_cache);
 
-    foreach (tri : triangles) {
-        // Create mesh from triangle vertices for GJK
-        Mesh tri_mesh;
-		tri_mesh.vertices.push_all({tri[0], tri[1], tri[2]});
-        tri_mesh.triangles.push({0, 1, 2});
-        defer tri_mesh.free();
+    // Reusable shape pointing to cached mesh
+    TransformedShape tri_shape = {
+        .translation = mesh_body.collider.translation,
+        .scale = mesh_body.collider.scale,
+        .rotation = mesh_body.collider.rotation,
+        .shape = &self.tri_mesh_cache,
+    };
 
-        TransformedShape tri_shape = {
-            .translation = mesh_body.collider.translation,
-            .scale = mesh_body.collider.scale,
-            .rotation = mesh_body.collider.rotation,
-            .shape = &tri_mesh,
+    // Reset contact cache for this mesh pair
+    self.bvh_contact_count = 0;
+
+    // Pre-compute transform values for AABB calculation
+    Vec3 mesh_translation = mesh_body.collider.translation;
+    Vec3 mesh_scale = mesh_body.collider.scale;
+    QuaternionValue mesh_rotation = mesh_body.collider.rotation;
+
+    // Test each triangle with early AABB rejection
+    foreach (tri : self.bvh_query_cache) {
+        // Early AABB rejection: compute triangle world AABB
+        Vec3 v0 = mesh_rotation * (tri[0] * mesh_scale) + mesh_translation;
+        Vec3 v1 = mesh_rotation * (tri[1] * mesh_scale) + mesh_translation;
+        Vec3 v2 = mesh_rotation * (tri[2] * mesh_scale) + mesh_translation;
+
+        Aabb3 tri_aabb = {
+            .min = {
+                math::min(v0.x, math::min(v1.x, v2.x)),
+                math::min(v0.y, math::min(v1.y, v2.y)),
+                math::min(v0.z, math::min(v1.z, v2.z))
+            },
+            .max = {
+                math::max(v0.x, math::max(v1.x, v2.x)),
+                math::max(v0.y, math::max(v1.y, v2.y)),
+                math::max(v0.z, math::max(v1.z, v2.z))
+            }
         };
+
+        // Skip GJK if triangle AABB doesn't overlap other body's AABB
+        if (!tri_aabb.collides(other_body.transformed_aabb)) continue;
+
+        // Update cached mesh vertices in-place (no allocation)
+        self.tri_mesh_cache.vertices[0] = tri[0];
+        self.tri_mesh_cache.vertices[1] = tri[1];
+        self.tri_mesh_cache.vertices[2] = tri[2];
 
         // Check collision with correct argument order
         CollisionInfo info;
@@ -1060,22 +1106,53 @@ fn void PhysicsWorld.check_bvh_collision(&self, Rigidbody* body_a, Rigidbody* bo
             info = collision::check_convex_collision(&other_body.collider, &tri_shape, epa:true);
         }
 
-        if (info.collided && info.depth > max_depth) {
-            max_depth = info.depth;
-            best_normal = info.normal;
-            best_contact = info.contact_points;
+        // Collect contacts, keeping deepest N (insertion sort by depth)
+        if (info.collided && info.depth > 0) {
+            Collision new_contact = {
+                .a = pair.a,
+                .b = pair.b,
+                .normal = info.normal,
+                .contact = info.contact_points,
+                .depth = info.depth,
+            };
+
+            // Insert into sorted cache (deepest first)
+            if (self.bvh_contact_count < MAX_BVH_CONTACTS) {
+                // Cache not full - find insertion point
+                usz insert_pos = self.bvh_contact_count;
+                for (usz i = 0; i < self.bvh_contact_count; i++) {
+                    if (info.depth > self.bvh_contact_cache[i].depth) {
+                        insert_pos = i;
+                        break;
+                    }
+                }
+                // Shift elements down
+                for (usz i = self.bvh_contact_count; i > insert_pos; i--) {
+                    self.bvh_contact_cache[i] = self.bvh_contact_cache[i - 1];
+                }
+                self.bvh_contact_cache[insert_pos] = new_contact;
+                self.bvh_contact_count++;
+            } else if (info.depth > self.bvh_contact_cache[MAX_BVH_CONTACTS - 1].depth) {
+                // Cache full but this contact is deeper than shallowest - replace
+                usz insert_pos = MAX_BVH_CONTACTS - 1;
+                for (usz i = 0; i < MAX_BVH_CONTACTS - 1; i++) {
+                    if (info.depth > self.bvh_contact_cache[i].depth) {
+                        insert_pos = i;
+                        break;
+                    }
+                }
+                // Shift elements down (dropping last)
+                for (usz i = MAX_BVH_CONTACTS - 1; i > insert_pos; i--) {
+                    self.bvh_contact_cache[i] = self.bvh_contact_cache[i - 1];
+                }
+                self.bvh_contact_cache[insert_pos] = new_contact;
+            }
         }
     }
 
-    // Create collision with actual contact points from GJK/EPA
-    if (max_depth > 0) {
-        self.collisions.push({
-            .a = pair.a,
-            .b = pair.b,
-            .normal = best_normal,
-            .contact = best_contact,
-            .depth = max_depth,
-        });
+    // Push the best contacts to collision list
+    for (usz i = 0; i < self.bvh_contact_count; i++) {
+        self.collisions.push(self.bvh_contact_cache[i]);
     }
 }
 

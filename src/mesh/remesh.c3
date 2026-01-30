@@ -4,69 +4,66 @@ import std::io;
 import std::math;
 import std::collections::list;
 
-const float EPSILON @local = 0.005;
-alias Indices @local = List{ushort};
+const float WELD_EPSILON @local = 0.005;
 
-fn bool are_equal(Vec3 a, Vec3 b) => a.distance_sq(b) < EPSILON;
+fn bool vertices_equal(Vec3 a, Vec3 b) @local => a.distance_sq(b) < WELD_EPSILON;
 
 <*
- @require !vertices.is_empty() && !indices.is_empty() : `Vertices and Indices must not be empty`
+ Welds duplicate vertices and removes degenerate triangles.
+ @require !vertices.is_empty() && !triangles.is_empty() : `Vertices and Triangles must not be empty`
 *>
-fn void weld_remesh(Vertices* vertices, Indices* indices) {
-
-    Vertices new_vertices;
-    Indices new_indices;
+fn void weld_remesh(List{Vec3}* vertices, List{Triangle}* triangles) {
+    List{Vec3} new_vertices;
+    List{Triangle} new_triangles;
 
     defer {
         new_vertices.free();
-        new_indices.free();
+        new_triangles.free();
     }
 
-    foreach (int i, point: vertices) {
-        bool found_duplicate = false;
-        int new_index = -1;
+    // Build index remap table: old vertex index -> new vertex index
+    List{uint} index_remap;
+    defer index_remap.free();
 
-        foreach (int j, new_point: new_vertices) {
-            if (are_equal(point.xyz, new_point.xyz)) {
+    foreach (uint i, point: vertices) {
+        bool found_duplicate = false;
+        uint new_index = 0;
+
+        // Check if this vertex matches any already added vertex
+        foreach (uint j, new_point: new_vertices) {
+            if (vertices_equal(point, new_point)) {
                 found_duplicate = true;
                 new_index = j;
                 break;
             }
         }
 
-        if (found_duplicate == false) {
-            // This is a unique vertex. Add it to the new list.
+        if (!found_duplicate) {
+            // Unique vertex - add it
+            new_index = (uint)new_vertices.len();
             new_vertices.push(point);
-            new_index = (int)new_vertices.len() - 1; // Its new index is the current count
+        }
 
-            foreach (usz j, idx: indices) {
-                if (idx == i) indices.set_at(j, (ushort)new_index);
-            }
+        // Store the mapping for this vertex
+        index_remap.push(new_index);
+    }
+
+    // Remap triangles and filter degenerate ones
+    foreach (tri: triangles) {
+        uint i0 = index_remap[tri[0]];
+        uint i1 = index_remap[tri[1]];
+        uint i2 = index_remap[tri[2]];
+
+        // Skip degenerate triangles (where 2+ vertices merged)
+        if (i0 != i1 && i0 != i2 && i1 != i2) {
+            new_triangles.push({i0, i1, i2});
         }
     }
 
-
-    usz max_index = new_vertices.len() - 1;
-    for (usz i = 0; i < indices.len(); i+= 3) {
-        ushort i1 = indices.get(i);
-        ushort i2 = indices.get(i + 1);
-        ushort i3 = indices.get(i + 2);
-
-        if (i1 > max_index || i2 > max_index || i3 > max_index) continue;
-        // Check for degenerate faces.
-        // A face is degenerate if two or more of its vertices
-        // were merged into the same new vertex.
-
-        new_indices.push_all({i1, i2, i3});
-        // if (i1 != i2 && i1 != i3 && i2 != i3) {
-        //     // This is a valid, non-degenerate triangle. Add it.
-        //    new_indices.push_all({i1, i2, i3});
-        // }
-    }
-
+    // Replace original data
     vertices.clear();
-    indices.clear();
+    triangles.clear();
 
-    vertices.add_all(&new_vertices);
-    indices.add_all(&new_indices);
+    foreach (v: new_vertices) vertices.push(v);
+    foreach (t: new_triangles) triangles.push(t);
 }
