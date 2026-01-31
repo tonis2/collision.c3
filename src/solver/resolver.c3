@@ -366,7 +366,8 @@ fn bool Rigidbody.has_compound(&self) {
     return self.collider.get_type() == ShapeType.COMPOUND;
 }
 
-// Worker function for parallel collision testing (convex vs convex)
+// Worker function for parallel collision testing (convex vs convex only)
+// BVH and compound pairs are handled separately in the main loop
 fn int collision_test_worker(void* arg) @local {
     CollisionTask* task = (CollisionTask*)arg;
     PhysicsWorld* world = task.world;
@@ -374,31 +375,18 @@ fn int collision_test_worker(void* arg) @local {
     Rigidbody* body_a = world.find_body(task.pair.a)!!;
     Rigidbody* body_b = world.find_body(task.pair.b)!!;
 
-    // Check for BVH mesh collisions
-    bool a_has_bvh = body_a.has_mesh_bvh();
-    bool b_has_bvh = body_b.has_mesh_bvh();
+    // GJK/EPA collision test for convex shapes
+    CollisionInfo info = collision::check_convex_collision(&body_a.collider, &body_b.collider, epa:true);
 
-    if (a_has_bvh || b_has_bvh) {
-        // BVH collision - store result directly (thread-safe via separate result slots)
-        Collision? collision = world.test_bvh_collision(body_a, body_b, task.pair);
-        if (try c = collision) {
-            *task.result = c;
-            task.has_collision = true;
-        }
-    } else {
-        // GJK collision test
-        CollisionInfo info = collision::check_convex_collision(&body_a.collider, &body_b.collider, epa:true);
-
-        if (info.collided) {
-            *task.result = {
-                .a = task.pair.a,
-                .b = task.pair.b,
-                .normal = info.normal,
-                .contact = info.contact_points,
-                .depth = info.depth,
-            };
-            task.has_collision = true;
-        }
+    if (info.collided) {
+        *task.result = {
+            .a = task.pair.a,
+            .b = task.pair.b,
+            .normal = info.normal,
+            .contact = info.contact_points,
+            .depth = info.depth,
+        };
+        task.has_collision = true;
     }
     return 0;
 }
@@ -531,19 +519,23 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
     usz num_pairs = candidate_pairs.len();
 
     if (num_pairs > 0) {
-        // Separate BVH and convex-only pairs
+        // Separate pairs by collision type
         List{Pair} convex_pairs;
         List{Pair} bvh_pairs;
+        List{Pair} compound_pairs;
         defer convex_pairs.free();
         defer bvh_pairs.free();
+        defer compound_pairs.free();
 
         for (usz i = 0; i < num_pairs; i++) {
             Pair pair = candidate_pairs[i];
             Rigidbody* body_a = self.find_body(pair.a)!!;
             Rigidbody* body_b = self.find_body(pair.b)!!;
 
-            if (body_a.has_compound() || body_b.has_compound()) {
+            if (body_a.has_mesh_bvh() || body_b.has_mesh_bvh()) {
                 bvh_pairs.push(pair);
+            } else if (body_a.has_compound() || body_b.has_compound()) {
+                compound_pairs.push(pair);
             } else {
                 convex_pairs.push(pair);
             }
@@ -581,8 +573,16 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
             }
         }
 
-        // Process BVH pairs sequentially (thread-safe)
         foreach (pair : bvh_pairs) {
+            Rigidbody* body_a = self.find_body(pair.a)!!;
+            Rigidbody* body_b = self.find_body(pair.b)!!;
+            Collision? collision = self.test_bvh_collision(body_a, body_b, pair);
+            if (try c = collision) {
+                self.collisions.push(c);
+            }
+        }
+
+        foreach (pair : compound_pairs) {
             Rigidbody* body_a = self.find_body(pair.a)!!;
             Rigidbody* body_b = self.find_body(pair.b)!!;
             self.check_coacd_collision(body_a, body_b, pair);
@@ -903,7 +903,7 @@ fn void Collision.create_constraint(&collision, PhysicsWorld* world, float dt) @
     int impulse_dir = math::min(a.impulse_dir, b.impulse_dir);
 
     float bias = (beta / dt) * math::max(collision.depth - slop, 0.0f) * impulse_dir;
-    float normal_inertia;
+    float normal_inertia = 0;
     if (!a.is_static) normal_inertia += a.get_intertia(rA, -normal);
     if (!b.is_static) normal_inertia += b.get_intertia(rB, normal);
 
@@ -1026,6 +1026,7 @@ fn void PhysicsWorld.solve_constraint(&self, Constraint* constraint) @local {
 
 // Check collisions using CoACD decomposed convex pieces
 // Each piece is tested as a convex-convex collision (much faster than BVH triangles)
+// Note: At least one body must have a compound shape (pairs are pre-categorized)
 fn void PhysicsWorld.check_coacd_collision(&self, Rigidbody* body_a, Rigidbody* body_b, Pair pair) {
     bool a_has_compound = body_a.collider.get_type() == ShapeType.COMPOUND;
     bool b_has_compound = body_b.collider.get_type() == ShapeType.COMPOUND;
@@ -1039,23 +1040,11 @@ fn void PhysicsWorld.check_coacd_collision(&self, Rigidbody* body_a, Rigidbody* 
         compound_body = body_a;
         other_body = body_b;
         compound_is_a = true;
-    } else if (b_has_compound) {
+    } else {
+        // b must have compound (pairs are pre-categorized to ensure at least one has compound)
         compound_body = body_b;
         other_body = body_a;
         compound_is_a = false;
-    } else {
-        // Neither has compound - fall back to regular convex collision
-        CollisionInfo info = collision::check_convex_collision(&body_a.collider, &body_b.collider, epa:true);
-        if (info.collided) {
-            self.collisions.push({
-                .a = pair.a,
-                .b = pair.b,
-                .normal = info.normal,
-                .contact = info.contact_points,
-                .depth = info.depth,
-            });
-        }
-        return;
     }
 
     CompoundShape* compound = (CompoundShape*)compound_body.collider.shape;
@@ -1163,11 +1152,15 @@ fn Collision? PhysicsWorld.test_bvh_collision(&self, Rigidbody* body_a, Rigidbod
     );
 
     List{TriangleVerts} triangles;
+    triangles.init(allocator: mem);
     defer triangles.free();
     mesh.bvh.query_all_triangles(local_aabb, &triangles);
 
     // Create reusable triangle mesh once (thread-local, no shared state)
+    // Use heap allocator to avoid temp allocator issues on worker threads
     Mesh tri_mesh;
+    tri_mesh.vertices.init(allocator: mem);
+    tri_mesh.triangles.init(allocator: mem);
     tri_mesh.vertices.push({0,0,0});
     tri_mesh.vertices.push({0,0,0});
     tri_mesh.vertices.push({0,0,0});
@@ -1227,14 +1220,16 @@ fn Collision? PhysicsWorld.test_bvh_collision(&self, Rigidbody* body_a, Rigidbod
     }
 
     if (max_depth > 0) {
+        // Clamp depth to prevent extreme correction forces from BVH triangle collisions
+        float clamped_depth = math::min(max_depth, 1.0f);
         return {
             .a = pair.a,
             .b = pair.b,
             .normal = best_normal,
             .contact = best_contact,
-            .depth = max_depth,
+            .depth = clamped_depth,
         };
     }
 
-    return {};
+    return NOT_FOUND~;
 }

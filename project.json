@@ -15,7 +15,7 @@
 		},
 		"zip": {
 			"type": "prepare",
-			"exec": ["zip ./collision.c3l ./src/*.c3 ./manifest.json"]
+			"exec": ["zip -r collision.c3l ./src manifest.json"]
 		}
 	},
 	"output": "./build"
