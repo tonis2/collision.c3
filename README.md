@@ -67,7 +67,7 @@ fn void main() {
         world.run_step(1.0 / 60.0);  // Fixed 60Hz timestep
 
         // Get body position after simulation
-        if (Rigidbody* ball = world.find_body(1)) {
+        if (try Rigidbody* ball = world.find_body(1)) {
             Vec3f pos = ball.collider.translation;
         }
     }
