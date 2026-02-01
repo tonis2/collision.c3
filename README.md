@@ -1,4 +1,4 @@
-# Collision Library for C3
+# Collision library
 
 A physics and collision detection library for the [C3 language](https://c3-lang.org/).
 
