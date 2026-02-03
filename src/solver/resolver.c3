@@ -76,6 +76,17 @@ struct Collision {
     Vec3 impulse;
 }
 
+enum TriggerEventType : char {
+    ENTER,
+    EXIT
+}
+
+struct TriggerEvent {
+    usz trigger_id;
+    usz other_id;
+    TriggerEventType type;
+}
+
 enum PhysicsCombine: inline uint {
     AVERAGE,
     MINIMUM,
@@ -101,6 +112,7 @@ struct Rigidbody {
     bool sleeping;
     bool can_sleep;
     bool is_static;
+    bool is_trigger;
     int impulse_dir;
 
     Aabb3 aabb;
@@ -123,6 +135,8 @@ struct Rigidbody {
     Matrix3f inertia;
 }
 
+alias TriggerOverlapSet = HashMap{Pair, bool};
+
 struct PhysicsWorld {
     RigidBodyMap bodies;
     List{Collision} collisions;
@@ -132,6 +146,10 @@ struct PhysicsWorld {
     CollisionFilter filters;
     UnionFindMap island_parent;
 	bool islands_dirty;
+
+    // Trigger system
+    List{TriggerEvent} trigger_events;
+    TriggerOverlapSet active_triggers;  // Currently overlapping trigger pairs
 
     Vec3 gravity;
     float sleep_timer;
@@ -175,6 +193,9 @@ fn void PhysicsWorld.free(&self) {
     self.island_tasks.free();
     self.integration_tasks.free();
     self.active_bodies.free();
+    // Free trigger system
+    self.trigger_events.free();
+    self.active_triggers.free();
 }
 
 const PhysicsWorld DEFAULT_PHYSICS_WORLD = {
@@ -223,6 +244,38 @@ fn void? PhysicsWorld.add_body(&self, Rigidbody body) {
 
     self.bodies.set(body.id, body);
     self.spatial_map.insert(body.transformed_aabb, body.id)!;
+}
+
+<*
+ Add a trigger body - detects overlaps but doesn't generate collision responses.
+ Use @get_trigger_events() to iterate trigger events after run_step().
+
+ @require body.collider.shape != null : `Trigger must have collision shape`
+ @require body.collider.rotation != (QuaternionValue){0,0,0,0} : `Trigger rotation must not be 0`
+ @require body.collider.scale != {0,0,0} : `Trigger scale must not be 0`
+*>
+fn void? PhysicsWorld.add_trigger(&self, Rigidbody body) {
+    body.is_trigger = true;
+    body.is_static = true;  // Triggers don't move from physics
+    body.inverse_mass = 0;
+    body.mass = 0;
+
+    // Compute AABB from collider
+    body.aabb = body.collider.get_aabb();
+    body.transformed_aabb = body.get_transformed_aabb();
+
+    self.bodies.set(body.id, body);
+    self.spatial_map.insert(body.transformed_aabb, body.id)!;
+}
+
+<*
+ Iterate trigger events generated during the last run_step().
+ Events include ENTER (overlap started) and EXIT (overlap ended).
+*>
+macro void PhysicsWorld.@get_trigger_events(&self; @callback(TriggerEvent event)) {
+    foreach (event : self.trigger_events) {
+        @callback(event);
+    }
 }
 
 fn Aabb3 Rigidbody.get_transformed_aabb(&self) {
@@ -489,12 +542,17 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
         self.thread_pool_initialized = true;
     }
 
+    // Clear trigger events from previous frame
+    self.trigger_events.clear();
+
     // Recompute islands if joint topology changed
     self.compute_islands();
 
     // === PHASE 1: Broad-phase - collect candidate pairs (sequential, fast) ===
     List{Pair} candidate_pairs;
+    TriggerOverlapSet current_triggers;  // Triggers overlapping this frame
     defer candidate_pairs.free();
+    defer current_triggers.free();
 
     self.spatial_map.@get_pairs(;Pair pair) {
         Rigidbody* body_a = self.find_body(pair.a)!!;
@@ -503,15 +561,48 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
         bool has_filter = self.filters.has_key({body_a.id, body_b.id}) == true;
 
         if (!has_filter && body_a.transformed_aabb.collides(body_b.transformed_aabb)) {
-            // Wake sleeping bodies (must be sequential due to island wake)
-            if (body_a.sleeping && body_b.is_active()) self.wake_island(body_a);
-            if (body_b.sleeping && body_a.is_active()) self.wake_island(body_b);
+            // Check if either body is a trigger
+            if (body_a.is_trigger || body_b.is_trigger) {
+                // Normalize pair so trigger is always first
+                Pair trigger_pair = body_a.is_trigger ? pair : {pair.b, pair.a};
+                current_triggers.set(trigger_pair, true);
 
-            if (body_a.is_active() || body_b.is_active()) {
-                candidate_pairs.push(pair);
+                // Generate ENTER event if this is a new overlap
+                if (!self.active_triggers.has_key(trigger_pair)) {
+                    self.trigger_events.push({
+                        .trigger_id = trigger_pair.a,
+                        .other_id = trigger_pair.b,
+                        .type = TriggerEventType.ENTER
+                    });
+                }
+            } else {
+                // Regular collision pair
+                // Wake sleeping bodies (must be sequential due to island wake)
+                if (body_a.sleeping && body_b.is_active()) self.wake_island(body_a);
+                if (body_b.sleeping && body_a.is_active()) self.wake_island(body_b);
+
+                if (body_a.is_active() || body_b.is_active()) {
+                    candidate_pairs.push(pair);
+                }
             }
         }
     };
+
+    // Generate EXIT events for triggers that are no longer overlapping
+    self.active_triggers.@each(;Pair old_pair, bool active) {
+        if (!current_triggers.has_key(old_pair)) {
+            self.trigger_events.push({
+                .trigger_id = old_pair.a,
+                .other_id = old_pair.b,
+                .type = TriggerEventType.EXIT
+            });
+        }
+    };
+
+    // Swap active triggers with current frame's triggers
+    self.active_triggers.free();
+    self.active_triggers = current_triggers;
+    current_triggers = {};  // Prevent double-free in defer
 
     // === PHASE 2: Narrow-phase collision testing ===
     // BVH collisions run sequentially (allocator not thread-safe)
