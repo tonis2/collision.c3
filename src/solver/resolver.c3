@@ -87,6 +87,19 @@ struct TriggerEvent {
     TriggerEventType type;
 }
 
+enum ContactEventType : char {
+    START,   // First frame of contact
+    END      // Contact ended
+}
+
+struct ContactEvent {
+    usz body_a;
+    usz body_b;
+    ContactEventType type;
+    Vec3 normal;        // Collision normal (only valid for START)
+    Vec3 contact_point; // Contact point (only valid for START)
+}
+
 enum PhysicsCombine: inline uint {
     AVERAGE,
     MINIMUM,
@@ -136,6 +149,7 @@ struct Rigidbody {
 }
 
 alias TriggerOverlapSet = HashMap{Pair, bool};
+alias ContactOverlapSet = HashMap{Pair, bool};
 
 struct PhysicsWorld {
     RigidBodyMap bodies;
@@ -150,6 +164,10 @@ struct PhysicsWorld {
     // Trigger system
     List{TriggerEvent} trigger_events;
     TriggerOverlapSet active_triggers;  // Currently overlapping trigger pairs
+
+    // Contact event system
+    List{ContactEvent} contact_events;
+    ContactOverlapSet active_contacts;  // Currently contacting body pairs
 
     Vec3 gravity;
     float sleep_timer;
@@ -196,6 +214,9 @@ fn void PhysicsWorld.free(&self) {
     // Free trigger system
     self.trigger_events.free();
     self.active_triggers.free();
+    // Free contact event system
+    self.contact_events.free();
+    self.active_contacts.free();
 }
 
 const PhysicsWorld DEFAULT_PHYSICS_WORLD = {
@@ -274,6 +295,17 @@ fn void? PhysicsWorld.add_trigger(&self, Rigidbody body) {
 *>
 macro void PhysicsWorld.@get_trigger_events(&self; @callback(TriggerEvent event)) {
     foreach (event : self.trigger_events) {
+        @callback(event);
+    }
+}
+
+<*
+ Iterate contact events generated during the last run_step().
+ Events include START (first frame of contact) and END (contact ended).
+ Unlike triggers, contacts also generate physics responses (impulses).
+*>
+macro void PhysicsWorld.@get_contact_events(&self; @callback(ContactEvent event)) {
+    foreach (event : self.contact_events) {
         @callback(event);
     }
 }
@@ -542,8 +574,9 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
         self.thread_pool_initialized = true;
     }
 
-    // Clear trigger events from previous frame
+    // Clear events from previous frame
     self.trigger_events.clear();
+    self.contact_events.clear();
 
     // Recompute islands if joint topology changed
     self.compute_islands();
@@ -679,6 +712,45 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
             self.check_coacd_collision(body_a, body_b, pair);
         }
     }
+
+    // === PHASE 2.5: Generate contact events ===
+    ContactOverlapSet current_contacts;
+    defer current_contacts.free();
+
+    // Track all collisions this frame and generate START events
+    foreach (&collision: self.collisions) {
+        Pair contact_pair = { collision.a, collision.b };
+        current_contacts.set(contact_pair, true);
+
+        // Generate START event if this is a new contact
+        if (!self.active_contacts.has_key(contact_pair)) {
+            self.contact_events.push({
+                .body_a = collision.a,
+                .body_b = collision.b,
+                .type = ContactEventType.START,
+                .normal = collision.normal,
+                .contact_point = collision.contact[0]
+            });
+        }
+    }
+
+    // Generate END events for contacts that ended
+    self.active_contacts.@each(;Pair old_pair, bool active) {
+        if (!current_contacts.has_key(old_pair)) {
+            self.contact_events.push({
+                .body_a = old_pair.a,
+                .body_b = old_pair.b,
+                .type = ContactEventType.END,
+                .normal = {0, 0, 0},
+                .contact_point = {0, 0, 0}
+            });
+        }
+    };
+
+    // Swap active contacts with current frame's contacts
+    self.active_contacts.free();
+    self.active_contacts = current_contacts;
+    current_contacts = {};  // Prevent double-free in defer
 
     // === PHASE 3: Create constraints (sequential, fast) ===
     foreach (&collision: self.collisions) {
