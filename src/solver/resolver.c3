@@ -291,6 +291,10 @@ fn void? PhysicsWorld.add_body(&self, Rigidbody body) {
     // Use AABB-based inertia - consistent for all shape types including mesh
     if (!body.is_static && &body.collider.shape.inertia_tensor) body.inertia = body.aabb.inertia_tensor(body.mass).inverse()!!;
 
+    // Initialize XPBD previous state so friction doesn't see phantom displacement
+    body.prev_position = body.collider.translation;
+    body.prev_rotation = body.collider.rotation;
+
     self.bodies.set(body.id, body);
     self.spatial_map.insert(body.transformed_aabb, body.id)!;
 }
@@ -698,8 +702,13 @@ fn void solve_xpbd_constraint(XpbdConstraint* c, PhysicsWorld* world) @local {
 
             // Friction: tangential position correction
             if (c.friction > 0 && math::abs(c.lambda_normal) > 1e-8) {
-                // Compute tangential displacement
-                Vec3 rel_disp = (a.collider.translation - a.prev_position) - (b.collider.translation - b.prev_position);
+                // Compute tangential displacement at the contact point (not center of mass)
+                // This captures rotational sliding (e.g. a spinning ball on the ground)
+                Vec3 prev_r_a = a.prev_rotation * c.r_a_local;
+                Vec3 prev_r_b = b.prev_rotation * c.r_b_local;
+                Vec3 disp_a = (a.collider.translation + cur_r_a) - (a.prev_position + prev_r_a);
+                Vec3 disp_b = (b.collider.translation + cur_r_b) - (b.prev_position + prev_r_b);
+                Vec3 rel_disp = disp_a - disp_b;
                 float disp_t1 = rel_disp.dot(c.tangent1);
                 float disp_t2 = rel_disp.dot(c.tangent2);
 
