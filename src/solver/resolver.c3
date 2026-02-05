@@ -1609,12 +1609,8 @@ fn Collision? PhysicsWorld.test_bvh_collision(&self, Rigidbody* body_a, Rigidbod
     // Create reusable triangle mesh once (thread-local, no shared state)
     // Use heap allocator to avoid temp allocator issues on worker threads
     Mesh tri_mesh;
-    tri_mesh.vertices.init(allocator: mem);
-    tri_mesh.triangles.init(allocator: mem);
-    tri_mesh.vertices.push({0,0,0});
-    tri_mesh.vertices.push({0,0,0});
-    tri_mesh.vertices.push({0,0,0});
-    tri_mesh.triangles.push({0, 1, 2});
+	tri_mesh.vertices.push_all({{0,0,0}, {0,0,0}, {0,0,0}, {0, 1, 2}});
+
     defer tri_mesh.free();
 
     TransformedShape tri_shape = {
