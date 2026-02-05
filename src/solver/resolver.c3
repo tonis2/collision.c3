@@ -7,12 +7,8 @@ import std::collections::list;
 import std::time;
 import std::collections::map;
 import std::thread::pool;
-import std::thread;
-import std::atomic;
 import std::core::mem;
 
-const EPSILON @local = 0.001f;
-const MAX_COLLISION_TASKS @local = 1024;
 const NUM_WORKER_THREADS @local = 8;
 const MAX_CONTACTS_PER_PAIR @local = 8;  // Max contacts per collision pair
 
@@ -20,6 +16,8 @@ alias CollisionFilter = HashMap{Pair, bool};
 alias RigidBodyMap = LinkedHashMap{usz, Rigidbody};
 alias RigidBodyIterator = LinkedHashMapValueIterator{usz, Rigidbody};
 alias UnionFindMap = HashMap{usz, usz};
+alias ConstraintList = List{XpbdConstraint*};
+
 
 // Task structure for parallel collision testing
 struct CollisionTask {
@@ -205,7 +203,6 @@ struct PhysicsWorld {
     // Threading support
     // Template param sets both queue size AND thread count
     ThreadPool{NUM_WORKER_THREADS} thread_pool;
-    Mutex collision_mutex;
     bool thread_pool_initialized;
 
     // Reusable task lists (avoid per-frame allocations)
@@ -223,7 +220,6 @@ struct PhysicsWorld {
 fn void PhysicsWorld.free(&self) {
     if (self.thread_pool_initialized) {
         self.thread_pool.stop_and_destroy()!!;
-        self.collision_mutex.destroy()!!;
     }
     self.bodies.free();
     self.collisions.free();
@@ -292,6 +288,10 @@ fn void? PhysicsWorld.add_body(&self, Rigidbody body) {
     body.transformed_aabb = body.get_transformed_aabb();
     // Use AABB-based inertia - consistent for all shape types including mesh
     if (!body.is_static && &body.collider.shape.inertia_tensor) body.inertia = body.aabb.inertia_tensor(body.mass).inverse()!!;
+
+    // Default to world dampening if not specified per-body
+    if (body.linear_dampening == 0) body.linear_dampening = self.linear_dampening;
+    if (body.angular_dampening == 0) body.angular_dampening = self.angular_dampening;
 
     // Initialize XPBD previous state so friction doesn't see phantom displacement
     body.prev_position = body.collider.translation;
@@ -402,16 +402,6 @@ fn void Rigidbody.apply_angular_impulse(&self, Vec3 impulse) {
 fn void Rigidbody.apply_impulse(&self, Vec3 impulse, Vec3 point) {
     self.linear_velocity += impulse * self.inverse_mass;
     self.apply_angular_impulse(point.cross(impulse));
-}
-
-// fn Vec3 Rigidbody.get_intertia(self, Vec3 point, Vec3 normal) {
-//     return (self.get_inverse_world_inertia() * point.cross(normal)).cross(point);
-// }
-
-fn float Rigidbody.get_intertia(self, Vec3 point, Vec3 normal) {
-    Vec3 ang = point.cross(normal);
-    Vec3 accel = self.get_inverse_world_inertia() * ang;
-    return accel.dot(ang);
 }
 
 fn Vec3 Rigidbody.relative_velocity(self, Vec3 point) => self.linear_velocity + self.angular_velocity.cross(point);
@@ -626,9 +616,9 @@ fn int derive_worker(void* arg) @local {
         if (dq.l < 0) dq = {-dq.v.x, -dq.v.y, -dq.v.z, -dq.l};
         body.angular_velocity = dq.v.xyz * (2.0f * inv_dt);
 
-        // Apply dampening
-        body.angular_velocity *= math::pow(world.angular_dampening, dt);
-        body.linear_velocity *= math::pow(world.linear_dampening, dt);
+        // Apply per-body dampening
+        body.angular_velocity *= math::pow(body.angular_dampening, dt);
+        body.linear_velocity *= math::pow(body.linear_dampening, dt);
     }
     return 0;
 }
@@ -825,7 +815,6 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
     // Lazy init thread pool (can't do in create_world because workers get pointer before move)
     if (!self.thread_pool_initialized) {
         self.thread_pool.init()!!;
-        self.collision_mutex.init()!!;
         self.thread_pool_initialized = true;
     }
 
@@ -836,10 +825,10 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
     // Recompute islands if joint topology changed
     self.compute_islands();
 
-    // === PHASE 0: XPBD Predict — save prev state, apply gravity, advance positions ===
+    // === Phase 1: Predict — save prev state, apply gravity, advance positions ===
     self.xpbd_predict(time);
 
-    // === PHASE 1: Broad-phase - collect candidate pairs (sequential, fast) ===
+    // === Phase 2: Broad-phase — collect candidate pairs ===
     List{Pair} candidate_pairs;
     TriggerOverlapSet current_triggers;  // Triggers overlapping this frame
     defer candidate_pairs.free();
@@ -895,7 +884,7 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
     self.active_triggers = current_triggers;
     current_triggers = {};  // Prevent double-free in defer
 
-    // === PHASE 2: Narrow-phase collision testing ===
+    // === Phase 3: Narrow-phase collision testing ===
     // BVH collisions run sequentially (allocator not thread-safe)
     // Convex-only collisions can run in parallel
     usz num_pairs = candidate_pairs.len();
@@ -971,7 +960,7 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
         }
     }
 
-    // === PHASE 2.5: Generate contact events ===
+    // === Phase 4: Generate contact events ===
     ContactOverlapSet current_contacts;
     defer current_contacts.free();
 
@@ -1010,7 +999,7 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
     self.active_contacts = current_contacts;
     current_contacts = {};  // Prevent double-free in defer
 
-    // === PHASE 3: Create XPBD constraints (from collisions + joints) ===
+    // === Phase 5: Create XPBD constraints (from collisions + joints) ===
     foreach (&collision: self.collisions) {
         collision.create_xpbd_constraint(self, time);
     }
@@ -1019,18 +1008,18 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
         joint.create_xpbd_constraint(self, time);
     }
 
-    // === PHASE 4: Project XPBD constraints — island-parallel ===
+    // === Phase 6: Solve XPBD constraints — island-parallel ===
     self.xpbd_solve_constraints(step_count);
 
     self.collisions.clear();
 
-    // === PHASE 5.5: XPBD soft body solve ===
+    // === Phase 7: Soft body solve ===
     self.solve_soft_bodies(time);
 
-    // === PHASE 6: Derive velocities, restitution, update spatial map ===
+    // === Phase 8: Derive velocities, restitution, update spatial map ===
     self.xpbd_derive_and_update(time);
 
-    // === PHASE 7: Sleep management (sequential) ===
+    // === Phase 9: Sleep management ===
     self.update_sleep_state();
 }
 
@@ -1133,8 +1122,8 @@ fn void PhysicsWorld.xpbd_derive_and_update(&self, float dt) @local {
             if (dq.l < 0) dq = {-dq.v.x, -dq.v.y, -dq.v.z, -dq.l};
             body.angular_velocity = dq.v.xyz * (2.0f * inv_dt);
 
-            body.angular_velocity *= math::pow(self.angular_dampening, dt);
-            body.linear_velocity *= math::pow(self.linear_dampening, dt);
+            body.angular_velocity *= math::pow(body.angular_dampening, dt);
+            body.linear_velocity *= math::pow(body.linear_dampening, dt);
         }
     }
 
@@ -1201,14 +1190,15 @@ fn void PhysicsWorld.xpbd_derive_and_update(&self, float dt) @local {
     }
 }
 
+
 // Island-parallel XPBD constraint solving
 fn void PhysicsWorld.xpbd_solve_constraints(&self, uint step_count) @local {
     if (self.constraints.len() == 0) return;
 
     // Group constraints by island
-    HashMap{usz, List{XpbdConstraint*}} island_constraints;
+    HashMap{usz, ConstraintList} island_constraints;
     defer {
-        island_constraints.@each(; usz id, List{XpbdConstraint*} list) {
+        island_constraints.@each(; usz id, ConstraintList list) {
             list.free();
         };
         island_constraints.free();
@@ -1237,7 +1227,7 @@ fn void PhysicsWorld.xpbd_solve_constraints(&self, uint step_count) @local {
 
     self.island_tasks.clear();
 
-    island_constraints.@each(; usz id, List{XpbdConstraint*} list) {
+    island_constraints.@each(; usz id, ConstraintList list) {
         XpbdConstraint*[] arr = list.array_view();
 
         self.island_tasks.push({
@@ -1397,7 +1387,6 @@ fn float combine_values(float a, float b, PhysicsCombine mode) @local {
         case MINIMUM: return math::min(a, b);
         case MAXIMUM: return math::max(a, b);
         case MULTIPLY:	return a * b;
-		default: return a * b;
     }
 }
 
@@ -1432,9 +1421,6 @@ fn void Collision.create_xpbd_constraint(&collision, PhysicsWorld* world, float 
     Vec3 vb = b.relative_velocity(rB);
     float rel_vel_n = (va - vb).dot(normal);
 
-    // Compliance = 0 for rigid contacts (perfectly stiff)
-    float alpha = 0;
-
     XpbdConstraint constraint = {
         .body_a = a,
         .body_b = b,
@@ -1444,7 +1430,7 @@ fn void Collision.create_xpbd_constraint(&collision, PhysicsWorld* world, float 
         .r_a_local = rA_local,
         .r_b_local = rB_local,
         .c_value = 0,  // Contact points are on body surfaces; separation already encodes penetration
-        .compliance = alpha,
+        .compliance = 0,
         .lambda = 0,
         .type = CONTACT_NORMAL,
         .friction = static_friction,
