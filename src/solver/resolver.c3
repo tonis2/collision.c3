@@ -629,15 +629,6 @@ fn int derive_worker(void* arg) @local {
         // Apply dampening
         body.angular_velocity *= math::pow(world.angular_dampening, dt);
         body.linear_velocity *= math::pow(world.linear_dampening, dt);
-
-        // Clamp very small velocities to zero
-        const float VELOCITY_CLAMP_SQ = 0.01f;
-        if (body.linear_velocity.sq_magnitude() < VELOCITY_CLAMP_SQ) {
-            body.linear_velocity = {0, 0, 0};
-        }
-        if (body.angular_velocity.sq_magnitude() < VELOCITY_CLAMP_SQ) {
-            body.angular_velocity = {0, 0, 0};
-        }
     }
     return 0;
 }
@@ -1144,14 +1135,6 @@ fn void PhysicsWorld.xpbd_derive_and_update(&self, float dt) @local {
 
             body.angular_velocity *= math::pow(self.angular_dampening, dt);
             body.linear_velocity *= math::pow(self.linear_dampening, dt);
-
-            const float VELOCITY_CLAMP_SQ = 0.01f;
-            if (body.linear_velocity.sq_magnitude() < VELOCITY_CLAMP_SQ) {
-                body.linear_velocity = {0, 0, 0};
-            }
-            if (body.angular_velocity.sq_magnitude() < VELOCITY_CLAMP_SQ) {
-                body.angular_velocity = {0, 0, 0};
-            }
         }
     }
 
@@ -1180,8 +1163,7 @@ fn void PhysicsWorld.xpbd_derive_and_update(&self, float dt) @local {
 
         float dv = target_vn - vn;
 
-        // Only apply if it would reduce separating velocity or add bounce
-        // (don't add attraction at contacts)
+        // Apply velocity correction to reach target (handles both residual approach and overshoot)
         if (math::abs(dv) > 1e-6) {
             float w_a = compute_generalized_inverse_mass(a, c.r_a, c.normal);
             float w_b = compute_generalized_inverse_mass(b, c.r_b, c.normal);
@@ -1461,7 +1443,7 @@ fn void Collision.create_xpbd_constraint(&collision, PhysicsWorld* world, float 
         .r_b = rB,
         .r_a_local = rA_local,
         .r_b_local = rB_local,
-        .c_value = collision.depth,
+        .c_value = 0,  // Contact points are on body surfaces; separation already encodes penetration
         .compliance = alpha,
         .lambda = 0,
         .type = CONTACT_NORMAL,
