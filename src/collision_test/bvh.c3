@@ -414,3 +414,113 @@ fn Vec3 TriangleVerts.get_normal(&self) {
     Vec3 edge2 = (*self)[2] - (*self)[0];
     return edge1.cross(edge2).normalize();
 }
+
+// ============================================================================
+// Geometric proximity utilities for specialized collision tests
+// ============================================================================
+
+// Closest point on triangle to a given point (Ericson's Real-Time Collision Detection)
+fn Vec3 closest_point_on_triangle(Vec3 p, Vec3 a, Vec3 b, Vec3 c) {
+    Vec3 ab = b - a;
+    Vec3 ac = c - a;
+    Vec3 ap = p - a;
+
+    float d1 = ab.dot(ap);
+    float d2 = ac.dot(ap);
+    if (d1 <= 0 && d2 <= 0) return a;
+
+    Vec3 bp = p - b;
+    float d3 = ab.dot(bp);
+    float d4 = ac.dot(bp);
+    if (d3 >= 0 && d4 <= d3) return b;
+
+    float vc = d1 * d4 - d3 * d2;
+    if (vc <= 0 && d1 >= 0 && d3 <= 0) {
+        float v = d1 / (d1 - d3);
+        return a + ab * v;
+    }
+
+    Vec3 cp = p - c;
+    float d5 = ab.dot(cp);
+    float d6 = ac.dot(cp);
+    if (d6 >= 0 && d5 <= d6) return c;
+
+    float vb = d5 * d2 - d1 * d6;
+    if (vb <= 0 && d2 >= 0 && d6 <= 0) {
+        float w = d2 / (d2 - d6);
+        return a + ac * w;
+    }
+
+    float va = d3 * d6 - d5 * d4;
+    if (va <= 0 && (d4 - d3) >= 0 && (d5 - d6) >= 0) {
+        float w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+        return b + (c - b) * w;
+    }
+
+    float denom = 1.0f / (va + vb + vc);
+    float v = vb * denom;
+    float w = vc * denom;
+    return a + ab * v + ac * w;
+}
+
+// Closest point on line segment to a given point
+fn Vec3 closest_point_on_segment(Vec3 p, Vec3 a, Vec3 b) {
+    Vec3 ab = b - a;
+    float ab_sq = ab.dot(ab);
+    if (ab_sq < BVH_EPSILON) return a;
+    float t = (p - a).dot(ab) / ab_sq;
+    t = math::clamp(t, 0.0f, 1.0f);
+    return a + ab * t;
+}
+
+// Closest points between two line segments (Ericson's method)
+fn void closest_points_segments(Vec3 p1, Vec3 q1, Vec3 p2, Vec3 q2, Vec3* c1, Vec3* c2) {
+    Vec3 d1 = q1 - p1;
+    Vec3 d2 = q2 - p2;
+    Vec3 r = p1 - p2;
+
+    float a = d1.dot(d1);
+    float e = d2.dot(d2);
+    float f = d2.dot(r);
+
+    float s, t;
+
+    if (a <= BVH_EPSILON && e <= BVH_EPSILON) {
+        *c1 = p1;
+        *c2 = p2;
+        return;
+    }
+
+    if (a <= BVH_EPSILON) {
+        s = 0.0f;
+        t = math::clamp(f / e, 0.0f, 1.0f);
+    } else {
+        float c = d1.dot(r);
+        if (e <= BVH_EPSILON) {
+            t = 0.0f;
+            s = math::clamp(-c / a, 0.0f, 1.0f);
+        } else {
+            float b = d1.dot(d2);
+            float denom = a * e - b * b;
+
+            if (denom > BVH_EPSILON) {
+                s = math::clamp((b * f - c * e) / denom, 0.0f, 1.0f);
+            } else {
+                s = 0.0f;
+            }
+
+            t = (b * s + f) / e;
+
+            if (t < 0.0f) {
+                t = 0.0f;
+                s = math::clamp(-c / a, 0.0f, 1.0f);
+            } else if (t > 1.0f) {
+                t = 1.0f;
+                s = math::clamp((b - c) / a, 0.0f, 1.0f);
+            }
+        }
+    }
+
+    *c1 = p1 + d1 * s;
+    *c2 = p2 + d2 * t;
+}

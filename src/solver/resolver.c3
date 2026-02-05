@@ -544,8 +544,7 @@ fn bool Rigidbody.has_compound(&self) {
     return self.collider.get_type() == ShapeType.COMPOUND;
 }
 
-// Worker function for parallel collision testing (convex vs convex only)
-// BVH and compound pairs are handled separately in the main loop
+// Worker function for parallel collision testing
 fn int collision_test_worker(void* arg) @local {
     CollisionTask* task = (CollisionTask*)arg;
     PhysicsWorld* world = task.world;
@@ -553,7 +552,6 @@ fn int collision_test_worker(void* arg) @local {
     Rigidbody* body_a = world.find_body(task.pair.a)!!;
     Rigidbody* body_b = world.find_body(task.pair.b)!!;
 
-    // GJK/EPA collision test for convex shapes
     CollisionInfo info = collision::check_convex_collision(&body_a.collider, &body_b.collider, epa:true);
 
     if (info.collided) {
@@ -564,6 +562,22 @@ fn int collision_test_worker(void* arg) @local {
             .contact = info.contact_points,
             .depth = info.depth,
         };
+        task.has_collision = true;
+    }
+    return 0;
+}
+
+// Worker function for parallel BVH collision testing
+fn int bvh_collision_test_worker(void* arg) @local {
+    CollisionTask* task = (CollisionTask*)arg;
+    PhysicsWorld* world = task.world;
+
+    Rigidbody* body_a = world.find_body(task.pair.a)!!;
+    Rigidbody* body_b = world.find_body(task.pair.b)!!;
+
+    Collision? collision = world.test_bvh_collision(body_a, body_b, task.pair);
+    if (try c = collision) {
+        *task.result = c;
         task.has_collision = true;
     }
     return 0;
@@ -811,7 +825,7 @@ fn void solve_xpbd_constraint(XpbdConstraint* c, PhysicsWorld* world) @local {
 <*
  @require self.bodies.len() > 0 : `Must have some bodies to simulate`
 *>
-fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
+fn void PhysicsWorld.run_step(&self, float time, uint step_count = 5) {
     // Lazy init thread pool (can't do in create_world because workers get pointer before move)
     if (!self.thread_pool_initialized) {
         self.thread_pool.init()!!;
@@ -885,8 +899,7 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
     current_triggers = {};  // Prevent double-free in defer
 
     // === Phase 3: Narrow-phase collision testing ===
-    // BVH collisions run sequentially (allocator not thread-safe)
-    // Convex-only collisions can run in parallel
+    // Convex and BVH collisions run in parallel via thread pool
     usz num_pairs = candidate_pairs.len();
 
     if (num_pairs > 0) {
@@ -944,12 +957,35 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
             }
         }
 
-        foreach (pair : bvh_pairs) {
-            Rigidbody* body_a = self.find_body(pair.a)!!;
-            Rigidbody* body_b = self.find_body(pair.b)!!;
-            Collision? collision = self.test_bvh_collision(body_a, body_b, pair);
-            if (try c = collision) {
-                self.collisions.push(c);
+        // Process BVH pairs in parallel
+        usz num_bvh = bvh_pairs.len();
+        if (num_bvh > 0) {
+            self.collision_tasks.clear();
+            self.collision_results.clear();
+
+            for (usz i = 0; i < num_bvh; i++) {
+                self.collision_results.push({});
+            }
+
+            for (usz i = 0; i < num_bvh; i++) {
+                self.collision_tasks.push({
+                    .world = self,
+                    .pair = bvh_pairs[i],
+                    .result = &self.collision_results[i],
+                    .has_collision = false,
+                });
+            }
+
+            for (usz i = 0; i < num_bvh; i++) {
+                self.thread_pool.push(&bvh_collision_test_worker, &self.collision_tasks[i])!!;
+            }
+
+            self.thread_pool.join()!!;
+
+            for (usz i = 0; i < num_bvh; i++) {
+                if (self.collision_tasks[i].has_collision) {
+                    self.collisions.push(*self.collision_tasks[i].result);
+                }
             }
         }
 
@@ -1581,26 +1617,56 @@ fn Collision? PhysicsWorld.test_bvh_collision(&self, Rigidbody* body_a, Rigidbod
     defer triangles.free();
     mesh.bvh.query_all_triangles(local_aabb, &triangles);
 
-    // Create reusable triangle mesh once (thread-local, no shared state)
-    // Use heap allocator to avoid temp allocator issues on worker threads
+    // Check if we can use specialized collision tests (sphere/capsule vs triangle)
+    ShapeType other_type = other_body.collider.get_type();
+    Vec3 other_scale = other_body.collider.scale;
+    bool uniform_scale = math::abs(other_scale.x - other_scale.y) < 0.001f &&
+                         math::abs(other_scale.y - other_scale.z) < 0.001f;
+
+    bool use_sphere = uniform_scale && other_type == SPHERE;
+    bool use_capsule = uniform_scale && other_type == CAPSULE;
+    bool use_specialized = use_sphere || use_capsule;
+
+    Vec3 sphere_center;
+    Vec3 capsule_p0;
+    Vec3 capsule_p1;
+    float world_radius = 0;
+
+    if (use_sphere) {
+        Sphere* sphere = (Sphere*)other_body.collider.shape;
+        sphere_center = other_body.collider.rotation * (sphere.center * other_scale) + other_body.collider.translation;
+        world_radius = sphere.radius * other_scale.x;
+    } else if (use_capsule) {
+        Capsule* capsule = (Capsule*)other_body.collider.shape;
+        // Capsule axis endpoints in local space (from support function convention)
+        Vec3 local_p0 = {0, capsule.radius_bottom, 0};
+        Vec3 local_p1 = {0, capsule.radius_top, 0};
+        capsule_p0 = other_body.collider.rotation * (local_p0 * other_scale) + other_body.collider.translation;
+        capsule_p1 = other_body.collider.rotation * (local_p1 * other_scale) + other_body.collider.translation;
+        world_radius = capsule.height * other_scale.x;
+    }
+
+    // GJK/EPA fallback: create reusable triangle mesh
     Mesh tri_mesh;
-	tri_mesh.vertices.push_all({{0,0,0}, {0,0,0}, {0,0,0}, {0, 1, 2}});
-
+    TransformedShape tri_shape;
+    if (!use_specialized) {
+        tri_mesh.vertices.init(allocator: mem);
+        tri_mesh.vertices.push_all({{0,0,0}, {0,0,0}, {0,0,0}, {0, 1, 2}});
+        tri_shape = {
+            .translation = mesh_translation,
+            .scale = mesh_scale,
+            .rotation = mesh_rotation,
+            .shape = &tri_mesh,
+        };
+    }
     defer tri_mesh.free();
-
-    TransformedShape tri_shape = {
-        .translation = mesh_translation,
-        .scale = mesh_scale,
-        .rotation = mesh_rotation,
-        .shape = &tri_mesh,
-    };
 
     Vec3 best_normal;
     Vec3[2] best_contact;
     float max_depth = 0;
 
     foreach (tri : triangles) {
-        // Early AABB rejection: compute triangle world AABB
+        // Transform triangle to world space
         Vec3 v0 = mesh_rotation * (tri[0] * mesh_scale) + mesh_translation;
         Vec3 v1 = mesh_rotation * (tri[1] * mesh_scale) + mesh_translation;
         Vec3 v2 = mesh_rotation * (tri[2] * mesh_scale) + mesh_translation;
@@ -1618,25 +1684,102 @@ fn Collision? PhysicsWorld.test_bvh_collision(&self, Rigidbody* body_a, Rigidbod
             }
         };
 
-        // Skip GJK if triangle AABB doesn't overlap other body's AABB
         if (!tri_aabb.collides(other_body.transformed_aabb)) continue;
 
-        // Update mesh vertices in-place (no allocation)
-        tri_mesh.vertices[0] = tri[0];
-        tri_mesh.vertices[1] = tri[1];
-        tri_mesh.vertices[2] = tri[2];
+        if (use_specialized) {
+            Vec3 closest_on_axis;
+            Vec3 closest_on_tri;
 
-        CollisionInfo info;
-        if (mesh_is_a) {
-            info = collision::check_convex_collision(&tri_shape, &other_body.collider, epa:true);
+            if (use_sphere) {
+                closest_on_tri = closest_point_on_triangle(sphere_center, v0, v1, v2);
+                closest_on_axis = sphere_center;
+            } else {
+                // Capsule: find closest points between capsule segment and triangle
+                float min_dist_sq = float.max;
+
+                // Test capsule endpoints against triangle
+                Vec3 cp = closest_point_on_triangle(capsule_p0, v0, v1, v2);
+                float d = (capsule_p0 - cp).sq_magnitude();
+                if (d < min_dist_sq) { min_dist_sq = d; closest_on_axis = capsule_p0; closest_on_tri = cp; }
+
+                cp = closest_point_on_triangle(capsule_p1, v0, v1, v2);
+                d = (capsule_p1 - cp).sq_magnitude();
+                if (d < min_dist_sq) { min_dist_sq = d; closest_on_axis = capsule_p1; closest_on_tri = cp; }
+
+                // Test triangle vertices against capsule segment
+                Vec3 seg_pt = closest_point_on_segment(v0, capsule_p0, capsule_p1);
+                d = (seg_pt - v0).sq_magnitude();
+                if (d < min_dist_sq) { min_dist_sq = d; closest_on_axis = seg_pt; closest_on_tri = v0; }
+
+                seg_pt = closest_point_on_segment(v1, capsule_p0, capsule_p1);
+                d = (seg_pt - v1).sq_magnitude();
+                if (d < min_dist_sq) { min_dist_sq = d; closest_on_axis = seg_pt; closest_on_tri = v1; }
+
+                seg_pt = closest_point_on_segment(v2, capsule_p0, capsule_p1);
+                d = (seg_pt - v2).sq_magnitude();
+                if (d < min_dist_sq) { min_dist_sq = d; closest_on_axis = seg_pt; closest_on_tri = v2; }
+
+                // Test capsule segment against each triangle edge
+                Vec3 c1, c2;
+                closest_points_segments(capsule_p0, capsule_p1, v0, v1, &c1, &c2);
+                d = (c1 - c2).sq_magnitude();
+                if (d < min_dist_sq) { min_dist_sq = d; closest_on_axis = c1; closest_on_tri = c2; }
+
+                closest_points_segments(capsule_p0, capsule_p1, v1, v2, &c1, &c2);
+                d = (c1 - c2).sq_magnitude();
+                if (d < min_dist_sq) { min_dist_sq = d; closest_on_axis = c1; closest_on_tri = c2; }
+
+                closest_points_segments(capsule_p0, capsule_p1, v2, v0, &c1, &c2);
+                d = (c1 - c2).sq_magnitude();
+                if (d < min_dist_sq) { min_dist_sq = d; closest_on_axis = c1; closest_on_tri = c2; }
+            }
+
+            Vec3 diff = closest_on_axis - closest_on_tri;
+            float dist_sq = diff.sq_magnitude();
+
+            if (dist_sq >= world_radius * world_radius) continue;
+
+            float depth;
+            Vec3 n;
+            if (dist_sq > 0.00001f * 0.00001f) {
+                float dist = math::sqrt(dist_sq);
+                n = diff / dist;  // Points from triangle toward shape
+                depth = world_radius - dist;
+            } else {
+                // Degenerate: shape axis is on triangle surface, use face normal
+                n = (v1 - v0).cross(v2 - v0).normalize();
+                depth = world_radius;
+            }
+
+            if (depth > max_depth) {
+                max_depth = depth;
+                Vec3 shape_contact = closest_on_axis - n * world_radius;
+                if (mesh_is_a) {
+                    best_normal = n;
+                    best_contact = { closest_on_tri, shape_contact };
+                } else {
+                    best_normal = -n;
+                    best_contact = { shape_contact, closest_on_tri };
+                }
+            }
         } else {
-            info = collision::check_convex_collision(&other_body.collider, &tri_shape, epa:true);
-        }
+            // GJK/EPA fallback for other shape types
+            tri_mesh.vertices[0] = tri[0];
+            tri_mesh.vertices[1] = tri[1];
+            tri_mesh.vertices[2] = tri[2];
 
-        if (info.collided && info.depth > max_depth) {
-            max_depth = info.depth;
-            best_normal = info.normal;
-            best_contact = info.contact_points;
+            CollisionInfo info;
+            if (mesh_is_a) {
+                info = collision::check_convex_collision(&tri_shape, &other_body.collider, epa:true);
+            } else {
+                info = collision::check_convex_collision(&other_body.collider, &tri_shape, epa:true);
+            }
+
+            if (info.collided && info.depth > max_depth) {
+                max_depth = info.depth;
+                best_normal = info.normal;
+                best_contact = info.contact_points;
+            }
         }
     }
 
