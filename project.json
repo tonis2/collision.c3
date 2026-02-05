@@ -8,7 +8,7 @@
 	"features": [],
 	"script-dir": "./",
 	"linked-libraries": [],
-	"sources": ["./test/*", "./src/*"],
+	"sources": ["./test/*", "./src/**"],
 	"targets": {
 		"main": {
 			"type": "executable"

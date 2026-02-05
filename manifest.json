@@ -1,25 +1,6 @@
 {
   "provides" : "collision",
-  "sources": [
-    "src/collision_test/bvh.c3",
-    "src/collision_test//epa.c3",
-    "src/collision_test/gjk.c3",
-    "src/collision_test/heightmap.c3",
-    "src/collision_test/decompose.c3",
-
-    "src/mesh/quick_hull.c3",
-    "src/mesh/remesh.c3",
-    "src/mesh/mesh.c3",
-
-    "src/solver/resolver.c3",
-    "src/solver/joint.c3",
-
-    "src/shapes.c3",
-    "src/aabb.c3", 
-    "src/helpers.c3",
-    "src/spatial_hash.c3"
-
-  ],
+  "sources": ["src/**"],
   "targets" : {
     "macos-x64" : {
     },

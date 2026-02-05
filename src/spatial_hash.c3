@@ -192,8 +192,9 @@ macro void SpatialHash3D.@get_nearby_objects(&self, Vec3 pos; @callback(usz id))
     Vec3 cell = self.world_to_grid(pos);
 
     self.@get_neighbor_cells(cell; Vec3 position) {
-        int cell_id = self.world_to_grid({position.x, position.y, position.z}).hash();
-        CellList cells = self.table.get(cell_id);
-        foreach (cell: cells) @callback(cell);
+        usz cell_id = self.world_to_grid({position.x, position.y, position.z}).hash();
+        if (try cells = self.table.get(cell_id)) {
+            foreach (item: cells) @callback(item);
+        }
     };
 }
