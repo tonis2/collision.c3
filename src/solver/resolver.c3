@@ -84,6 +84,8 @@ struct XpbdConstraint {
     // Restitution
     float restitution;
     float pre_solve_relative_vel_n; // Normal relative velocity before solve (for restitution)
+    // Angular joint data (for recomputing error each iteration)
+    QuaternionValue joint_orientation; // Rest orientation for angular constraints
 }
 
 struct Collision {
@@ -770,7 +772,15 @@ fn void solve_xpbd_constraint(XpbdConstraint* c, PhysicsWorld* world) @local {
 
         case JOINT_ANGULAR:
             // Angular constraint: correct orientation difference along axis
-            Vec3 axis = c.normal; // axis in world space
+            // Recompute world-space axis from local-space axis (stored in r_a)
+            Vec3 axis = a.collider.rotation * c.r_a;
+
+            // Recompute angular error from current orientations
+            QuaternionValue err_q = a.collider.rotation.conjugate() * b.collider.rotation * c.joint_orientation.conjugate();
+            float err_dir = err_q.l >= 0 ? 1.0f : -1.0f;
+            Vec3 err_local = err_q.v.xyz * 2 * err_dir;
+            Vec3 world_err = a.collider.rotation * err_local;
+            float ang_error = world_err.dot(axis) - c.c_value;
 
             // Angular generalized inverse mass (no lever arm)
             float aw_a = 0;
@@ -785,9 +795,6 @@ fn void solve_xpbd_constraint(XpbdConstraint* c, PhysicsWorld* world) @local {
             }
             float aw_sum = aw_a + aw_b;
             if (aw_sum < 1e-10) return;
-
-            // Recompute angular error
-            float ang_error = c.c_value;
 
             float a_alpha = c.compliance;
             float a_dl = -(ang_error + a_alpha * c.lambda) / (aw_sum + a_alpha);

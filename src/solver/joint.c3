@@ -121,6 +121,22 @@ fn void GenericJoint3D.create_xpbd_constraint(&joint, PhysicsWorld* world, float
         float rotation_error = world_error.dot(world_axis);
         float compliance = limit.stiffness > 0 ? (1.0f / limit.stiffness) / (dt * dt) : base_compliance;
 
+        // Locked angular joint (no rotation allowed) — bilateral constraint
+        if (limit.min == 0 && limit.max == 0) {
+            world.constraints.push({
+                .body_a = a,
+                .body_b = b,
+                .normal = world_axis,
+                .r_a = normal,  // local-space axis for recomputation in solver
+                .c_value = 0,   // target: zero rotation error
+                .compliance = compliance,
+                .lambda = 0,
+                .type = JOINT_ANGULAR,
+                .joint_orientation = joint.relative_orientation,
+            });
+            continue;
+        }
+
         float min_limit = limit.min - rotation_error;
         float max_limit = rotation_error - limit.max;
 
@@ -129,10 +145,12 @@ fn void GenericJoint3D.create_xpbd_constraint(&joint, PhysicsWorld* world, float
                 .body_a = a,
                 .body_b = b,
                 .normal = world_axis,
-                .c_value = min_limit * rotation_error,
+                .r_a = normal,
+                .c_value = limit.min,  // target: drive rotation_error toward limit.min
                 .compliance = compliance,
                 .lambda = 0,
                 .type = JOINT_ANGULAR,
+                .joint_orientation = joint.relative_orientation,
             });
         }
 
@@ -141,10 +159,12 @@ fn void GenericJoint3D.create_xpbd_constraint(&joint, PhysicsWorld* world, float
                 .body_a = a,
                 .body_b = b,
                 .normal = world_axis,
-                .c_value = -max_limit * rotation_error,
+                .r_a = normal,
+                .c_value = limit.max,  // target: drive rotation_error toward limit.max
                 .compliance = compliance,
                 .lambda = 0,
                 .type = JOINT_ANGULAR,
+                .joint_orientation = joint.relative_orientation,
             });
         }
     }

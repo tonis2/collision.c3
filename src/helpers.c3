@@ -29,7 +29,6 @@ struct HitInfo {
     TriangleVerts triangle;
 }
 
-
 struct Face @private {
     usz a,b,c;
     Vec3 normal;
