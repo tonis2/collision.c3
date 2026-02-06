@@ -1083,9 +1083,9 @@ fn void PhysicsWorld.derive_velocities(&self, float dt) @local {
         body.angular_velocity = delta_q.v.xyz * (2.0f / dt);
         if (delta_q.l < 0.0f) body.angular_velocity = -body.angular_velocity;
 
-        // Flat damping
-        body.linear_velocity *= 0.90f;
-        body.angular_velocity *= 0.85f;
+        // Damping (pow-based, matches physics timestep)
+        body.linear_velocity *= math::pow(self.linear_dampening, dt);
+        body.angular_velocity *= math::pow(self.angular_dampening, dt);
 
         // Clamp angular velocity
         clamp_angular_velocity(body);
