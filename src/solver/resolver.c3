@@ -1073,6 +1073,64 @@ fn void PhysicsWorld.avbd_solve(&self, float dt, uint iterations) @local {
     }
 }
 
+// === Velocity-level restitution ===
+// After position solve, clamp post-solve separating velocity based on
+// pre-solve approach speed and material restitution. This prevents:
+// - Ground jitter (position corrections creating bounce-back velocity)
+// - Explosion from deep penetration corrections
+fn void PhysicsWorld.apply_restitution(&self, float dt) @local {
+    const float RESTITUTION_VEL_THRESHOLD = 1.0f;  // Only apply bounce above this approach speed
+
+    for (usz fi = 0; fi < self.forces.len(); fi++) {
+        AvbdForce* force = &self.forces[fi];
+        if (!force.is_contact) continue;
+        if (force.lambda[0] >= 0.0f) continue;  // No active contact force
+
+        Rigidbody* a = force.body_a;
+        Rigidbody* b = force.body_b;
+
+        Vec3 rA = a.collider.rotation * force.rA_local;
+        Vec3 rB = b.collider.rotation * force.rB_local;
+        Vec3 n = force.normal;
+
+        // Pre-solve relative velocity at contact point (from before this frame's solve)
+        Vec3 v_pre_a = a.prev_linear_velocity + a.prev_angular_velocity.cross(rA);
+        Vec3 v_pre_b = b.prev_linear_velocity + b.prev_angular_velocity.cross(rB);
+        float v_n_pre = (v_pre_a - v_pre_b).dot(n);
+
+        // Post-solve relative velocity at contact point (just derived from positions)
+        Vec3 v_post_a = a.linear_velocity + a.angular_velocity.cross(rA);
+        Vec3 v_post_b = b.linear_velocity + b.angular_velocity.cross(rB);
+        float v_n_post = (v_post_a - v_post_b).dot(n);
+
+        // Desired normal velocity based on restitution
+        float restitution = 0.0f;
+        if (v_n_pre < -RESTITUTION_VEL_THRESHOLD) {
+            // Significant approach speed: apply material restitution for bounce
+            PhysicsCombine rest_mode = (PhysicsCombine)math::max(
+                (int)a.material.restitution_combine, (int)b.material.restitution_combine);
+            restitution = combine_values(a.material.restitution, b.material.restitution, rest_mode);
+        }
+        float v_n_desired = -restitution * v_n_pre;  // Positive = separating
+
+        // Only correct if post-solve separating velocity exceeds desired
+        if (v_n_post <= v_n_desired) continue;
+
+        float delta_vn = v_n_post - v_n_desired;
+
+        // Effective mass along contact normal
+        float w = 0.0f;
+        if (!a.is_static) w += a.inverse_mass + a.get_intertia(rA, n);
+        if (!b.is_static) w += b.inverse_mass + b.get_intertia(rB, n);
+
+        if (w < 1e-6f) continue;
+
+        float j = delta_vn / w;
+        if (!a.is_static) a.apply_impulse(n * (-j), rA);
+        if (!b.is_static) b.apply_impulse(n * j, rB);
+    }
+}
+
 // === PHASE 6: Derive velocities ===
 fn void PhysicsWorld.derive_velocities(&self, float dt) @local {
     foreach (body : self.active_bodies) {
@@ -1082,7 +1140,12 @@ fn void PhysicsWorld.derive_velocities(&self, float dt) @local {
         QuaternionValue delta_q = body.collider.rotation * body.initial_orientation.conjugate();
         body.angular_velocity = delta_q.v.xyz * (2.0f / dt);
         if (delta_q.l < 0.0f) body.angular_velocity = -body.angular_velocity;
+    }
 
+    // Velocity-level restitution: prevent excessive bounce from position corrections
+    self.apply_restitution(dt);
+
+    foreach (body : self.active_bodies) {
         // Damping (pow-based, matches physics timestep)
         body.linear_velocity *= math::pow(self.linear_dampening, dt);
         body.angular_velocity *= math::pow(self.angular_dampening, dt);
@@ -1090,8 +1153,15 @@ fn void PhysicsWorld.derive_velocities(&self, float dt) @local {
         // Clamp angular velocity
         clamp_angular_velocity(body);
 
+        // Clamp max linear speed to prevent explosions
+        const float MAX_LINEAR_SPEED = 50.0f;
+        float sq_speed = body.linear_velocity.sq_magnitude();
+        if (sq_speed > MAX_LINEAR_SPEED * MAX_LINEAR_SPEED) {
+            body.linear_velocity *= MAX_LINEAR_SPEED / math::sqrt(sq_speed);
+        }
+
         // Clamp very small velocities to zero
-        const float VELOCITY_CLAMP_SQ = 0.01f;
+        const float VELOCITY_CLAMP_SQ = 0.001f;
         if (body.linear_velocity.sq_magnitude() < VELOCITY_CLAMP_SQ) {
             body.linear_velocity = {0, 0, 0};
         }
