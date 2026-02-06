@@ -17,6 +17,7 @@ alias RigidBodyMap = LinkedHashMap{usz, Rigidbody};
 alias RigidBodyIterator = LinkedHashMapValueIterator{usz, Rigidbody};
 alias UnionFindMap = HashMap{usz, usz};
 alias ConstraintList = List{XpbdConstraint*};
+alias WarmStartCache = HashMap{Pair, float};
 
 
 // Task structure for parallel collision testing
@@ -215,6 +216,10 @@ struct PhysicsWorld {
     // Contact sorting cache (keep deepest N contacts per pair)
     Collision[MAX_CONTACTS_PER_PAIR] contact_cache;
     usz contact_cache_count;
+
+    // Warm-start: cache contact lambdas from previous frame
+    WarmStartCache warm_start_cache;
+    WarmStartCache warm_start_prev;
 }
 
 fn void PhysicsWorld.free(&self) {
@@ -243,6 +248,9 @@ fn void PhysicsWorld.free(&self) {
     // Free soft bodies
     foreach (&sb : self.soft_bodies) sb.free();
     self.soft_bodies.free();
+    // Free warm-start caches
+    self.warm_start_cache.free();
+    self.warm_start_prev.free();
 }
 
 const PhysicsWorld DEFAULT_PHYSICS_WORLD = {
@@ -652,14 +660,14 @@ fn int island_solve_worker(void* arg) @local {
 
     for (uint iter = 0; iter < task.iterations; iter++) {
         for (usz i = 0; i < task.count; i++) {
-            solve_xpbd_constraint(task.constraints[i], task.world);
+            solve_xpbd_constraint(task.constraints[i], task.world, iter, task.iterations);
         }
     }
     return 0;
 }
 
 // XPBD constraint solver — position-level corrections
-fn void solve_xpbd_constraint(XpbdConstraint* c, PhysicsWorld* world) @local {
+fn void solve_xpbd_constraint(XpbdConstraint* c, PhysicsWorld* world, uint iteration, uint total_iterations) @local {
     Rigidbody* a = c.body_a;
     Rigidbody* b = c.body_b;
 
@@ -733,7 +741,14 @@ fn void solve_xpbd_constraint(XpbdConstraint* c, PhysicsWorld* world) @local {
             float jw_sum = jw_a + jw_b;
             if (jw_sum < 1e-10) return;
 
+            // Progressive stiffness: ramp compliance from high (soft) to target over iterations
+            // This lets weak forces propagate before stiff forces dominate
             float j_alpha = c.compliance;
+            if (j_alpha > 0 && total_iterations > 1) {
+                float progress = (float)(iteration + 1) / (float)total_iterations;
+                // Start at 4x compliance (1/4 stiffness), ramp to target
+                j_alpha = c.compliance * (1.0f + 3.0f * (1.0f - progress));
+            }
             float j_dl = -(pos_error + j_alpha * c.lambda) / (jw_sum + j_alpha);
             c.lambda += j_dl;
 
@@ -766,7 +781,12 @@ fn void solve_xpbd_constraint(XpbdConstraint* c, PhysicsWorld* world) @local {
             float aw_sum = aw_a + aw_b;
             if (aw_sum < 1e-10) return;
 
+            // Progressive stiffness: ramp compliance from high (soft) to target over iterations
             float a_alpha = c.compliance;
+            if (a_alpha > 0 && total_iterations > 1) {
+                float a_progress = (float)(iteration + 1) / (float)total_iterations;
+                a_alpha = c.compliance * (1.0f + 3.0f * (1.0f - a_progress));
+            }
             float a_dl = -(ang_error + a_alpha * c.lambda) / (aw_sum + a_alpha);
             c.lambda += a_dl;
 
@@ -780,16 +800,28 @@ fn void solve_xpbd_constraint(XpbdConstraint* c, PhysicsWorld* world) @local {
 <*
  @require self.bodies.len() > 0 : `Must have some bodies to simulate`
 *>
-fn void PhysicsWorld.run_step(&self, float time, uint step_count = 5) {
+fn void PhysicsWorld.run_step(&self, float time, uint step_count = 1, uint sub_steps = 1) {
     // Lazy init thread pool (can't do in create_world because workers get pointer before move)
     if (!self.thread_pool_initialized) {
         self.thread_pool.init()!!;
         self.thread_pool_initialized = true;
     }
 
-    // Clear events from previous frame
     self.trigger_events.clear();
     self.contact_events.clear();
+
+    float sub_time = time / (float)sub_steps;
+    for (uint i = 0; i < sub_steps; i++) {
+        self.run_substep(sub_time, step_count);
+    }
+}
+
+fn void PhysicsWorld.run_substep(&self, float time, uint step_count) @local {
+
+    // Swap warm-start caches: previous frame's results become seeds for this frame
+    self.warm_start_prev.free();
+    self.warm_start_prev = self.warm_start_cache;
+    self.warm_start_cache = {};
 
     // Recompute islands if joint topology changed
     self.compute_islands();
@@ -1002,6 +1034,21 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 5) {
     // === Phase 6: Solve XPBD constraints — island-parallel ===
     self.xpbd_solve_constraints(step_count);
 
+    // Store solved contact lambdas into warm-start cache for next frame
+    foreach (&c : self.constraints) {
+        if (c.type == CONTACT_NORMAL && c.lambda > 0) {
+            Pair cpair = { c.body_a.id, c.body_b.id };
+            if (try existing = self.warm_start_cache.get(cpair)) {
+                // Keep maximum lambda for this pair (best approximation for multi-contact)
+                if (c.lambda > existing) {
+                    self.warm_start_cache.set(cpair, c.lambda);
+                }
+            } else {
+                self.warm_start_cache.set(cpair, c.lambda);
+            }
+        }
+    }
+
     self.collisions.clear();
 
     // === Phase 7: Soft body solve ===
@@ -1208,9 +1255,9 @@ fn void PhysicsWorld.xpbd_solve_constraints(&self, uint step_count) @local {
     usz num_islands = island_constraints.len();
 
     if (num_islands <= 1) {
-        for (usz i = 0; i < step_count; i++) {
+        for (uint i = 0; i < step_count; i++) {
             for (usz j = 0; j < self.constraints.len(); j++) {
-                solve_xpbd_constraint(&self.constraints[j], self);
+                solve_xpbd_constraint(&self.constraints[j], self, i, step_count);
             }
         }
         return;
