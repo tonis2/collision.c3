@@ -19,11 +19,11 @@ const MAX_CONTACTS_PER_PAIR @local = 8;  // Max contacts per collision pair
 // AVBD solver constants (module-level so visible across files)
 const MAX_FORCE_ROWS = 3;
 const PENALTY_MIN = 20000.0f;
-const PENALTY_MAX = 1000000000.0f;
+const PENALTY_MAX = 30000.0f;
 const PENETRATION_SLOP = 0.0f;
 const AVBD_ALPHA = 0.95f;
-const AVBD_BETA = 100000.0f;
-const AVBD_GAMMA = 0.99f;
+const AVBD_BETA = 5000.0f;
+const AVBD_GAMMA = 0.95f;
 const MAX_ANGULAR_SPEED = 80.0f;
 
 alias CollisionFilter = HashMap{Pair, bool};
@@ -69,6 +69,25 @@ struct AvbdForce {
     bool is_contact;
     bool is_angular;  // Angular joint force (no linear Jacobian)
 }
+
+// Warm-start cache: stores per-contact converged state from previous frame
+const MAX_WARM_CONTACTS = 8;
+const WARM_LAMBDA_DECAY = 0.7f;   // Lambda decay between frames (more aggressive than alpha)
+const WARM_MATCH_DIST_SQ = 4.0f;  // Max distance² for contact matching (2.0m)
+
+struct WarmStartContact {
+    Vec3 rA_local;
+    Vec3 rB_local;
+    float[MAX_FORCE_ROWS] lambda;
+    float[MAX_FORCE_ROWS] penalty;
+}
+
+struct WarmStartEntry {
+    WarmStartContact[MAX_WARM_CONTACTS] contacts;
+    usz count;
+}
+
+alias WarmStartCache = HashMap{Pair, WarmStartEntry};
 
 struct Collision {
     usz a;
@@ -198,6 +217,9 @@ struct PhysicsWorld {
     // Contact sorting cache (keep deepest N contacts per pair)
     Collision[MAX_CONTACTS_PER_PAIR] contact_cache;
     usz contact_cache_count;
+
+    // Warm-start: cached lambda/penalty from previous frame
+    WarmStartCache warm_start;
 }
 
 fn void PhysicsWorld.free(&self) {
@@ -511,6 +533,121 @@ fn float combine_values(float a, float b, PhysicsCombine mode) @local {
     }
 }
 
+fn bool is_manifold_shape(ShapeType t) @local @inline {
+    return t == ShapeType.CONVEX || t == ShapeType.BOX;
+}
+
+// === Contact manifold generation ===
+// EPA returns only one contact point per pair. For flat-on-flat contacts (box on floor),
+// we expand into multiple contacts by checking mesh/box vertices near the contact plane.
+fn void PhysicsWorld.generate_manifold(&self, Collision* collision) @local {
+    Rigidbody* a = self.find_body(collision.a)!!;
+    Rigidbody* b = self.find_body(collision.b)!!;
+
+    ShapeType a_type = a.collider.get_type();
+    ShapeType b_type = b.collider.get_type();
+
+    // If neither body has expandable geometry, just keep the single contact
+    if (!is_manifold_shape(a_type) && !is_manifold_shape(b_type)) {
+        self.collisions.push(*collision);
+        return;
+    }
+
+    // Choose incident body: must be a dynamic manifold shape.
+    // Only expand vertices of a dynamic body (BOX/CONVEX) — never a static ground plane.
+    bool incident_is_a;
+    bool a_candidate = is_manifold_shape(a_type) && !a.is_static;
+    bool b_candidate = is_manifold_shape(b_type) && !b.is_static;
+
+    if (!a_candidate && !b_candidate) {
+        // No dynamic manifold shape — keep original EPA contact
+        self.collisions.push(*collision);
+        return;
+    }
+
+    if (a_candidate && b_candidate) {
+        // Both dynamic manifold shapes: pick smaller surface area
+        Vec3 ext_a = a.transformed_aabb.max - a.transformed_aabb.min;
+        Vec3 ext_b = b.transformed_aabb.max - b.transformed_aabb.min;
+        float sa_a = ext_a.x*ext_a.y + ext_a.y*ext_a.z + ext_a.z*ext_a.x;
+        float sa_b = ext_b.x*ext_b.y + ext_b.y*ext_b.z + ext_b.z*ext_b.x;
+        incident_is_a = sa_a <= sa_b;
+    } else {
+        incident_is_a = a_candidate;
+    }
+
+    Rigidbody* incident = incident_is_a ? a : b;
+    ShapeType incident_type = incident_is_a ? a_type : b_type;
+
+    // Get local-space vertices based on shape type
+    Vec3[8] box_corners;
+    Vec3[] local_verts;
+
+    if (incident_type == ShapeType.BOX) {
+        Aabb3* box = (Aabb3*)incident.collider.shape;
+        box_corners = {
+            box.min,
+            { box.max.x, box.min.y, box.min.z },
+            { box.min.x, box.max.y, box.min.z },
+            { box.min.x, box.min.y, box.max.z },
+            { box.max.x, box.max.y, box.min.z },
+            { box.max.x, box.min.y, box.max.z },
+            { box.min.x, box.max.y, box.max.z },
+            box.max,
+        };
+        local_verts = &box_corners;
+    } else {
+        Mesh* mesh = (Mesh*)incident.collider.shape;
+        local_verts = mesh.vertices.entries[:mesh.vertices.size];
+    }
+
+    // Contact plane: on the reference body's surface, normal pointing toward incident body.
+    // collision.normal is A→B direction. Reference body's outward normal points toward incident.
+    Vec3 plane_point = incident_is_a ? collision.contact[1] : collision.contact[0];
+    Vec3 plane_normal = incident_is_a ? -collision.normal : collision.normal;
+    Vec3 orig_contact = incident_is_a ? collision.contact[0] : collision.contact[1];
+
+    float depth_tol = collision.depth + 0.02f;
+    const float DEDUP_DIST_SQ = 0.0001f;  // 1cm dedup radius
+    // Max spread: incident body's AABB diagonal squared (covers any face diagonal)
+    Vec3 inc_ext = incident.transformed_aabb.max - incident.transformed_aabb.min;
+    float max_spread_sq = inc_ext.sq_magnitude();
+
+    // Always include original EPA contact
+    self.collisions.push(*collision);
+
+    foreach (i, local_v : local_verts) {
+        Vec3 v = incident.collider.rotation * (local_v * incident.collider.scale)
+               + incident.collider.translation;
+
+        float dist_to_orig = v.distance_sq(orig_contact);
+
+        // Skip if same as original contact or too far away
+        if (dist_to_orig < DEDUP_DIST_SQ || dist_to_orig > max_spread_sq) continue;
+
+        // Signed distance to contact plane (positive = above/outside, negative = penetrating)
+        float signed_dist = (v - plane_point).dot(plane_normal);
+        if (signed_dist >= depth_tol) continue;
+
+        float depth = math::max(0.0f, -signed_dist);
+        Vec3 projected = v - plane_normal * signed_dist;
+
+        Collision new_c = {
+            .a = collision.a,
+            .b = collision.b,
+            .normal = collision.normal,
+            .depth = depth,
+        };
+
+        if (incident_is_a) {
+            new_c.contact = { v, projected };
+        } else {
+            new_c.contact = { projected, v };
+        }
+
+        self.collisions.push(new_c);
+    }
+}
 
 // === AVBD: Create contact force from collision ===
 fn void Collision.create_force(&collision, PhysicsWorld* world, float dt) @local {
@@ -548,11 +685,34 @@ fn void Collision.create_force(&collision, PhysicsWorld* world, float dt) @local
         .is_contact = true,
     };
 
-    // Initialize per-row state
+    // Initialize per-row state with warm-start from closest matching previous contact
+    Pair pair = { collision.a, collision.b };
+    WarmStartEntry*? cached = world.warm_start.get_ref(pair);
+
     for (usz i = 0; i < 3; i++) {
+        force.stiffness[i] = float.max;
         force.lambda[i] = 0;
         force.penalty[i] = PENALTY_MIN;
-        force.stiffness[i] = float.max;
+    }
+
+    // Warm-start from closest matching previous contact (position-based matching)
+    if (try ws = cached) {
+        float best_dist = WARM_MATCH_DIST_SQ;
+        usz best_idx = ws.count;
+        for (usz ci = 0; ci < ws.count; ci++) {
+            float dist = rA_local.distance_sq(ws.contacts[ci].rA_local);
+            if (dist < best_dist) {
+                best_dist = dist;
+                best_idx = ci;
+            }
+        }
+        if (best_idx < ws.count) {
+            WarmStartContact* match = &ws.contacts[best_idx];
+            for (usz i = 0; i < 3; i++) {
+                force.lambda[i] = match.lambda[i] * WARM_LAMBDA_DECAY;
+                force.penalty[i] = math::max(match.penalty[i], PENALTY_MIN);
+            }
+        }
     }
     // Normal: repulsion only (negative force = push apart)
     force.fmin[0] = -float.max;  force.fmax[0] = 0;
@@ -884,6 +1044,29 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 25) {
     self.active_contacts = current_contacts;
     current_contacts = {};
 
+    // === PHASE 2.75: Expand contact manifolds ===
+    // EPA gives one contact per pair. Expand into multi-contact manifolds
+    // by checking mesh vertices near the contact plane. Works for all collision
+    // types (convex, BVH, compound).
+    {
+        usz raw_count = self.collisions.len();
+        for (usz i = 0; i < raw_count; i++) {
+            Collision c = self.collisions[i];
+            self.generate_manifold(&c);
+        }
+        // Remove original raw collisions (manifold pushed expanded versions)
+        if (raw_count > 0) {
+            // Shift expanded contacts to front, removing originals
+            usz expanded_count = self.collisions.len() - raw_count;
+            for (usz i = 0; i < expanded_count; i++) {
+                self.collisions[i] = self.collisions[raw_count + i];
+            }
+            // Trim to expanded count
+            while (self.collisions.len() > expanded_count) {
+                self.collisions.pop()!!;
+            }
+        }
+    }
 
     // === PHASE 3: Create AVBD forces ===
     foreach (&collision: self.collisions) {
@@ -897,11 +1080,49 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 25) {
     // === PHASE 4: Predict body states ===
     self.predict_bodies(time);
 
+    // Sort active bodies bottom-up (ascending z) for Gauss-Seidel convergence.
+    // In a stack, solving ground-touching bodies first propagates corrections upward.
+    self.sort_bodies_bottom_up();
+
     // === PHASE 5: AVBD solve ===
     self.avbd_solve(time, step_count);
 
     // === PHASE 6: Derive velocities + spatial map update ===
     self.derive_velocities(time);
+
+    // === Save warm-start cache for next frame (per-contact) ===
+    self.warm_start.free();
+    self.warm_start = {};
+    for (usz fi = 0; fi < self.forces.len(); fi++) {
+        AvbdForce* force = &self.forces[fi];
+        if (!force.is_contact) continue;
+
+        Pair pair = { force.body_a.id, force.body_b.id };
+        WarmStartEntry*? existing = self.warm_start.get_ref(pair);
+
+        if (try e = existing) {
+            if (e.count < MAX_WARM_CONTACTS) {
+                WarmStartContact* c = &e.contacts[e.count];
+                c.rA_local = force.rA_local;
+                c.rB_local = force.rB_local;
+                for (usz i = 0; i < MAX_FORCE_ROWS; i++) {
+                    c.lambda[i] = force.lambda[i];
+                    c.penalty[i] = force.penalty[i] * AVBD_GAMMA;
+                }
+                e.count++;
+            }
+        } else {
+            WarmStartEntry entry;
+            entry.count = 1;
+            entry.contacts[0].rA_local = force.rA_local;
+            entry.contacts[0].rB_local = force.rB_local;
+            for (usz i = 0; i < MAX_FORCE_ROWS; i++) {
+                entry.contacts[0].lambda[i] = force.lambda[i];
+                entry.contacts[0].penalty[i] = force.penalty[i] * AVBD_GAMMA;
+            }
+            self.warm_start.set(pair, entry);
+        }
+    }
 
     self.collisions.clear();
     self.forces.clear();
@@ -955,6 +1176,24 @@ fn void PhysicsWorld.predict_bodies(&self, float dt) @local {
         // Predicted position uses accelWeight-scaled gravity
         body.collider.translation += body.linear_velocity * dt + grav * (accel_weight * dt2);
         body.collider.rotation = body.inertial_orientation;
+    }
+}
+
+// Sort active bodies by z-coordinate (ascending) for bottom-up Gauss-Seidel convergence.
+// Gravity is -z, so lower z = closer to ground = should be solved first.
+fn void PhysicsWorld.sort_bodies_bottom_up(&self) @local {
+    usz n = self.active_bodies.len();
+    if (n <= 1) return;
+    // Simple insertion sort (N is small, typically < 20)
+    for (usz i = 1; i < n; i++) {
+        Rigidbody* key = self.active_bodies[i];
+        float key_z = key.collider.translation.z;
+        isz j = (isz)i - 1;
+        while (j >= 0 && self.active_bodies[(usz)j].collider.translation.z > key_z) {
+            self.active_bodies[(usz)j + 1] = self.active_bodies[(usz)j];
+            j--;
+        }
+        self.active_bodies[(usz)j + 1] = key;
     }
 }
 
@@ -1082,11 +1321,18 @@ fn void PhysicsWorld.avbd_solve(&self, float dt, uint iterations) @local {
 // - Explosion from deep penetration corrections
 fn void PhysicsWorld.apply_restitution(&self, float dt) @local {
     const float RESTITUTION_VEL_THRESHOLD = 1.0f;  // Only apply bounce above this approach speed
+    const float NEAR_CONTACT_TOL = 0.01f;  // Bodies within 1cm are "nearly in contact"
 
     for (usz fi = 0; fi < self.forces.len(); fi++) {
         AvbdForce* force = &self.forces[fi];
         if (!force.is_contact) continue;
-        if (force.lambda[0] >= 0.0f) continue;  // No active contact force
+
+        // Process contacts that are either active (lambda < 0) or nearly resolved (small C).
+        // This catches cases where the solver overcorrected (body separated → lambda=0)
+        // but the body is still at the surface and shouldn't have separating velocity.
+        bool active_contact = force.lambda[0] < 0.0f;
+        bool near_contact = math::abs(force.c_value[0]) < NEAR_CONTACT_TOL;
+        if (!active_contact && !near_contact) continue;
 
         Rigidbody* a = force.body_a;
         Rigidbody* b = force.body_b;
@@ -1108,7 +1354,6 @@ fn void PhysicsWorld.apply_restitution(&self, float dt) @local {
         // Desired normal velocity based on restitution
         float restitution = 0.0f;
         if (v_n_pre < -RESTITUTION_VEL_THRESHOLD) {
-            // Significant approach speed: apply material restitution for bounce
             PhysicsCombine rest_mode = (PhysicsCombine)math::max(
                 (int)a.material.restitution_combine, (int)b.material.restitution_combine);
             restitution = combine_values(a.material.restitution, b.material.restitution, rest_mode);
