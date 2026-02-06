@@ -20,7 +20,7 @@ const MAX_CONTACTS_PER_PAIR @local = 8;  // Max contacts per collision pair
 const MAX_FORCE_ROWS = 3;
 const PENALTY_MIN = 20000.0f;
 const PENALTY_MAX = 1000000000.0f;
-const PENETRATION_SLOP = 0.005f;
+const PENETRATION_SLOP = 0.0f;
 const AVBD_ALPHA = 0.95f;
 const AVBD_BETA = 100000.0f;
 const AVBD_GAMMA = 0.99f;
@@ -511,6 +511,7 @@ fn float combine_values(float a, float b, PhysicsCombine mode) @local {
     }
 }
 
+
 // === AVBD: Create contact force from collision ===
 fn void Collision.create_force(&collision, PhysicsWorld* world, float dt) @local {
     Rigidbody* a = world.find_body(collision.a)!!;
@@ -883,6 +884,7 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 25) {
     self.active_contacts = current_contacts;
     current_contacts = {};
 
+
     // === PHASE 3: Create AVBD forces ===
     foreach (&collision: self.collisions) {
         collision.create_force(self, time);
@@ -1131,6 +1133,62 @@ fn void PhysicsWorld.apply_restitution(&self, float dt) @local {
     }
 }
 
+// === Velocity-level Coulomb friction ===
+// The AVBD position solver handles friction through tangent constraints, but
+// contacts are intermittent (detected every 2-3 frames, not every frame).
+// On no-contact frames, residual lateral velocity from the solver persists.
+// This pass applies Coulomb friction at the velocity level to dissipate drift.
+fn void PhysicsWorld.apply_velocity_friction(&self, float dt) @local {
+    for (usz fi = 0; fi < self.forces.len(); fi++) {
+        AvbdForce* force = &self.forces[fi];
+        if (!force.is_contact) continue;
+        if (force.lambda[0] >= -0.1f) continue;  // No significant normal force
+
+        Rigidbody* a = force.body_a;
+        Rigidbody* b = force.body_b;
+
+        Vec3 rA = a.collider.rotation * force.rA_local;
+        Vec3 rB = b.collider.rotation * force.rB_local;
+        Vec3 n = force.normal;
+
+        // Post-solve relative velocity at contact point
+        Vec3 v_a = a.linear_velocity + a.angular_velocity.cross(rA);
+        Vec3 v_b = b.linear_velocity + b.angular_velocity.cross(rB);
+        Vec3 v_rel = v_a - v_b;
+
+        // Tangential component
+        float v_n = v_rel.dot(n);
+        Vec3 v_tangent = v_rel - n * v_n;
+        float tangent_speed = v_tangent.length();
+        if (tangent_speed < 0.001f) continue;
+
+        Vec3 t = v_tangent / tangent_speed;
+
+        // Effective mass along tangent direction
+        float w = 0.0f;
+        if (!a.is_static) w += a.inverse_mass + a.get_intertia(rA, t);
+        if (!b.is_static) w += b.inverse_mass + b.get_intertia(rB, t);
+        if (w < 1e-6f) continue;
+
+        // Normal impulse from pre/post velocity change (estimate contact normal force)
+        Vec3 v_pre_a = a.prev_linear_velocity + a.prev_angular_velocity.cross(rA);
+        Vec3 v_pre_b = b.prev_linear_velocity + b.prev_angular_velocity.cross(rB);
+        float v_n_pre = (v_pre_a - v_pre_b).dot(n);
+        float normal_impulse = math::abs(v_n - v_n_pre) / w;
+
+        // Coulomb friction limit
+        float friction_limit = force.friction * normal_impulse;
+
+        // Impulse needed to fully stop tangential sliding
+        float stop_impulse = tangent_speed / w;
+
+        float j = math::min(friction_limit, stop_impulse);
+
+        if (!a.is_static) a.apply_impulse(t * (-j), rA);
+        if (!b.is_static) b.apply_impulse(t * j, rB);
+    }
+}
+
 // === PHASE 6: Derive velocities ===
 fn void PhysicsWorld.derive_velocities(&self, float dt) @local {
     foreach (body : self.active_bodies) {
@@ -1144,6 +1202,9 @@ fn void PhysicsWorld.derive_velocities(&self, float dt) @local {
 
     // Velocity-level restitution: prevent excessive bounce from position corrections
     self.apply_restitution(dt);
+
+    // Velocity-level friction: dissipate tangential drift from intermittent contacts
+    self.apply_velocity_friction(dt);
 
     foreach (body : self.active_bodies) {
         // Damping (pow-based, matches physics timestep)
