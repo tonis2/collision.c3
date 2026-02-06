@@ -16,6 +16,16 @@ const MAX_COLLISION_TASKS @local = 1024;
 const NUM_WORKER_THREADS @local = 8;
 const MAX_CONTACTS_PER_PAIR @local = 8;  // Max contacts per collision pair
 
+// AVBD solver constants (module-level so visible across files)
+const MAX_FORCE_ROWS = 3;
+const PENALTY_MIN = 20000.0f;
+const PENALTY_MAX = 1000000000.0f;
+const PENETRATION_SLOP = 0.005f;
+const AVBD_ALPHA = 0.95f;
+const AVBD_BETA = 100000.0f;
+const AVBD_GAMMA = 0.99f;
+const MAX_ANGULAR_SPEED = 80.0f;
+
 alias CollisionFilter = HashMap{Pair, bool};
 alias RigidBodyMap = LinkedHashMap{usz, Rigidbody};
 alias RigidBodyIterator = LinkedHashMapValueIterator{usz, Rigidbody};
@@ -29,42 +39,35 @@ struct CollisionTask {
     bool has_collision;      // Flag if collision was found
 }
 
-// Task structure for parallel integration
-struct IntegrationTask {
-    PhysicsWorld* world;
-    Rigidbody** bodies;      // Array of body pointers to process
-    usz count;               // Number of bodies in this batch
-    float time;
-}
-
-// Task structure for island constraint solving
-struct IslandSolveTask {
-    PhysicsWorld* world;
-    Constraint** constraints; // Constraints for this island
-    usz count;               // Number of constraints
-    uint iterations;         // Solver iterations
-}
-
-struct Constraint {
+struct AvbdForce {
     Rigidbody* body_a;
     Rigidbody* body_b;
+    usz num_rows;
 
-    float* impulse_cache;
+    // Per-row state
+    float[MAX_FORCE_ROWS] c_value;
+    float[MAX_FORCE_ROWS] fmin;
+    float[MAX_FORCE_ROWS] fmax;
+    float[MAX_FORCE_ROWS] lambda;
+    float[MAX_FORCE_ROWS] penalty;
+    float[MAX_FORCE_ROWS] stiffness;
 
-    float min;
-    float max;
-    float bias;
-    float effective_mass;
+    // Contact-specific storage
+    Vec3 rA_local;
+    Vec3 rB_local;
+    Vec3 normal;
+    Vec3 tangent1;
+    Vec3 tangent2;
+    float[2] c0_tangent;
+
+    // Joint-specific storage
+    Vec3 anchor_a;
+    Vec3 anchor_b;
+    Vec3[MAX_FORCE_ROWS] basis;  // Axis per row
+
     float friction;
-    float bounce;
-
-    usz impulse_offset;
-
-    Vec3 linear_a;
-    Vec3 angular_a;
-
-    Vec3 linear_b;
-    Vec3 angular_b;
+    bool is_contact;
+    bool is_angular;  // Angular joint force (no linear Jacobian)
 }
 
 struct Collision {
@@ -143,9 +146,16 @@ struct Rigidbody {
 	float sleep_delta;
 
     Vec3 mass_center;
-    //Vec3 inertia_diagonal;
-    //QuaternionValue inertia_orientation;
-    Matrix3f inertia;
+    Matrix3f inertia;           // Inverse inertia (for compatibility)
+
+    // AVBD state
+    Matrix3f inertia_local;     // Non-inverse local inertia tensor
+    Vec3 initial_position;
+    QuaternionValue initial_orientation;
+    Vec3 inertial_position;
+    QuaternionValue inertial_orientation;
+    Vec3 prev_linear_velocity;
+    Vec3 prev_angular_velocity;
 }
 
 alias TriggerOverlapSet = HashMap{Pair, bool};
@@ -154,7 +164,7 @@ alias ContactOverlapSet = HashMap{Pair, bool};
 struct PhysicsWorld {
     RigidBodyMap bodies;
     List{Collision} collisions;
-    List{Constraint} constraints;
+    List{AvbdForce} forces;
     List{GenericJoint3D} joints;
     SpatialHash3D spatial_map;
     CollisionFilter filters;
@@ -176,7 +186,6 @@ struct PhysicsWorld {
 	float linear_dampening;
 
     // Threading support
-    // Template param sets both queue size AND thread count
     ThreadPool{NUM_WORKER_THREADS} thread_pool;
     Mutex collision_mutex;
     bool thread_pool_initialized;
@@ -184,8 +193,6 @@ struct PhysicsWorld {
     // Reusable task lists (avoid per-frame allocations)
     List{CollisionTask} collision_tasks;
     List{Collision} collision_results;
-    List{IslandSolveTask} island_tasks;
-    List{IntegrationTask} integration_tasks;
     List{Rigidbody*} active_bodies;
 
     // Contact sorting cache (keep deepest N contacts per pair)
@@ -201,15 +208,13 @@ fn void PhysicsWorld.free(&self) {
     self.bodies.free();
     self.collisions.free();
     self.spatial_map.free();
-    self.constraints.free();
+    self.forces.free();
     self.filters.free();
     self.joints.free();
     self.island_parent.free();
     // Free reusable task lists
     self.collision_tasks.free();
     self.collision_results.free();
-    self.island_tasks.free();
-    self.integration_tasks.free();
     self.active_bodies.free();
     // Free trigger system
     self.trigger_events.free();
@@ -260,8 +265,11 @@ fn void? PhysicsWorld.add_body(&self, Rigidbody body) {
 	body.sleep_delta = self.sleep_delta;
 
     body.transformed_aabb = body.get_transformed_aabb();
-    // Use AABB-based inertia - consistent for all shape types including mesh
-    if (!body.is_static && &body.collider.shape.inertia_tensor) body.inertia = body.aabb.inertia_tensor(body.mass).inverse()!!;
+    // Store both non-inverse and inverse inertia for AVBD
+    if (!body.is_static && &body.collider.shape.inertia_tensor) {
+        body.inertia_local = body.aabb.inertia_tensor(body.mass);
+        body.inertia = body.inertia_local.inverse()!!;
+    }
 
     self.bodies.set(body.id, body);
     self.spatial_map.insert(body.transformed_aabb, body.id)!;
@@ -319,6 +327,11 @@ fn Matrix3f Rigidbody.get_inverse_world_inertia(self) {
     return self.collider.world_inertia_from_local(self.inertia);
 }
 
+fn Matrix3f Rigidbody.get_world_inertia(self) {
+    if (self.is_static) return MATRIX3F_IDENTITY;
+    return self.collider.world_inertia_from_local(self.inertia_local);
+}
+
 fn void Rigidbody.apply_linear_impulse(&self, Vec3 impulse) => self.linear_velocity += impulse * self.inverse_mass;
 
 fn void Rigidbody.apply_angular_impulse(&self, Vec3 impulse) {
@@ -330,10 +343,6 @@ fn void Rigidbody.apply_impulse(&self, Vec3 impulse, Vec3 point) {
     self.linear_velocity += impulse * self.inverse_mass;
     self.apply_angular_impulse(point.cross(impulse));
 }
-
-// fn Vec3 Rigidbody.get_intertia(self, Vec3 point, Vec3 normal) {
-//     return (self.get_inverse_world_inertia() * point.cross(normal)).cross(point);
-// }
 
 fn float Rigidbody.get_intertia(self, Vec3 point, Vec3 normal) {
     Vec3 ang = point.cross(normal);
@@ -452,7 +461,6 @@ fn bool Rigidbody.has_compound(&self) {
 }
 
 // Worker function for parallel collision testing (convex vs convex only)
-// BVH and compound pairs are handled separately in the main loop
 fn int collision_test_worker(void* arg) @local {
     CollisionTask* task = (CollisionTask*)arg;
     PhysicsWorld* world = task.world;
@@ -476,98 +484,233 @@ fn int collision_test_worker(void* arg) @local {
     return 0;
 }
 
-// Worker function for parallel integration
-fn int integration_worker(void* arg) @local {
-    IntegrationTask* task = (IntegrationTask*)arg;
-    PhysicsWorld* world = task.world;
-    float time = task.time;
-
-    for (usz i = 0; i < task.count; i++) {
-        Rigidbody* body = task.bodies[i];
-
-        // Apply linear velocity and translation
-        body.collider.translation += body.linear_velocity * time;
-
-        // Apply angular velocity as rotation
-        Vec3 axis = body.angular_velocity * (time * 0.5);
-        if (axis != {0,0,0}) {
-            body.collider.rotation = (body.collider.rotation + (QuaternionValue){...axis, 0} * body.collider.rotation).normalize();
-        }
-
-        // Apply gravity
-        body.apply_linear_impulse(world.gravity * body.gravity_factor * body.mass * time);
-
-        // Apply dampening friction
-        body.angular_velocity *= math::pow(world.angular_dampening, time);
-        body.linear_velocity *= math::pow(world.linear_dampening, time);
-
-        // Clamp very small velocities to zero
-        const float VELOCITY_CLAMP_SQ = 0.01f;
-        if (body.linear_velocity.sq_magnitude() < VELOCITY_CLAMP_SQ) {
-            body.linear_velocity = {0, 0, 0};
-        }
-        if (body.angular_velocity.sq_magnitude() < VELOCITY_CLAMP_SQ) {
-            body.angular_velocity = {0, 0, 0};
-        }
+// Clamp angular velocity magnitude
+fn void clamp_angular_velocity(Rigidbody* body) @local {
+    float sq_mag = body.angular_velocity.sq_magnitude();
+    if (sq_mag > MAX_ANGULAR_SPEED * MAX_ANGULAR_SPEED) {
+        body.angular_velocity = body.angular_velocity * (MAX_ANGULAR_SPEED / math::sqrt(sq_mag));
     }
-    return 0;
 }
 
-// Worker function for island-parallel constraint solving
-fn int island_solve_worker(void* arg) @local {
-    IslandSolveTask* task = (IslandSolveTask*)arg;
-
-    for (uint iter = 0; iter < task.iterations; iter++) {
-        for (usz i = 0; i < task.count; i++) {
-            Constraint* constraint = task.constraints[i];
-            solve_constraint_internal(constraint);
-        }
-    }
-    return 0;
+// Build tangent frame from a normal vector
+fn void build_tangent_frame(Vec3 normal, Vec3* tangent1, Vec3* tangent2) @local {
+    Vec3 helper = (math::abs(normal.x) > 0.9f)
+        ? (Vec3){0.0f, 1.0f, 0.0f}
+        : (Vec3){1.0f, 0.0f, 0.0f};
+    *tangent1 = normal.cross(helper).normalize();
+    *tangent2 = normal.cross(*tangent1).normalize();
 }
 
-// Internal constraint solver (no PhysicsWorld needed)
-fn void solve_constraint_internal(Constraint* constraint) @local {
-    Rigidbody* a = constraint.body_a;
-    Rigidbody* b = constraint.body_b;
-
-    float* cache = constraint.impulse_cache;
-
-    // Total velocity difference (angular + linear)
-    float relative_velocity = constraint.relative_velocity();
-
-    // Calculate Lambda (The corrective impulse magnitude)
-    float lambda = -(relative_velocity + constraint.bias + constraint.bounce) * constraint.effective_mass;
-
-    if (constraint.friction != 0) {
-        float max_friction = constraint.friction * cache[0];
-        constraint.min = -max_friction;
-        constraint.max = max_friction;
+fn float combine_values(float a, float b, PhysicsCombine mode) @local {
+    switch (mode) {
+        case AVERAGE: return (a + b) * 0.5f;
+        case MINIMUM: return math::min(a, b);
+        case MAXIMUM: return math::max(a, b);
+        case MULTIPLY:	return a * b;
+		default: return a * b;
     }
+}
 
-    // Accumulate impulse with clamping
-    float new_impulse = math::max(constraint.min, math::min(lambda, constraint.max));
+// === AVBD: Create contact force from collision ===
+fn void Collision.create_force(&collision, PhysicsWorld* world, float dt) @local {
+    Rigidbody* a = world.find_body(collision.a)!!;
+    Rigidbody* b = world.find_body(collision.b)!!;
 
-    cache[constraint.impulse_offset] = new_impulse;
+    // CRITICAL: Negate normal! C3 collision normal points A→B, AVBD needs B→A
+    Vec3 normal = -collision.normal.normalize();
 
-    // Apply impulse
-    if (!a.is_static) {
-        a.apply_linear_impulse(constraint.linear_a * new_impulse);
-        a.apply_angular_impulse(constraint.angular_a * new_impulse);
+    // Compute body-local contact offsets
+    Vec3 rA_local = a.collider.rotation.conjugate() * (collision.contact[0] - a.collider.translation);
+    Vec3 rB_local = b.collider.rotation.conjugate() * (collision.contact[1] - b.collider.translation);
+
+    // Build tangent frame
+    Vec3 tangent1, tangent2;
+    build_tangent_frame(normal, &tangent1, &tangent2);
+
+    // Precompute C0 for Taylor series stabilization
+    Vec3 delta = collision.contact[0] - collision.contact[1];
+    float c0_t1 = delta.dot(tangent1);
+    float c0_t2 = delta.dot(tangent2);
+
+    // Combine friction
+    PhysicsCombine friction_mode = (PhysicsCombine)math::max((int)a.material.friction_combine, (int)b.material.friction_combine);
+    float static_friction = combine_values(a.material.static_friction, b.material.static_friction, friction_mode);
+
+    AvbdForce force = {
+        .body_a = a, .body_b = b, .num_rows = 3,
+        .rA_local = rA_local, .rB_local = rB_local,
+        .normal = normal,
+        .tangent1 = tangent1,
+        .tangent2 = tangent2,
+        .c0_tangent = { c0_t1, c0_t2 },
+        .friction = static_friction,
+        .is_contact = true,
+    };
+
+    // Initialize per-row state
+    for (usz i = 0; i < 3; i++) {
+        force.lambda[i] = 0;
+        force.penalty[i] = PENALTY_MIN;
+        force.stiffness[i] = float.max;
     }
+    // Normal: repulsion only (negative force = push apart)
+    force.fmin[0] = -float.max;  force.fmax[0] = 0;
+    // Friction: updated dynamically during solve
+    force.fmin[1] = 0;  force.fmax[1] = 0;
+    force.fmin[2] = 0;  force.fmax[2] = 0;
 
-    if (!b.is_static) {
-        b.apply_linear_impulse(constraint.linear_b * new_impulse);
-        b.apply_angular_impulse(constraint.angular_b * new_impulse);
+    // Initial constraint violations
+    force.c_value[0] = delta.dot(normal) - PENETRATION_SLOP;
+    force.c_value[1] = c0_t1;
+    force.c_value[2] = c0_t2;
+
+    world.forces.push(force);
+}
+
+// === AVBD: Recompute contact violations each iteration ===
+fn void AvbdForce.update_contact_violations(&self, float alpha) @local {
+    Vec3 world_rA = self.body_a.collider.rotation * self.rA_local;
+    Vec3 world_rB = self.body_b.collider.rotation * self.rB_local;
+    Vec3 pA = self.body_a.collider.translation + world_rA;
+    Vec3 pB = self.body_b.collider.translation + world_rB;
+    Vec3 delta = pA - pB;
+
+    float separation = delta.dot(self.normal);
+    float slip1 = delta.dot(self.tangent1);
+    float slip2 = delta.dot(self.tangent2);
+
+    // Taylor series stabilization bias
+    float bias_t1 = (1.0f - alpha) * self.c0_tangent[0];
+    float bias_t2 = (1.0f - alpha) * self.c0_tangent[1];
+
+    self.c_value[0] = separation - PENETRATION_SLOP;
+    self.c_value[1] = bias_t1 + slip1;
+    self.c_value[2] = bias_t2 + slip2;
+
+    // Update friction limits from normal force
+    float friction_limit = self.friction * math::abs(self.lambda[0]);
+    self.fmin[1] = -friction_limit;  self.fmax[1] = friction_limit;
+    self.fmin[2] = -friction_limit;  self.fmax[2] = friction_limit;
+    self.fmin[0] = -float.max;  self.fmax[0] = 0;
+}
+
+// === AVBD: Compute Jacobians for a body and force row ===
+struct JacobianPair {
+    Vec3 jl;
+    Vec3 ja;
+}
+
+fn JacobianPair AvbdForce.compute_jacobian(&self, Rigidbody* body, usz row) @local {
+    float sign = (body == self.body_a) ? 1.0f : -1.0f;
+
+    if (self.is_contact) {
+        Vec3 r_local = (body == self.body_a) ? self.rA_local : self.rB_local;
+        Vec3 r_world = body.collider.rotation * r_local;
+
+        Vec3 basis_vec;
+        switch (row) {
+            case 0: basis_vec = self.normal;
+            case 1: basis_vec = self.tangent1;
+            case 2: basis_vec = self.tangent2;
+            default: basis_vec = self.normal;
+        }
+
+        return {
+            .jl = basis_vec * sign,
+            .ja = r_world.cross(basis_vec) * sign,
+        };
+    } else if (self.is_angular) {
+        // Angular joint: no linear Jacobian
+        return {
+            .jl = {0, 0, 0},
+            .ja = self.basis[row] * sign,
+        };
+    } else {
+        // Linear joint
+        Vec3 r_local = (body == self.body_a) ? self.anchor_a : self.anchor_b;
+        Vec3 r_world = body.collider.rotation * r_local;
+
+        return {
+            .jl = self.basis[row] * sign,
+            .ja = r_world.cross(self.basis[row]) * sign,
+        };
     }
+}
+
+// === AVBD: Recompute joint violations each iteration ===
+fn void AvbdForce.update_joint_violations(&self) @local {
+    if (self.is_angular) {
+        // Angular error
+        QuaternionValue qa = self.body_a.collider.rotation;
+        QuaternionValue qb = self.body_b.collider.rotation;
+        QuaternionValue delta_q = qa.conjugate() * qb;
+        float error_dir = delta_q.l >= 0 ? 1.0f : -1.0f;
+        Vec3 error_local = delta_q.v.xyz * 2.0f * error_dir;
+        Vec3 world_error = qa * error_local;
+
+        for (usz i = 0; i < self.num_rows; i++) {
+            self.c_value[i] = world_error.dot(self.basis[i]);
+        }
+    } else {
+        // Linear position error
+        Vec3 world_a = self.body_a.collider.translation + (self.body_a.collider.rotation * self.anchor_a);
+        Vec3 world_b = self.body_b.collider.translation + (self.body_b.collider.rotation * self.anchor_b);
+        Vec3 diff = world_a - world_b;
+
+        for (usz i = 0; i < self.num_rows; i++) {
+            self.c_value[i] = diff.dot(self.basis[i]);
+        }
+    }
+}
+
+
+// 6-vector and 6x6 matrix for block solve
+struct Vec6 @local {
+    Vec3 l;
+    Vec3 a;
+}
+
+struct Mat66 @local {
+    Matrix3f ll;
+    Matrix3f la;
+    Matrix3f al;
+    Matrix3f aa;
+}
+
+// Solve 6x6 system via Schur complement
+fn Vec6 solve6x6(Mat66 m, Vec6 b) @local {
+    // Solve m.ll * X = m.la (3 column solves)
+    Vec3 col0 = mat3_solve(m.ll, {m.la.m00, m.la.m10, m.la.m20});
+    Vec3 col1 = mat3_solve(m.ll, {m.la.m01, m.la.m11, m.la.m21});
+    Vec3 col2 = mat3_solve(m.ll, {m.la.m02, m.la.m12, m.la.m22});
+
+    // AinvB = ll^{-1} * la as a Matrix3f
+    Matrix3f ainv_b = {
+        col0.x, col1.x, col2.x,
+        col0.y, col1.y, col2.y,
+        col0.z, col1.z, col2.z,
+    };
+
+    Vec3 x0 = mat3_solve(m.ll, b.l);
+
+    // Schur complement: S = aa - al * ll^{-1} * la
+    Matrix3f schur = m.aa - m.al * ainv_b;
+
+    // Modified RHS: b.a - al * x0
+    Vec3 rhs_s = b.a - m.al * x0;
+
+    Vec3 y = mat3_solve(schur, rhs_s);
+    Vec3 x = x0 - ainv_b * y;
+
+    return { .l = x, .a = y };
 }
 
 
 <*
  @require self.bodies.len() > 0 : `Must have some bodies to simulate`
 *>
-fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
-    // Lazy init thread pool (can't do in create_world because workers get pointer before move)
+fn void PhysicsWorld.run_step(&self, float time, uint step_count = 25) {
+    // Lazy init thread pool
     if (!self.thread_pool_initialized) {
         self.thread_pool.init()!!;
         self.collision_mutex.init()!!;
@@ -583,7 +726,7 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
 
     // === PHASE 1: Broad-phase - collect candidate pairs (sequential, fast) ===
     List{Pair} candidate_pairs;
-    TriggerOverlapSet current_triggers;  // Triggers overlapping this frame
+    TriggerOverlapSet current_triggers;
     defer candidate_pairs.free();
     defer current_triggers.free();
 
@@ -594,13 +737,10 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
         bool has_filter = self.filters.has_key({body_a.id, body_b.id}) == true;
 
         if (!has_filter && body_a.transformed_aabb.collides(body_b.transformed_aabb)) {
-            // Check if either body is a trigger
             if (body_a.is_trigger || body_b.is_trigger) {
-                // Normalize pair so trigger is always first
-                Pair trigger_pair = body_a.is_trigger ? pair : {pair.b, pair.a};
+                Pair trigger_pair = body_a.is_trigger ? pair : (Pair){pair.b, pair.a};
                 current_triggers.set(trigger_pair, true);
 
-                // Generate ENTER event if this is a new overlap
                 if (!self.active_triggers.has_key(trigger_pair)) {
                     self.trigger_events.push({
                         .trigger_id = trigger_pair.a,
@@ -609,8 +749,6 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
                     });
                 }
             } else {
-                // Regular collision pair
-                // Wake sleeping bodies (must be sequential due to island wake)
                 if (body_a.sleeping && body_b.is_active()) self.wake_island(body_a);
                 if (body_b.sleeping && body_a.is_active()) self.wake_island(body_b);
 
@@ -635,15 +773,12 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
     // Swap active triggers with current frame's triggers
     self.active_triggers.free();
     self.active_triggers = current_triggers;
-    current_triggers = {};  // Prevent double-free in defer
+    current_triggers = {};
 
     // === PHASE 2: Narrow-phase collision testing ===
-    // BVH collisions run sequentially (allocator not thread-safe)
-    // Convex-only collisions can run in parallel
     usz num_pairs = candidate_pairs.len();
 
     if (num_pairs > 0) {
-        // Separate pairs by collision type
         List{Pair} convex_pairs;
         List{Pair} bvh_pairs;
         List{Pair} compound_pairs;
@@ -717,12 +852,10 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
     ContactOverlapSet current_contacts;
     defer current_contacts.free();
 
-    // Track all collisions this frame and generate START events
     foreach (&collision: self.collisions) {
         Pair contact_pair = { collision.a, collision.b };
         current_contacts.set(contact_pair, true);
 
-        // Generate START event if this is a new contact
         if (!self.active_contacts.has_key(contact_pair)) {
             self.contact_events.push({
                 .body_a = collision.a,
@@ -734,7 +867,6 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
         }
     }
 
-    // Generate END events for contacts that ended
     self.active_contacts.@each(;Pair old_pair, bool active) {
         if (!current_contacts.has_key(old_pair)) {
             self.contact_events.push({
@@ -747,170 +879,228 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 15) {
         }
     };
 
-    // Swap active contacts with current frame's contacts
     self.active_contacts.free();
     self.active_contacts = current_contacts;
-    current_contacts = {};  // Prevent double-free in defer
+    current_contacts = {};
 
-    // === PHASE 3: Create constraints (sequential, fast) ===
+    // === PHASE 3: Create AVBD forces ===
     foreach (&collision: self.collisions) {
-        collision.create_constraint(self, time);
+        collision.create_force(self, time);
     }
 
     foreach (&joint: self.joints) {
-        joint.create_constraint(self, time);
+        joint.create_force(self, time);
     }
 
-    // === PHASE 4: Solve constraints - island-parallel ===
-    self.solve_constraints_parallel(step_count);
+    // === PHASE 4: Predict body states ===
+    self.predict_bodies(time);
+
+    // === PHASE 5: AVBD solve ===
+    self.avbd_solve(time, step_count);
+
+    // === PHASE 6: Derive velocities + spatial map update ===
+    self.derive_velocities(time);
 
     self.collisions.clear();
-    self.constraints.clear();
+    self.forces.clear();
 
-    // === PHASE 5: Integration (parallel physics, sequential spatial map) ===
-    self.integrate_bodies_parallel(time);
-
-    // === PHASE 6: Sleep management (sequential) ===
+    // === PHASE 7: Sleep management ===
     self.update_sleep_state();
 }
 
-// Island-parallel constraint solving
-fn void PhysicsWorld.solve_constraints_parallel(&self, uint step_count) @local {
-    if (self.constraints.len() == 0) return;
-
-    // Group constraints by island
-    HashMap{usz, List{Constraint*}} island_constraints;
-    defer {
-        island_constraints.@each(; usz id, List{Constraint*} list) {
-            list.free();
-        };
-        island_constraints.free();
-    }
-
-    for (usz i = 0; i < self.constraints.len(); i++) {
-        Constraint* constraint = &self.constraints[i];
-        // Use body_a's island (both bodies should be in same island if connected)
-        usz island_id = constraint.body_a.island_id;
-
-        if (!island_constraints.has_key(island_id)) {
-            island_constraints.set(island_id, {});
-        }
-        island_constraints.get_ref(island_id)!!.push(constraint);
-    }
-
-    // Count islands
-    usz num_islands = island_constraints.len();
-
-    if (num_islands <= 1) {
-        // Single island or no islands - run sequential
-        for (usz i; i < step_count; i++) {
-            foreach (&contraint: self.constraints) {
-                solve_constraint_internal(contraint);
-            }
-        }
-        return;
-    }
-
-    // Create island solve tasks (reuse list)
-    self.island_tasks.clear();
-
-    island_constraints.@each(; usz id, List{Constraint*} list) {
-        Constraint*[] arr = list.array_view();
-
-        self.island_tasks.push({
-            .world = self,
-            .constraints = arr.ptr,
-            .count = arr.len,
-            .iterations = step_count,
-        });
-    };
-
-    // Submit island solving tasks
-    for (usz i = 0; i < num_islands; i++) {
-        self.thread_pool.push(&island_solve_worker, &self.island_tasks[i])!!;
-    }
-
-    // Wait for all islands to be solved
-    self.thread_pool.join()!!;
-}
-
-// Parallel integration - physics updates in parallel, spatial map sequential
-fn void PhysicsWorld.integrate_bodies_parallel(&self, float time) @local {
-    // Collect active bodies for parallel processing (reuse list)
+// === PHASE 4: Predict body states ===
+fn void PhysicsWorld.predict_bodies(&self, float dt) @local {
     self.active_bodies.clear();
 
-    RigidBodyIterator collect_iter = self.bodies.value_iter();
-    while (collect_iter.next()) {
-        Rigidbody* body = collect_iter.get()!!;
-        if (body.is_active()) {
-            self.active_bodies.push(body);
+    RigidBodyIterator iter = self.bodies.value_iter();
+    while (iter.next()) {
+        Rigidbody* body = iter.get()!!;
+        if (!body.is_active()) continue;
+
+        self.active_bodies.push(body);
+
+        // Save previous velocities for accelWeight
+        body.prev_linear_velocity = body.linear_velocity;
+        body.prev_angular_velocity = body.angular_velocity;
+        clamp_angular_velocity(body);
+
+        // Save initial state for velocity derivation
+        body.initial_position = body.collider.translation;
+        body.initial_orientation = body.collider.rotation;
+
+        float dt2 = dt * dt;
+        Vec3 grav = self.gravity * body.gravity_factor;
+
+        // Inertial target (full gravity)
+        body.inertial_position = body.collider.translation + body.linear_velocity * dt + grav * dt2;
+        QuaternionValue omega = {
+            body.angular_velocity.x * dt * 0.5f,
+            body.angular_velocity.y * dt * 0.5f,
+            body.angular_velocity.z * dt * 0.5f,
+            0.0f
+        };
+        body.inertial_orientation = (body.collider.rotation + omega * body.collider.rotation).normalize();
+
+        // accelWeight: prevents gravity double-counting for resting bodies
+        float gravity_len = self.gravity.length();
+        float accel_weight = 0.0f;
+        if (gravity_len > 1e-5f) {
+            Vec3 accel = (body.linear_velocity - body.prev_linear_velocity) / dt;
+            float projected = accel.dot(self.gravity / gravity_len);
+            accel_weight = math::clamp(projected / gravity_len, 0.0f, 1.0f);
         }
+
+        // Predicted position uses accelWeight-scaled gravity
+        body.collider.translation += body.linear_velocity * dt + grav * (accel_weight * dt2);
+        body.collider.rotation = body.inertial_orientation;
     }
+}
 
-    usz num_active = self.active_bodies.len();
-    if (num_active == 0) return;
+// === PHASE 5: AVBD block solve ===
+fn void PhysicsWorld.avbd_solve(&self, float dt, uint iterations) @local {
+    if (self.active_bodies.len() == 0 && self.forces.len() == 0) return;
 
-    // Determine batch size for parallel work
-    usz batch_size = (num_active + NUM_WORKER_THREADS - 1) / NUM_WORKER_THREADS;
+    float inv_dt2 = 1.0f / (dt * dt);
 
-    // Only parallelize if we have enough bodies
-    if (num_active >= NUM_WORKER_THREADS * 2) {
-        // Create integration tasks (reuse list)
-        usz num_tasks = (num_active + batch_size - 1) / batch_size;
-        self.integration_tasks.clear();
+    for (uint it = 0; it < iterations; it++) {
+        float current_alpha = AVBD_ALPHA;
 
-        Rigidbody** all_bodies_ptr = self.active_bodies.array_view().ptr;
-
-        for (usz i = 0; i < num_tasks; i++) {
-            usz start = i * batch_size;
-            usz count = math::min(batch_size, num_active - start);
-
-            self.integration_tasks.push({
-                .world = self,
-                .bodies = all_bodies_ptr + start,
-                .count = count,
-                .time = time,
-            });
+        // Recompute all constraint violations
+        for (usz fi = 0; fi < self.forces.len(); fi++) {
+            AvbdForce* force = &self.forces[fi];
+            if (force.is_contact) {
+                force.update_contact_violations(current_alpha);
+            } else {
+                force.update_joint_violations();
+            }
         }
 
-        // Submit integration tasks
-        for (usz i = 0; i < num_tasks; i++) {
-            self.thread_pool.push(&integration_worker, &self.integration_tasks[i])!!;
-        }
-
-        // Wait for physics updates to complete
-        self.thread_pool.join()!!;
-    } else {
-        // Too few bodies - just do physics updates inline
+        // Per-body block solve
         foreach (body : self.active_bodies) {
-            // Apply linear velocity and translation
-            body.collider.translation += body.linear_velocity * time;
+            Matrix3f mass_mat = mat3_diagonal({body.mass, body.mass, body.mass});
+            Matrix3f inertia_world = body.get_world_inertia();
+            Matrix3f inv_inertia_world = body.get_inverse_world_inertia();
 
-            // Apply angular velocity as rotation
-            Vec3 axis = body.angular_velocity * (time * 0.5);
-            if (axis != {0,0,0}) {
-                body.collider.rotation = (body.collider.rotation + (QuaternionValue){...axis, 0} * body.collider.rotation).normalize();
+            // Initialize LHS and RHS with inertial terms
+            Mat66 lhs = {
+                .ll = mass_mat * inv_dt2,
+                .aa = inertia_world * inv_dt2,
+            };
+
+            // RHS: inertial force pulling toward free-flight prediction
+            Vec3 rhs_l = mass_mat * ((body.collider.translation - body.inertial_position) * inv_dt2);
+
+            // Angular RHS: rotation error from inertial prediction
+            QuaternionValue q_err = body.collider.rotation * body.inertial_orientation.conjugate();
+            Vec3 rot_err = q_err.v.xyz * 2.0f;
+            if (q_err.l < 0.0f) rot_err = -rot_err;
+            Vec3 rhs_a = inertia_world * (rot_err * inv_dt2);
+
+            // Accumulate force contributions
+            for (usz fi = 0; fi < self.forces.len(); fi++) {
+                AvbdForce* force = &self.forces[fi];
+
+                // Skip forces not touching this body
+                if (force.body_a != body && force.body_b != body) continue;
+
+                for (usz row = 0; row < force.num_rows; row++) {
+                    JacobianPair jp = force.compute_jacobian(body, row);
+
+                    // Compute desired force
+                    float lambda_warm = (force.stiffness[row] == float.max) ? force.lambda[row] : 0.0f;
+                    float desired = force.penalty[row] * force.c_value[row] + lambda_warm;
+                    float f = math::clamp(desired, force.fmin[row], force.fmax[row]);
+
+                    // Add to RHS
+                    rhs_l += jp.jl * f;
+                    rhs_a += jp.ja * f;
+
+                    // Add penalty-scaled outer products to LHS
+                    float pen = force.penalty[row];
+                    if (pen > 0.0f) {
+                        lhs.ll += mat3_outer(jp.jl, jp.jl) * pen;
+                        lhs.la += mat3_outer(jp.jl, jp.ja) * pen;
+                        lhs.al += mat3_outer(jp.ja, jp.jl) * pen;
+                        lhs.aa += mat3_outer(jp.ja, jp.ja) * pen;
+
+                        // Gyroscopic stabilization (contacts only)
+                        if (force.is_contact) {
+                            Vec3 gyro = (jp.ja.cross(inv_inertia_world * jp.ja)).abs() * math::abs(f);
+                            lhs.aa += mat3_diagonal(gyro);
+                        }
+                    }
+                }
             }
 
-            // Apply gravity
-            body.apply_linear_impulse(self.gravity * body.gravity_factor * body.mass * time);
+            // Solve 6x6 system
+            Vec6 dx = solve6x6(lhs, { .l = rhs_l, .a = rhs_a });
 
-            // Apply dampening friction
-            body.angular_velocity *= math::pow(self.angular_dampening, time);
-            body.linear_velocity *= math::pow(self.linear_dampening, time);
+            // Apply correction
+            body.collider.translation -= dx.l;
+            QuaternionValue dq = {dx.a.x * 0.5f, dx.a.y * 0.5f, dx.a.z * 0.5f, 0.0f};
+            body.collider.rotation = (body.collider.rotation - dq * body.collider.rotation).normalize();
+        }
 
-            // Clamp very small velocities to zero
-            const float VELOCITY_CLAMP_SQ = 0.01f;
-            if (body.linear_velocity.sq_magnitude() < VELOCITY_CLAMP_SQ) {
-                body.linear_velocity = {0, 0, 0};
+        // Dual update: lambda and penalty adaptation
+        for (usz fi = 0; fi < self.forces.len(); fi++) {
+            AvbdForce* force = &self.forces[fi];
+
+            // Recompute violations after position update
+            if (force.is_contact) {
+                force.update_contact_violations(current_alpha);
+            } else {
+                force.update_joint_violations();
             }
-            if (body.angular_velocity.sq_magnitude() < VELOCITY_CLAMP_SQ) {
-                body.angular_velocity = {0, 0, 0};
+
+            for (usz row = 0; row < force.num_rows; row++) {
+                if (force.stiffness[row] != float.max) continue;  // only hard constraints
+
+                float lambda_updated = math::clamp(
+                    force.penalty[row] * force.c_value[row] + force.lambda[row],
+                    force.fmin[row], force.fmax[row]);
+
+                bool active = lambda_updated > force.fmin[row] && lambda_updated < force.fmax[row];
+
+                force.lambda[row] = lambda_updated;
+
+                if (active) {
+                    force.penalty[row] = math::min(
+                        force.penalty[row] + AVBD_BETA * math::abs(force.c_value[row]),
+                        PENALTY_MAX);
+                }
             }
         }
     }
+}
 
-    // Sequential: Update spatial map and sleep timers (requires shared data structure access)
+// === PHASE 6: Derive velocities ===
+fn void PhysicsWorld.derive_velocities(&self, float dt) @local {
+    foreach (body : self.active_bodies) {
+        // Derive velocities from position deltas
+        body.linear_velocity = (body.collider.translation - body.initial_position) / dt;
+
+        QuaternionValue delta_q = body.collider.rotation * body.initial_orientation.conjugate();
+        body.angular_velocity = delta_q.v.xyz * (2.0f / dt);
+        if (delta_q.l < 0.0f) body.angular_velocity = -body.angular_velocity;
+
+        // Flat damping
+        body.linear_velocity *= 0.90f;
+        body.angular_velocity *= 0.85f;
+
+        // Clamp angular velocity
+        clamp_angular_velocity(body);
+
+        // Clamp very small velocities to zero
+        const float VELOCITY_CLAMP_SQ = 0.01f;
+        if (body.linear_velocity.sq_magnitude() < VELOCITY_CLAMP_SQ) {
+            body.linear_velocity = {0, 0, 0};
+        }
+        if (body.angular_velocity.sq_magnitude() < VELOCITY_CLAMP_SQ) {
+            body.angular_velocity = {0, 0, 0};
+        }
+    }
+
+    // Sequential: Update spatial map and sleep timers
     foreach (body : self.active_bodies) {
         bool rotating = body.is_rotating();
         bool moving = body.is_moving();
@@ -921,61 +1111,8 @@ fn void PhysicsWorld.integrate_bodies_parallel(&self, float time) @local {
             body.transformed_aabb = new_aabb;
         }
 
-        // Increment sleep timer when body is at rest
         if (body.can_sleep == true && moving == false && rotating == false) {
-            body.sleep_timer += time;
-        } else {
-            body.sleep_timer = 0;
-        }
-    }
-}
-
-// Shared integration logic (sequential version)
-fn void PhysicsWorld.integrate_bodies(&self, float time) @local {
-    RigidBodyIterator rigid_bodies = self.bodies.value_iter();
-    while (rigid_bodies.next()) {
-        Rigidbody* body = rigid_bodies.get()!!;
-
-        if (!body.is_active()) continue;
-
-        // Apply linear velocity and translation
-        body.collider.translation += body.linear_velocity * time;
-
-        // Apply angular velocity as rotation
-        Vec3 axis = body.angular_velocity * (time * 0.5);
-        if (axis != {0,0,0}) {
-            body.collider.rotation = (body.collider.rotation + (QuaternionValue){...axis, 0} * body.collider.rotation).normalize();
-        }
-
-        // Apply gravity
-        body.apply_linear_impulse(self.gravity * body.gravity_factor * body.mass * time);
-
-        // Apply dampening friction
-        body.angular_velocity *= math::pow(self.angular_dampening, time);
-        body.linear_velocity *= math::pow(self.linear_dampening, time);
-
-        // Clamp very small velocities to zero
-        const float VELOCITY_CLAMP_SQ = 0.01f;
-        if (body.linear_velocity.sq_magnitude() < VELOCITY_CLAMP_SQ) {
-            body.linear_velocity = {0, 0, 0};
-        }
-        if (body.angular_velocity.sq_magnitude() < VELOCITY_CLAMP_SQ) {
-            body.angular_velocity = {0, 0, 0};
-        }
-
-        bool rotating = body.is_rotating();
-        bool moving = body.is_moving();
-
-        // Update spatial map (must be sequential)
-        if (rotating || moving) {
-            Aabb3 new_aabb = body.get_transformed_aabb();
-            self.spatial_map.update(body.transformed_aabb, new_aabb, body.id)!!;
-            body.transformed_aabb = new_aabb;
-        }
-
-        // Increment sleep timer when body is at rest
-        if (body.can_sleep == true && moving == false && rotating == false) {
-            body.sleep_timer += time;
+            body.sleep_timer += dt;
         } else {
             body.sleep_timer = 0;
         }
@@ -1024,177 +1161,12 @@ fn void PhysicsWorld.update_sleep_state(&self) @local {
     }
 }
 
-fn float Constraint.relative_velocity(self) {
-    Rigidbody* a = self.body_a;
-    Rigidbody* b = self.body_b;
-    return self.linear_a.dot(a.linear_velocity)
-            + self.angular_a.dot(a.angular_velocity)
-            + self.linear_b.dot(b.linear_velocity)
-            + self.angular_b.dot(b.angular_velocity);
-}
-
-fn float combine_values(float a, float b, PhysicsCombine mode) @local {
-    switch (mode) {
-        case AVERAGE: return (a + b) * 0.5f;
-        case MINIMUM: return math::min(a, b);
-        case MAXIMUM: return math::max(a, b);
-        case MULTIPLY:	return a * b;
-		default: return a * b;
-    }
-}
-
-fn void Collision.create_constraint(&collision, PhysicsWorld* world, float dt) @local {
-    Rigidbody* a = world.find_body(collision.a)!!;
-    Rigidbody* b = world.find_body(collision.b)!!;
-    Vec3 normal = collision.normal.normalize();
-
-    float* impulse_cache = (float*)&collision.impulse;
-
-    float inverse_mass_sum = a.inverse_mass + b.inverse_mass;
-
-    // Combine material properties using the specified combine mode from GLTF materials
-    PhysicsCombine friction_mode = (PhysicsCombine)math::max((int)a.material.friction_combine, (int)b.material.friction_combine);
-    PhysicsCombine restitution_mode = (PhysicsCombine)math::max((int)a.material.restitution_combine, (int)b.material.restitution_combine);
-
-    float restitution = combine_values(a.material.restitution, b.material.restitution, restitution_mode);
-    float static_friction = combine_values(a.material.static_friction, b.material.static_friction, friction_mode);
-
-    Vec3 rA = collision.contact[0] - a.collider.translation;
-    Vec3 rB = collision.contact[1] - b.collider.translation;
- 	float beta = 0.2f;
-    float slop = 0.01f;
-    int impulse_dir = math::min(a.impulse_dir, b.impulse_dir);
-
-    float bias = (beta / dt) * math::max(collision.depth - slop, 0.0f) * impulse_dir;
-    float normal_inertia = 0;
-    if (!a.is_static) normal_inertia += a.get_intertia(rA, -normal);
-    if (!b.is_static) normal_inertia += b.get_intertia(rB, normal);
-
-    Vec3 linear_a = -normal;
-    Vec3 angular_a = rA.cross(-normal);
-
-    Vec3 linear_b = normal;
-    Vec3 angular_b = rB.cross(normal);
-
-    Constraint normal_constraint = {
-        .body_a = a,
-        .body_b = b,
-        .linear_a = linear_a,
-        .angular_a = angular_a,
-        .linear_b = linear_b,
-        .angular_b = angular_b,
-        .effective_mass = 1 / (inverse_mass_sum + normal_inertia),
-        .min = 0,
-        .max = float.max,
-        .bias = bias,
-        .impulse_cache = impulse_cache,
-        .impulse_offset = 0,
-    };
-
-    float relative_velocity = normal_constraint.relative_velocity();
-
-    // Only apply restitution above velocity threshold to prevent micro-bouncing at rest
-    const float BOUNCE_THRESHOLD = 1.0f;
-    if (math::abs(relative_velocity) > BOUNCE_THRESHOLD) {
-        normal_constraint.bounce = relative_velocity * restitution;
-    } else {
-        normal_constraint.bounce = 0;
-    }
-
-    Vec3 helper = (math::abs(normal.y) > 0.99)
-        ? {1.0f, 0.0f, 0.0f}
-        : {0.0f, 1.0f, 0.0f};
-  
-    Vec3 tangent_1 = normal.cross(helper).normalize();
-    Vec3 tangent_2 = normal.cross(tangent_1);
-
-    float tangent_inertia;
-    if (!a.is_static) tangent_inertia += a.get_intertia(rA, -tangent_1);
-    if (!b.is_static) tangent_inertia += b.get_intertia(rB, tangent_1);
-
-    float tangent_inertia_2;
-    if (!a.is_static) tangent_inertia_2 += a.get_intertia(rA, -tangent_2);
-    if (!b.is_static) tangent_inertia_2 += b.get_intertia(rB, tangent_2);
-
-    // FRICTION
-    Constraint tangent_constraint = {
-        ...normal_constraint,
-        .friction = static_friction,
-        .linear_a = -tangent_1,
-        .angular_a = rA.cross(-tangent_1),
-        .linear_b = tangent_1,
-        .angular_b = rB.cross(tangent_1),
-        .bias = 0,
-        .effective_mass = 1 / (inverse_mass_sum + tangent_inertia),
-        .impulse_offset = 1,  
-    };
-  
-    Constraint tangent_constraint_2 = {
-        ...normal_constraint,
-        .friction = static_friction,
-        .linear_a = -tangent_2,
-        .angular_a = rA.cross(-tangent_2),
-        .linear_b = tangent_2,
-        .angular_b = rB.cross(tangent_2),
-        .bias = 0,
-        .effective_mass = 1 / (inverse_mass_sum + tangent_inertia_2),
-        .impulse_offset = 2,
-    };
-
-    world.constraints.push_all({normal_constraint, tangent_constraint, tangent_constraint_2});
-}
-
-
-<*
- @require constraint.body_a != constraint.body_b : `Collision bodies should not be same index`
-*>
-fn void PhysicsWorld.solve_constraint(&self, Constraint* constraint) @local {
-    Rigidbody* a = constraint.body_a;
-    Rigidbody* b = constraint.body_b;
-
-    float* cache = constraint.impulse_cache;
-
-    // Total velocity difference (angular + linear)
-    float relative_velocity = constraint.relative_velocity();
-
-    // Calculate Lambda (The corrective impulse magnitude)
-    float lambda = -(relative_velocity + constraint.bias + constraint.bounce) * constraint.effective_mass;
-
-    if (constraint.friction != 0) {
-        float max_friction = constraint.friction * cache[0];
-        constraint.min = -max_friction;
-        constraint.max = max_friction;
-    }
-
-    // Accumulate impulse with clamping (for proper friction based on total normal force)
-    float old_impulse = cache[constraint.impulse_offset];
-    float new_impulse = math::max(constraint.min, math::min(lambda, constraint.max));
-    // float impulse_delta = new_impulse - old_impulse;
-
-    // Store accumulated impulse (friction constraints need total normal impulse from cache[0])
-    cache[constraint.impulse_offset] = new_impulse;
-
-    // Apply impulse delta (not the accumulated total)
-    if (!a.is_static) {
-        a.apply_linear_impulse(constraint.linear_a * new_impulse);
-        a.apply_angular_impulse(constraint.angular_a * new_impulse);
-    }
-
-    if (!b.is_static) {
-        b.apply_linear_impulse(constraint.linear_b * new_impulse);
-        b.apply_angular_impulse(constraint.angular_b * new_impulse);
-    }
-}
-
 
 // Check collisions using CoACD decomposed convex pieces
-// Each piece is tested as a convex-convex collision (much faster than BVH triangles)
-// Note: At least one body must have a compound shape (pairs are pre-categorized)
 fn void PhysicsWorld.check_coacd_collision(&self, Rigidbody* body_a, Rigidbody* body_b, Pair pair) {
     bool a_has_compound = body_a.collider.get_type() == ShapeType.COMPOUND;
     bool b_has_compound = body_b.collider.get_type() == ShapeType.COMPOUND;
 
-    // Determine which body has the compound shape
     Rigidbody* compound_body;
     Rigidbody* other_body;
     bool compound_is_a;
@@ -1204,7 +1176,6 @@ fn void PhysicsWorld.check_coacd_collision(&self, Rigidbody* body_a, Rigidbody* 
         other_body = body_b;
         compound_is_a = true;
     } else {
-        // b must have compound (pairs are pre-categorized to ensure at least one has compound)
         compound_body = body_b;
         other_body = body_a;
         compound_is_a = false;
@@ -1215,10 +1186,7 @@ fn void PhysicsWorld.check_coacd_collision(&self, Rigidbody* body_a, Rigidbody* 
     // Reset contact cache
     self.contact_cache_count = 0;
 
-    // Test each convex piece against the other body
     foreach (&piece : compound.shapes) {
-        // Create transformed shape for this piece
-        // Piece transform is relative to compound body
         TransformedShape piece_shape = {
             .translation = compound_body.collider.translation + compound_body.collider.rotation * piece.offset,
             .scale = compound_body.collider.scale,
@@ -1226,11 +1194,9 @@ fn void PhysicsWorld.check_coacd_collision(&self, Rigidbody* body_a, Rigidbody* 
             .shape = piece.shape,
         };
 
-        // Early AABB rejection (use transformed AABB for world-space comparison)
         Aabb3 piece_aabb = piece_shape.get_transformed_aabb();
         if (!piece_aabb.collides(other_body.transformed_aabb)) continue;
 
-        // Check collision
         CollisionInfo info;
         if (compound_is_a) {
             info = collision::check_convex_collision(&piece_shape, &other_body.collider, epa:true);
@@ -1247,7 +1213,6 @@ fn void PhysicsWorld.check_coacd_collision(&self, Rigidbody* body_a, Rigidbody* 
                 .depth = info.depth,
             };
 
-            // Insert into sorted cache (deepest first), same as BVH
             if (self.contact_cache_count < MAX_CONTACTS_PER_PAIR) {
                 usz insert_pos = self.contact_cache_count;
                 for (usz i = 0; i < self.contact_cache_count; i++) {
@@ -1277,7 +1242,6 @@ fn void PhysicsWorld.check_coacd_collision(&self, Rigidbody* body_a, Rigidbody* 
         }
     }
 
-    // Push the best contacts to collision list
     for (usz i = 0; i < self.contact_cache_count; i++) {
         self.collisions.push(self.contact_cache[i]);
     }
@@ -1303,7 +1267,6 @@ fn Collision? PhysicsWorld.test_bvh_collision(&self, Rigidbody* body_a, Rigidbod
 
     Mesh* mesh = (Mesh*)mesh_body.collider.shape;
 
-    // Pre-compute transform values for AABB calculation
     Vec3 mesh_translation = mesh_body.collider.translation;
     Vec3 mesh_scale = mesh_body.collider.scale;
     QuaternionValue mesh_rotation = mesh_body.collider.rotation;
@@ -1319,8 +1282,6 @@ fn Collision? PhysicsWorld.test_bvh_collision(&self, Rigidbody* body_a, Rigidbod
     defer triangles.free();
     mesh.bvh.query_all_triangles(local_aabb, &triangles);
 
-    // Create reusable triangle mesh once (thread-local, no shared state)
-    // Use heap allocator to avoid temp allocator issues on worker threads
     Mesh tri_mesh;
     tri_mesh.vertices.init(allocator: mem);
     tri_mesh.triangles.init(allocator: mem);
@@ -1342,7 +1303,6 @@ fn Collision? PhysicsWorld.test_bvh_collision(&self, Rigidbody* body_a, Rigidbod
     float max_depth = 0;
 
     foreach (tri : triangles) {
-        // Early AABB rejection: compute triangle world AABB
         Vec3 v0 = mesh_rotation * (tri[0] * mesh_scale) + mesh_translation;
         Vec3 v1 = mesh_rotation * (tri[1] * mesh_scale) + mesh_translation;
         Vec3 v2 = mesh_rotation * (tri[2] * mesh_scale) + mesh_translation;
@@ -1360,10 +1320,8 @@ fn Collision? PhysicsWorld.test_bvh_collision(&self, Rigidbody* body_a, Rigidbod
             }
         };
 
-        // Skip GJK if triangle AABB doesn't overlap other body's AABB
         if (!tri_aabb.collides(other_body.transformed_aabb)) continue;
 
-        // Update mesh vertices in-place (no allocation)
         tri_mesh.vertices[0] = tri[0];
         tri_mesh.vertices[1] = tri[1];
         tri_mesh.vertices[2] = tri[2];
@@ -1383,7 +1341,6 @@ fn Collision? PhysicsWorld.test_bvh_collision(&self, Rigidbody* body_a, Rigidbod
     }
 
     if (max_depth > 0) {
-        // Clamp depth to prevent extreme correction forces from BVH triangle collisions
         float clamped_depth = math::min(max_depth, 1.0f);
         return {
             .a = pair.a,

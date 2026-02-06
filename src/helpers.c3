@@ -98,6 +98,30 @@ fn Matrix3f QuaternionValue.as_mat3(self) {
     };
 }
 
+fn Matrix3f mat3_outer(Vec3 a, Vec3 b) {
+    return {
+        a.x*b.x, a.x*b.y, a.x*b.z,
+        a.y*b.x, a.y*b.y, a.y*b.z,
+        a.z*b.x, a.z*b.y, a.z*b.z,
+    };
+}
+
+fn Matrix3f mat3_diagonal(Vec3 d) {
+    return {
+        d.x, 0, 0,
+        0, d.y, 0,
+        0, 0, d.z,
+    };
+}
+
+fn Vec3 mat3_solve(Matrix3f a, Vec3 b) {
+    return a.inverse()!! * b;
+}
+
+fn Vec3 Vec3.abs(self) {
+    return { math::abs(self.x), math::abs(self.y), math::abs(self.z) };
+}
+
 fn void Vec3.set(&self, Vec3 new) @private => mem::copy(self, &new, Vec3.sizeof, 0);
 
 fn usz Vec3.hash(&self) @private {
