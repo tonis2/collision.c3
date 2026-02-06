@@ -797,6 +797,109 @@ fn void solve_xpbd_constraint(XpbdConstraint* c, PhysicsWorld* world, uint itera
 }
 
 
+fn bool is_manifold_shape(ShapeType t) @local @inline => t == ShapeType.CONVEX || t == ShapeType.BOX;
+
+// Expand a single EPA contact into a multi-contact manifold.
+// For flat-on-flat contacts (box on floor), projects vertices of the incident body
+// onto the reference body's contact plane and creates additional contacts.
+fn void PhysicsWorld.generate_manifold(&self, Collision* collision) @local {
+    Rigidbody* a = self.find_body(collision.a)!!;
+    Rigidbody* b = self.find_body(collision.b)!!;
+
+    ShapeType a_type = a.collider.get_type();
+    ShapeType b_type = b.collider.get_type();
+
+    if (!is_manifold_shape(a_type) && !is_manifold_shape(b_type)) {
+        self.collisions.push(*collision);
+        return;
+    }
+
+    // Incident body: must be a dynamic manifold shape (never expand static ground)
+    bool incident_is_a;
+    bool a_candidate = is_manifold_shape(a_type) && !a.is_static;
+    bool b_candidate = is_manifold_shape(b_type) && !b.is_static;
+
+    if (!a_candidate && !b_candidate) {
+        self.collisions.push(*collision);
+        return;
+    }
+
+    if (a_candidate && b_candidate) {
+        Vec3 ext_a = a.transformed_aabb.max - a.transformed_aabb.min;
+        Vec3 ext_b = b.transformed_aabb.max - b.transformed_aabb.min;
+        float sa_a = ext_a.x*ext_a.y + ext_a.y*ext_a.z + ext_a.z*ext_a.x;
+        float sa_b = ext_b.x*ext_b.y + ext_b.y*ext_b.z + ext_b.z*ext_b.x;
+        incident_is_a = sa_a <= sa_b;
+    } else {
+        incident_is_a = a_candidate;
+    }
+
+    Rigidbody* incident = incident_is_a ? a : b;
+    ShapeType incident_type = incident_is_a ? a_type : b_type;
+
+    Vec3[8] box_corners;
+    Vec3[] local_verts;
+
+    if (incident_type == ShapeType.BOX) {
+        Aabb3* box = (Aabb3*)incident.collider.shape;
+        box_corners = {
+            box.min,
+            { box.max.x, box.min.y, box.min.z },
+            { box.min.x, box.max.y, box.min.z },
+            { box.min.x, box.min.y, box.max.z },
+            { box.max.x, box.max.y, box.min.z },
+            { box.max.x, box.min.y, box.max.z },
+            { box.min.x, box.max.y, box.max.z },
+            box.max,
+        };
+        local_verts = &box_corners;
+    } else {
+        Mesh* mesh = (Mesh*)incident.collider.shape;
+        local_verts = mesh.vertices.entries[:mesh.vertices.size];
+    }
+
+    Vec3 plane_point = incident_is_a ? collision.contact[1] : collision.contact[0];
+    Vec3 plane_normal = incident_is_a ? -collision.normal : collision.normal;
+    Vec3 orig_contact = incident_is_a ? collision.contact[0] : collision.contact[1];
+
+    float depth_tol = collision.depth + 0.02f;
+    const float DEDUP_DIST_SQ = 0.0001f;
+    Vec3 inc_ext = incident.transformed_aabb.max - incident.transformed_aabb.min;
+    float max_spread_sq = inc_ext.sq_magnitude();
+
+    // Always include original EPA contact
+    self.collisions.push(*collision);
+
+    foreach (i, local_v : local_verts) {
+        Vec3 v = incident.collider.rotation * (local_v * incident.collider.scale)
+               + incident.collider.translation;
+
+        float dist_to_orig = v.distance_sq(orig_contact);
+        if (dist_to_orig < DEDUP_DIST_SQ || dist_to_orig > max_spread_sq) continue;
+
+        float signed_dist = (v - plane_point).dot(plane_normal);
+        if (signed_dist >= depth_tol) continue;
+
+        float depth = math::max(0.0f, -signed_dist);
+        Vec3 projected = v - plane_normal * signed_dist;
+
+        Collision new_c = {
+            .a = collision.a,
+            .b = collision.b,
+            .normal = collision.normal,
+            .depth = depth,
+        };
+
+        if (incident_is_a) {
+            new_c.contact = { v, projected };
+        } else {
+            new_c.contact = { projected, v };
+        }
+
+        self.collisions.push(new_c);
+    }
+}
+
 <*
  @require self.bodies.len() > 0 : `Must have some bodies to simulate`
 *>
@@ -1021,6 +1124,26 @@ fn void PhysicsWorld.run_substep(&self, float time, uint step_count) @local {
     self.active_contacts.free();
     self.active_contacts = current_contacts;
     current_contacts = {};  // Prevent double-free in defer
+
+    // === Phase 4.5: Expand contact manifolds ===
+    // EPA gives one contact per pair. For box-on-box or box-on-floor contacts,
+    // expand into multiple contacts by projecting vertices near the contact plane.
+    {
+        usz raw_count = self.collisions.len();
+        for (usz i = 0; i < raw_count; i++) {
+            Collision c = self.collisions[i];
+            self.generate_manifold(&c);
+        }
+        if (raw_count > 0) {
+            usz expanded_count = self.collisions.len() - raw_count;
+            for (usz i = 0; i < expanded_count; i++) {
+                self.collisions[i] = self.collisions[raw_count + i];
+            }
+            while (self.collisions.len() > expanded_count) {
+                self.collisions.pop()!!;
+            }
+        }
+    }
 
     // === Phase 5: Create XPBD constraints (from collisions + joints) ===
     foreach (&collision: self.collisions) {
@@ -1483,8 +1606,6 @@ fn void Collision.create_xpbd_constraint(&collision, PhysicsWorld* world, float 
 
     world.constraints.push(constraint);
 }
-
-
 
 
 // Insert a contact into the sorted cache (deepest contacts first, up to MAX_CONTACTS_PER_PAIR)
