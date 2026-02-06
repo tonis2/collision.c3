@@ -262,7 +262,7 @@ fn Rigidbody*? PhysicsWorld.find_body(self, usz id) => self.bodies.get_ref(id);
 fn void? PhysicsWorld.add_constraint(&self, GenericJoint3D joint) {
 
     // Add collision filter for joints, so they won't collide with eachother
-    if (joint.collides == false) {
+    if (!joint.collides) {
         self.filters.set({joint.body_a, joint.body_b}, true);
     }
 
@@ -425,24 +425,33 @@ fn float compute_generalized_inverse_mass(Rigidbody* body, Vec3 r, Vec3 n) {
     return w;
 }
 
+// Apply angular rotation from axis-angle correction vector
+fn void apply_angular_rotation(Rigidbody* body, Vec3 correction) @local {
+    float angle = correction.length();
+    if (angle <= 1e-8) return;
+    body.collider.rotation = (quaternion::from_axis_angle(correction, angle) * body.collider.rotation).normalize();
+}
+
 // XPBD positional correction: apply delta_lambda along direction n at contact arm r
 fn void apply_positional_correction(Rigidbody* body, Vec3 n, Vec3 r, float delta_lambda) {
     if (body.is_static) return;
-
-    // Linear correction
     body.collider.translation += n * (body.inverse_mass * delta_lambda);
+    apply_angular_rotation(body, body.get_inverse_world_inertia() * r.cross(n) * delta_lambda);
+}
 
-    // Angular correction
-    Vec3 rn = r.cross(n);
-    Vec3 angular_correction = body.get_inverse_world_inertia() * rn * delta_lambda;
-    float angle = angular_correction.length();
-    if (angle > 1e-8) {
-        Vec3 axis = angular_correction / angle;
-        float half = angle * 0.5f;
-        float s = math::sin(half);
-        QuaternionValue dq = {axis.x * s, axis.y * s, axis.z * s, math::cos(half)};
-        body.collider.rotation = (dq * body.collider.rotation).normalize();
-    }
+// Solve friction along a single tangent direction
+fn void solve_tangent_friction(Rigidbody* a, Rigidbody* b, XpbdConstraint* c,
+                               Vec3 tangent, float* lambda_t, float displacement, float max_friction) @local {
+    if (math::abs(displacement) <= 1e-8) return;
+    float w = compute_generalized_inverse_mass(a, c.r_a, tangent)
+            + compute_generalized_inverse_mass(b, c.r_b, tangent);
+    if (w <= 1e-10) return;
+    float dl = -displacement / w;
+    float new_l = math::clamp(*lambda_t + dl, -max_friction, max_friction);
+    dl = new_l - *lambda_t;
+    *lambda_t = new_l;
+    apply_positional_correction(a, tangent, c.r_a, dl);
+    apply_positional_correction(b, -tangent, c.r_b, dl);
 }
 
 // Union-Find: find root with path compression
@@ -699,49 +708,15 @@ fn void solve_xpbd_constraint(XpbdConstraint* c, PhysicsWorld* world) @local {
 
             // Friction: tangential position correction
             if (c.friction > 0 && math::abs(c.lambda_normal) > 1e-8) {
-                // Compute tangential displacement at the contact point (not center of mass)
-                // This captures rotational sliding (e.g. a spinning ball on the ground)
                 Vec3 prev_r_a = a.prev_rotation * c.r_a_local;
                 Vec3 prev_r_b = b.prev_rotation * c.r_b_local;
                 Vec3 disp_a = (a.collider.translation + cur_r_a) - (a.prev_position + prev_r_a);
                 Vec3 disp_b = (b.collider.translation + cur_r_b) - (b.prev_position + prev_r_b);
                 Vec3 rel_disp = disp_a - disp_b;
-                float disp_t1 = rel_disp.dot(c.tangent1);
-                float disp_t2 = rel_disp.dot(c.tangent2);
-
                 float max_friction = c.friction * math::abs(c.lambda_normal);
 
-                // Tangent 1 friction
-                if (math::abs(disp_t1) > 1e-8) {
-                    float w_t1_a = compute_generalized_inverse_mass(a, c.r_a, c.tangent1);
-                    float w_t1_b = compute_generalized_inverse_mass(b, c.r_b, c.tangent1);
-                    float w_t1 = w_t1_a + w_t1_b;
-                    if (w_t1 > 1e-10) {
-                        float dl_t1 = -disp_t1 / w_t1;
-                        float new_lt1 = c.lambda_tangent1 + dl_t1;
-                        new_lt1 = math::clamp(new_lt1, -max_friction, max_friction);
-                        dl_t1 = new_lt1 - c.lambda_tangent1;
-                        c.lambda_tangent1 = new_lt1;
-                        apply_positional_correction(a, c.tangent1, c.r_a, dl_t1);
-                        apply_positional_correction(b, -c.tangent1, c.r_b, dl_t1);
-                    }
-                }
-
-                // Tangent 2 friction
-                if (math::abs(disp_t2) > 1e-8) {
-                    float w_t2_a = compute_generalized_inverse_mass(a, c.r_a, c.tangent2);
-                    float w_t2_b = compute_generalized_inverse_mass(b, c.r_b, c.tangent2);
-                    float w_t2 = w_t2_a + w_t2_b;
-                    if (w_t2 > 1e-10) {
-                        float dl_t2 = -disp_t2 / w_t2;
-                        float new_lt2 = c.lambda_tangent2 + dl_t2;
-                        new_lt2 = math::clamp(new_lt2, -max_friction, max_friction);
-                        dl_t2 = new_lt2 - c.lambda_tangent2;
-                        c.lambda_tangent2 = new_lt2;
-                        apply_positional_correction(a, c.tangent2, c.r_a, dl_t2);
-                        apply_positional_correction(b, -c.tangent2, c.r_b, dl_t2);
-                    }
-                }
+                solve_tangent_friction(a, b, c, c.tangent1, &c.lambda_tangent1, rel_disp.dot(c.tangent1), max_friction);
+                solve_tangent_friction(a, b, c, c.tangent2, &c.lambda_tangent2, rel_disp.dot(c.tangent2), max_friction);
             }
 
         case JOINT_POSITION:
@@ -795,29 +770,9 @@ fn void solve_xpbd_constraint(XpbdConstraint* c, PhysicsWorld* world) @local {
             float a_dl = -(ang_error + a_alpha * c.lambda) / (aw_sum + a_alpha);
             c.lambda += a_dl;
 
-            // Apply angular corrections via quaternion
-            if (!a.is_static) {
-                Vec3 ang_corr = a.get_inverse_world_inertia() * axis * (-a_dl);
-                float ang_mag = ang_corr.length();
-                if (ang_mag > 1e-8) {
-                    Vec3 ax = ang_corr / ang_mag;
-                    float h = ang_mag * 0.5f;
-                    float s = math::sin(h);
-                    QuaternionValue dq = {ax.x * s, ax.y * s, ax.z * s, math::cos(h)};
-                    a.collider.rotation = (dq * a.collider.rotation).normalize();
-                }
-            }
-            if (!b.is_static) {
-                Vec3 ang_corr = b.get_inverse_world_inertia() * axis * a_dl;
-                float ang_mag = ang_corr.length();
-                if (ang_mag > 1e-8) {
-                    Vec3 ax = ang_corr / ang_mag;
-                    float h = ang_mag * 0.5f;
-                    float s = math::sin(h);
-                    QuaternionValue dq = {ax.x * s, ax.y * s, ax.z * s, math::cos(h)};
-                    b.collider.rotation = (dq * b.collider.rotation).normalize();
-                }
-            }
+            // Apply angular corrections
+            if (!a.is_static) apply_angular_rotation(a, a.get_inverse_world_inertia() * axis * (-a_dl));
+            if (!b.is_static) apply_angular_rotation(b, b.get_inverse_world_inertia() * axis * a_dl);
     }
 }
 
@@ -852,7 +807,7 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 5) {
         Rigidbody* body_a = self.find_body(pair.a)!!;
         Rigidbody* body_b = self.find_body(pair.b)!!;
 
-        bool has_filter = self.filters.has_key({body_a.id, body_b.id}) == true;
+        bool has_filter = self.filters.has_key({body_a.id, body_b.id});
 
         if (!has_filter && body_a.transformed_aabb.collides(body_b.transformed_aabb)) {
             // Check if either body is a trigger
@@ -1218,7 +1173,7 @@ fn void PhysicsWorld.xpbd_derive_and_update(&self, float dt) @local {
             body.transformed_aabb = new_aabb;
         }
 
-        if (body.can_sleep == true && moving == false && rotating == false) {
+        if (body.can_sleep && !moving && !rotating) {
             body.sleep_timer += dt;
         } else {
             body.sleep_timer = 0;
@@ -1253,7 +1208,7 @@ fn void PhysicsWorld.xpbd_solve_constraints(&self, uint step_count) @local {
     usz num_islands = island_constraints.len();
 
     if (num_islands <= 1) {
-        for (usz i; i < step_count; i++) {
+        for (usz i = 0; i < step_count; i++) {
             for (usz j = 0; j < self.constraints.len(); j++) {
                 solve_xpbd_constraint(&self.constraints[j], self);
             }
@@ -1485,6 +1440,30 @@ fn void Collision.create_xpbd_constraint(&collision, PhysicsWorld* world, float 
 
 
 
+// Insert a contact into the sorted cache (deepest contacts first, up to MAX_CONTACTS_PER_PAIR)
+fn void PhysicsWorld.insert_contact_sorted(&self, Collision contact) @local {
+    usz insert_pos = self.contact_cache_count;
+    for (usz i = 0; i < self.contact_cache_count; i++) {
+        if (contact.depth > self.contact_cache[i].depth) {
+            insert_pos = i;
+            break;
+        }
+    }
+
+    if (self.contact_cache_count < MAX_CONTACTS_PER_PAIR) {
+        for (usz i = self.contact_cache_count; i > insert_pos; i--) {
+            self.contact_cache[i] = self.contact_cache[i - 1];
+        }
+        self.contact_cache[insert_pos] = contact;
+        self.contact_cache_count++;
+    } else if (insert_pos < MAX_CONTACTS_PER_PAIR) {
+        for (usz i = MAX_CONTACTS_PER_PAIR - 1; i > insert_pos; i--) {
+            self.contact_cache[i] = self.contact_cache[i - 1];
+        }
+        self.contact_cache[insert_pos] = contact;
+    }
+}
+
 // Check collisions using CoACD decomposed convex pieces
 // Each piece is tested as a convex-convex collision (much faster than BVH triangles)
 // Note: At least one body must have a compound shape (pairs are pre-categorized)
@@ -1537,41 +1516,13 @@ fn void PhysicsWorld.check_coacd_collision(&self, Rigidbody* body_a, Rigidbody* 
         }
 
         if (info.collided && info.depth > 0) {
-            Collision new_contact = {
+            self.insert_contact_sorted({
                 .a = pair.a,
                 .b = pair.b,
                 .normal = info.normal,
                 .contact = info.contact_points,
                 .depth = info.depth,
-            };
-
-            // Insert into sorted cache (deepest first), same as BVH
-            if (self.contact_cache_count < MAX_CONTACTS_PER_PAIR) {
-                usz insert_pos = self.contact_cache_count;
-                for (usz i = 0; i < self.contact_cache_count; i++) {
-                    if (info.depth > self.contact_cache[i].depth) {
-                        insert_pos = i;
-                        break;
-                    }
-                }
-                for (usz i = self.contact_cache_count; i > insert_pos; i--) {
-                    self.contact_cache[i] = self.contact_cache[i - 1];
-                }
-                self.contact_cache[insert_pos] = new_contact;
-                self.contact_cache_count++;
-            } else if (info.depth > self.contact_cache[MAX_CONTACTS_PER_PAIR - 1].depth) {
-                usz insert_pos = MAX_CONTACTS_PER_PAIR - 1;
-                for (usz i = 0; i < MAX_CONTACTS_PER_PAIR - 1; i++) {
-                    if (info.depth > self.contact_cache[i].depth) {
-                        insert_pos = i;
-                        break;
-                    }
-                }
-                for (usz i = MAX_CONTACTS_PER_PAIR - 1; i > insert_pos; i--) {
-                    self.contact_cache[i] = self.contact_cache[i - 1];
-                }
-                self.contact_cache[insert_pos] = new_contact;
-            }
+            });
         }
     }
 

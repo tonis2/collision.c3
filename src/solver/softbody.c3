@@ -413,7 +413,6 @@ fn void SoftBody.solve_volume_constraint(&self, VolumeConstraint* c, float dt) @
     // Simplified approach: uniform pressure on all surface vertices
     usz n = self.positions.len();
     float total_grad_sq = 0;
-    float total_w = 0;
 
     // For each triangle, compute area-weighted normal contribution
     List{Vec3} gradients;
@@ -518,16 +517,26 @@ fn void SoftBody.solve_bending_constraint(&self, BendingConstraint* c, float dt)
     if (w3 > 0) self.positions[c.p3] += g3 * (w3 * delta_lambda);
 }
 
+// Apply Coulomb friction to a particle's tangential velocity
+fn void SoftBody.apply_particle_friction(&self, usz particle, Vec3 normal, float correction, float friction, float dt) @local {
+    if (friction <= 0) return;
+    Vec3 vel = self.velocities[particle];
+    Vec3 vt = vel - normal * vel.dot(normal);
+    float vt_mag = vt.length();
+    if (vt_mag > 1e-6) {
+        float impulse = math::min(friction * math::abs(correction) / dt, vt_mag);
+        self.velocities[particle] -= (vt / vt_mag) * impulse;
+    }
+}
+
 // XPBD collision constraint solver — unified position-based coupling
 fn void SoftBody.solve_collision_constraint(&self, SoftCollisionConstraint* c, float dt, PhysicsWorld* world = null) @local {
     float w_particle = self.inverse_masses[c.particle];
     if (w_particle == 0) return;
 
     Vec3 p = self.positions[c.particle];
-
-    // Compute penetration along normal
     float d = (p - c.contact_point).dot(c.normal);
-    if (d >= 0) return; // Not penetrating
+    if (d >= 0) return;
 
     float correction = -d;
 
@@ -542,46 +551,18 @@ fn void SoftBody.solve_collision_constraint(&self, SoftCollisionConstraint* c, f
 
                 if (w_total > 1e-10) {
                     float particle_share = w_particle / w_total;
-                    float body_share = w_body / w_total;
-
-                    // Move particle
                     self.positions[c.particle] += c.normal * (correction * particle_share);
-
-                    // Move rigid body (opposite direction)
-                    collision::apply_positional_correction(body, -c.normal, r, correction * body_share);
+                    collision::apply_positional_correction(body, -c.normal, r, correction * (w_body / w_total));
                 }
 
-                // Friction
-                if (c.friction > 0) {
-                    Vec3 vel = self.velocities[c.particle];
-                    float vn = vel.dot(c.normal);
-                    Vec3 vt = vel - c.normal * vn;
-                    float vt_mag = vt.length();
-                    if (vt_mag > 1e-6) {
-                        float friction_impulse = math::min(c.friction * math::abs(correction) / dt, vt_mag);
-                        self.velocities[c.particle] -= (vt / vt_mag) * friction_impulse;
-                    }
-                }
+                self.apply_particle_friction(c.particle, c.normal, correction, c.friction, dt);
                 return;
             }
         }
     }
 
-    // No rigid body coupling — just correct particle
     self.positions[c.particle] += c.normal * correction;
-
-    // Friction
-    if (c.friction > 0) {
-        Vec3 vel = self.velocities[c.particle];
-        float vn = vel.dot(c.normal);
-        Vec3 vt = vel - c.normal * vn;
-        float vt_mag = vt.length();
-
-        if (vt_mag > 1e-6) {
-            float friction_impulse = math::min(c.friction * math::abs(correction) / dt, vt_mag);
-            self.velocities[c.particle] -= (vt / vt_mag) * friction_impulse;
-        }
-    }
+    self.apply_particle_friction(c.particle, c.normal, correction, c.friction, dt);
 }
 
 // Apply particle pin constraint
