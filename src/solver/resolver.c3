@@ -259,7 +259,7 @@ const PhysicsWorld DEFAULT_PHYSICS_WORLD = {
 	.sleep_timer = 5.0,
 	.linear_dampening = 0.9,
 	.angular_dampening = 0.9,
-	.sleep_delta = 0.1,
+	.sleep_delta = 0.2,
 };
 
 <*
