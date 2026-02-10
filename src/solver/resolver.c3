@@ -644,7 +644,7 @@ fn int derive_worker(void* arg) @local {
         // Derive angular velocity: omega = 2 * (q * q_prev_conjugate).xyz / dt
         QuaternionValue dq = body.collider.rotation * body.prev_rotation.conjugate();
         // Ensure shortest path
-        if (dq.l < 0) dq = {-dq.v.x, -dq.v.y, -dq.v.z, -dq.l};
+        if (dq.l < 0) dq = -dq;
         body.angular_velocity = dq.v.xyz * (2.0f * inv_dt);
 
         // Apply per-body dampening
@@ -827,8 +827,8 @@ fn void PhysicsWorld.generate_manifold(&self, Collision* collision) @local {
     }
 
     if (a_candidate && b_candidate) {
-        Vec3 ext_a = a.transformed_aabb.max - a.transformed_aabb.min;
-        Vec3 ext_b = b.transformed_aabb.max - b.transformed_aabb.min;
+        Vec3 ext_a = a.transformed_aabb.size();
+        Vec3 ext_b = b.transformed_aabb.size();
         float sa_a = ext_a.x*ext_a.y + ext_a.y*ext_a.z + ext_a.z*ext_a.x;
         float sa_b = ext_b.x*ext_b.y + ext_b.y*ext_b.z + ext_b.z*ext_b.x;
         incident_is_a = sa_a <= sa_b;
@@ -866,7 +866,7 @@ fn void PhysicsWorld.generate_manifold(&self, Collision* collision) @local {
 
     float depth_tol = collision.depth + 0.02f;
     const float DEDUP_DIST_SQ = 0.0001f;
-    Vec3 inc_ext = incident.transformed_aabb.max - incident.transformed_aabb.min;
+    Vec3 inc_ext = incident.transformed_aabb.size();
     float max_spread_sq = inc_ext.sq_magnitude();
 
     // Always include original EPA contact
@@ -899,6 +899,39 @@ fn void PhysicsWorld.generate_manifold(&self, Collision* collision) @local {
         }
 
         self.collisions.push(new_c);
+    }
+}
+
+fn void PhysicsWorld.dispatch_collision_tasks(&self, Pair[] pairs, ThreadFn worker_fn) @local {
+    usz count = pairs.len;
+    if (count == 0) return;
+
+    self.collision_tasks.clear();
+    self.collision_results.clear();
+
+    for (usz i = 0; i < count; i++) {
+        self.collision_results.push({});
+    }
+
+    for (usz i = 0; i < count; i++) {
+        self.collision_tasks.push({
+            .world = self,
+            .pair = pairs[i],
+            .result = &self.collision_results[i],
+            .has_collision = false,
+        });
+    }
+
+    for (usz i = 0; i < count; i++) {
+        self.thread_pool.push(worker_fn, &self.collision_tasks[i])!!;
+    }
+
+    self.thread_pool.join()!!;
+
+    for (usz i = 0; i < count; i++) {
+        if (self.collision_tasks[i].has_collision) {
+            self.collisions.push(*self.collision_tasks[i].result);
+        }
     }
 }
 
@@ -1018,68 +1051,10 @@ fn void PhysicsWorld.run_substep(&self, float time, uint step_count) @local {
         }
 
         // Process convex pairs in parallel
-        usz num_convex = convex_pairs.len();
-        if (num_convex > 0) {
-            self.collision_tasks.clear();
-            self.collision_results.clear();
-
-            for (usz i = 0; i < num_convex; i++) {
-                self.collision_results.push({});
-            }
-
-            for (usz i = 0; i < num_convex; i++) {
-                self.collision_tasks.push({
-                    .world = self,
-                    .pair = convex_pairs[i],
-                    .result = &self.collision_results[i],
-                    .has_collision = false,
-                });
-            }
-
-            for (usz i = 0; i < num_convex; i++) {
-                self.thread_pool.push(&collision_test_worker, &self.collision_tasks[i])!!;
-            }
-
-            self.thread_pool.join()!!;
-
-            for (usz i = 0; i < num_convex; i++) {
-                if (self.collision_tasks[i].has_collision) {
-                    self.collisions.push(*self.collision_tasks[i].result);
-                }
-            }
-        }
+        self.dispatch_collision_tasks(convex_pairs.array_view(), &collision_test_worker);
 
         // Process BVH pairs in parallel
-        usz num_bvh = bvh_pairs.len();
-        if (num_bvh > 0) {
-            self.collision_tasks.clear();
-            self.collision_results.clear();
-
-            for (usz i = 0; i < num_bvh; i++) {
-                self.collision_results.push({});
-            }
-
-            for (usz i = 0; i < num_bvh; i++) {
-                self.collision_tasks.push({
-                    .world = self,
-                    .pair = bvh_pairs[i],
-                    .result = &self.collision_results[i],
-                    .has_collision = false,
-                });
-            }
-
-            for (usz i = 0; i < num_bvh; i++) {
-                self.thread_pool.push(&bvh_collision_test_worker, &self.collision_tasks[i])!!;
-            }
-
-            self.thread_pool.join()!!;
-
-            for (usz i = 0; i < num_bvh; i++) {
-                if (self.collision_tasks[i].has_collision) {
-                    self.collisions.push(*self.collision_tasks[i].result);
-                }
-            }
-        }
+        self.dispatch_collision_tasks(bvh_pairs.array_view(), &bvh_collision_test_worker);
 
         foreach (pair : compound_pairs) {
             Rigidbody* body_a = self.find_body(pair.a)!!;
@@ -1282,7 +1257,7 @@ fn void PhysicsWorld.xpbd_derive_and_update(&self, float dt) @local {
             body.linear_velocity = (body.collider.translation - body.prev_position) * inv_dt;
 
             QuaternionValue dq = body.collider.rotation * body.prev_rotation.conjugate();
-            if (dq.l < 0) dq = {-dq.v.x, -dq.v.y, -dq.v.z, -dq.l};
+            if (dq.l < 0) dq = -dq;
             body.angular_velocity = dq.v.xyz * (2.0f * inv_dt);
 
             body.angular_velocity *= math::pow(body.angular_dampening, dt);
@@ -1793,16 +1768,8 @@ fn Collision? PhysicsWorld.test_bvh_collision(&self, Rigidbody* body_a, Rigidbod
         Vec3 v2 = mesh_rotation * (tri[2] * mesh_scale) + mesh_translation;
 
         Aabb3 tri_aabb = {
-            .min = {
-                math::min(v0.x, math::min(v1.x, v2.x)),
-                math::min(v0.y, math::min(v1.y, v2.y)),
-                math::min(v0.z, math::min(v1.z, v2.z))
-            },
-            .max = {
-                math::max(v0.x, math::max(v1.x, v2.x)),
-                math::max(v0.y, math::max(v1.y, v2.y)),
-                math::max(v0.z, math::max(v1.z, v2.z))
-            }
+            .min = math::min(v0, math::min(v1, v2)),
+            .max = math::max(v0, math::max(v1, v2))
         };
 
         if (!tri_aabb.collides(other_body.transformed_aabb)) continue;

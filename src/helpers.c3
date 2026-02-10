@@ -107,10 +107,7 @@ fn usz Vec3.hash(&self) @private {
     return hash;
 }
 
-fn float Vec3.distance_sq(self, Vec3 v2) {
-    Vec3 dist = self - v2;
-    return dist.x * dist.x + dist.y * dist.y + dist.z * dist.z;
-}
+fn float Vec3.distance_sq(self, Vec3 v2) => (self - v2).sq_magnitude();
 
 fn usz? ContactPoints.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s\n%s", (*self)[0], (*self)[1])!;
 fn usz? Pair.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s, %s", self.a, self.b)!;

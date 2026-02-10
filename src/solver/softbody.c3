@@ -273,12 +273,8 @@ fn Aabb3 SoftBody.compute_aabb(&self) {
 
     for (usz i = 1; i < self.positions.len(); i++) {
         Vec3 p = self.positions[i];
-        min_v.x = math::min(min_v.x, p.x);
-        min_v.y = math::min(min_v.y, p.y);
-        min_v.z = math::min(min_v.z, p.z);
-        max_v.x = math::max(max_v.x, p.x);
-        max_v.y = math::max(max_v.y, p.y);
-        max_v.z = math::max(max_v.z, p.z);
+        min_v = math::min(min_v, p);
+        max_v = math::max(max_v, p);
     }
 
     return { min_v, max_v };
@@ -717,16 +713,8 @@ fn void SoftBody.generate_rigidbody_collisions(&self, Rigidbody* body) {
 
         // Quick per-triangle AABB rejection
         Aabb3 tri_aabb = {
-            .min = {
-                math::min(v0.x, math::min(v1.x, v2.x)),
-                math::min(v0.y, math::min(v1.y, v2.y)),
-                math::min(v0.z, math::min(v1.z, v2.z))
-            },
-            .max = {
-                math::max(v0.x, math::max(v1.x, v2.x)),
-                math::max(v0.y, math::max(v1.y, v2.y)),
-                math::max(v0.z, math::max(v1.z, v2.z))
-            }
+            .min = math::min(v0, math::min(v1, v2)),
+            .max = math::max(v0, math::max(v1, v2))
         };
 
         if (!tri_aabb.collides(body.transformed_aabb)) continue;
