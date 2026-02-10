@@ -312,6 +312,7 @@ fn Matrix3f Mesh.inertia_tensor(&self, float mass) @dynamic {
 }
 
 fn ShapeType Mesh.get_type(&self) @dynamic => ShapeType.CONVEX;
+fn usz Mesh.vertex_count(&self) @dynamic => self.vertices.len();
 
 
 // Plane structure for clipping

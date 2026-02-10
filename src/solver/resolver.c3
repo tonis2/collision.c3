@@ -797,7 +797,12 @@ fn void solve_xpbd_constraint(XpbdConstraint* c, PhysicsWorld* world, uint itera
 }
 
 
-fn bool is_manifold_shape(ShapeType t) @local @inline => t == ShapeType.CONVEX || t == ShapeType.BOX;
+fn bool is_manifold_shape(TransformedShape* collider) @local @inline {
+    ShapeType t = collider.get_type();
+    if (t == ShapeType.BOX) return true;
+    if (t == ShapeType.CONVEX && &collider.shape.vertex_count) return collider.shape.vertex_count() < 24;
+    return false;
+}
 
 // Expand a single EPA contact into a multi-contact manifold.
 // For flat-on-flat contacts (box on floor), projects vertices of the incident body
@@ -806,18 +811,15 @@ fn void PhysicsWorld.generate_manifold(&self, Collision* collision) @local {
     Rigidbody* a = self.find_body(collision.a)!!;
     Rigidbody* b = self.find_body(collision.b)!!;
 
-    ShapeType a_type = a.collider.get_type();
-    ShapeType b_type = b.collider.get_type();
-
-    if (!is_manifold_shape(a_type) && !is_manifold_shape(b_type)) {
+    if (!is_manifold_shape(&a.collider) && !is_manifold_shape(&b.collider)) {
         self.collisions.push(*collision);
         return;
     }
 
     // Incident body: must be a dynamic manifold shape (never expand static ground)
     bool incident_is_a;
-    bool a_candidate = is_manifold_shape(a_type) && !a.is_static;
-    bool b_candidate = is_manifold_shape(b_type) && !b.is_static;
+    bool a_candidate = is_manifold_shape(&a.collider) && !a.is_static;
+    bool b_candidate = is_manifold_shape(&b.collider) && !b.is_static;
 
     if (!a_candidate && !b_candidate) {
         self.collisions.push(*collision);
@@ -835,7 +837,7 @@ fn void PhysicsWorld.generate_manifold(&self, Collision* collision) @local {
     }
 
     Rigidbody* incident = incident_is_a ? a : b;
-    ShapeType incident_type = incident_is_a ? a_type : b_type;
+    ShapeType incident_type = incident.collider.get_type();
 
     Vec3[8] box_corners;
     Vec3[] local_verts;

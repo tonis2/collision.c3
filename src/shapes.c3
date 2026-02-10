@@ -24,6 +24,7 @@ interface CollisionShape
     fn Aabb3 get_aabb();
     fn ShapeType get_type();
 	fn Matrix3f inertia_tensor(float mass) @optional;
+    fn usz vertex_count() @optional;
     fn void free() @optional;
 }
 
