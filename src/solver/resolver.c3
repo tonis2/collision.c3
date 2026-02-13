@@ -10,7 +10,16 @@ import std::thread::pool;
 import std::core::mem;
 
 const NUM_WORKER_THREADS @local = 8;
-const MAX_CONTACTS_PER_PAIR @local = 8;  // Max contacts per collision pair
+const MAX_CONTACTS_PER_PAIR @local = 8;
+
+const float EPSILON @local = 1e-8f;
+const float WEIGHT_EPSILON @local = 1e-10f;
+const float MANIFOLD_DEPTH_TOL @local = 0.02f;
+const float DEDUP_DIST_SQ @local = 0.0001f;
+const float BOUNCE_THRESHOLD @local = 1.0f;
+const float UNIFORM_SCALE_TOL @local = 0.001f;
+const float DEGENERATE_DIST_SQ @local = 0.00001f * 0.00001f;
+const float CLAMPED_DEPTH_MAX @local = 1.0f;
 
 alias CollisionFilter = HashMap{Pair, bool};
 alias RigidBodyMap = LinkedHashMap{usz, Rigidbody};
@@ -436,7 +445,7 @@ fn float compute_generalized_inverse_mass(Rigidbody* body, Vec3 r, Vec3 n) {
 // Apply angular rotation from axis-angle correction vector
 fn void apply_angular_rotation(Rigidbody* body, Vec3 correction) @local {
     float angle = correction.length();
-    if (angle <= 1e-8) return;
+    if (angle <= EPSILON) return;
     body.collider.rotation = (quaternion::from_axis_angle(correction, angle) * body.collider.rotation).normalize();
 }
 
@@ -450,10 +459,10 @@ fn void apply_positional_correction(Rigidbody* body, Vec3 n, Vec3 r, float delta
 // Solve friction along a single tangent direction
 fn void solve_tangent_friction(Rigidbody* a, Rigidbody* b, XpbdConstraint* c,
                                Vec3 tangent, float* lambda_t, float displacement, float max_friction) @local {
-    if (math::abs(displacement) <= 1e-8) return;
+    if (math::abs(displacement) <= EPSILON) return;
     float w = compute_generalized_inverse_mass(a, c.r_a, tangent)
             + compute_generalized_inverse_mass(b, c.r_b, tangent);
-    if (w <= 1e-10) return;
+    if (w <= WEIGHT_EPSILON) return;
     float dl = -displacement / w;
     float new_l = math::clamp(*lambda_t + dl, -max_friction, max_friction);
     dl = new_l - *lambda_t;
@@ -694,7 +703,7 @@ fn void solve_xpbd_constraint(XpbdConstraint* c, PhysicsWorld* world, uint itera
             float w_a = compute_generalized_inverse_mass(a, c.r_a, c.normal);
             float w_b = compute_generalized_inverse_mass(b, c.r_b, c.normal);
             float w_sum = w_a + w_b;
-            if (w_sum < 1e-10) return;
+            if (w_sum < WEIGHT_EPSILON) return;
 
             float alpha = c.compliance;
             // XPBD: C = -penetration (non-penetration constraint: C >= 0)
@@ -715,7 +724,7 @@ fn void solve_xpbd_constraint(XpbdConstraint* c, PhysicsWorld* world, uint itera
             apply_positional_correction(b, c.normal, c.r_b, delta_lambda);
 
             // Friction: tangential position correction
-            if (c.friction > 0 && math::abs(c.lambda_normal) > 1e-8) {
+            if (c.friction > 0 && math::abs(c.lambda_normal) > EPSILON) {
                 Vec3 prev_r_a = a.prev_rotation * c.r_a_local;
                 Vec3 prev_r_b = b.prev_rotation * c.r_b_local;
                 Vec3 disp_a = (a.collider.translation + cur_r_a) - (a.prev_position + prev_r_a);
@@ -729,31 +738,31 @@ fn void solve_xpbd_constraint(XpbdConstraint* c, PhysicsWorld* world, uint itera
 
         case JOINT_POSITION:
             // Recompute anchor arms in world space (r_a/r_b store local-space anchors for joints)
-            Vec3 j_r_a = a.collider.rotation * c.r_a;
-            Vec3 j_r_b = b.collider.rotation * c.r_b;
+            Vec3 joint_r_a = a.collider.rotation * c.r_a;
+            Vec3 joint_r_b = b.collider.rotation * c.r_b;
 
-            Vec3 world_a = a.collider.translation + j_r_a;
-            Vec3 world_b = b.collider.translation + j_r_b;
+            Vec3 world_a = a.collider.translation + joint_r_a;
+            Vec3 world_b = b.collider.translation + joint_r_b;
             float pos_error = (world_b - world_a).dot(c.normal);
 
-            float jw_a = compute_generalized_inverse_mass(a, j_r_a, c.normal);
-            float jw_b = compute_generalized_inverse_mass(b, j_r_b, c.normal);
-            float jw_sum = jw_a + jw_b;
-            if (jw_sum < 1e-10) return;
+            float joint_weight_a = compute_generalized_inverse_mass(a, joint_r_a, c.normal);
+            float joint_weight_b = compute_generalized_inverse_mass(b, joint_r_b, c.normal);
+            float joint_weight_sum = joint_weight_a + joint_weight_b;
+            if (joint_weight_sum < WEIGHT_EPSILON) return;
 
             // Progressive stiffness: ramp compliance from high (soft) to target over iterations
             // This lets weak forces propagate before stiff forces dominate
-            float j_alpha = c.compliance;
-            if (j_alpha > 0 && total_iterations > 1) {
+            float joint_compliance = c.compliance;
+            if (joint_compliance > 0 && total_iterations > 1) {
                 float progress = (float)(iteration + 1) / (float)total_iterations;
                 // Start at 4x compliance (1/4 stiffness), ramp to target
-                j_alpha = c.compliance * (1.0f + 3.0f * (1.0f - progress));
+                joint_compliance = c.compliance * (1.0f + 3.0f * (1.0f - progress));
             }
-            float j_dl = -(pos_error + j_alpha * c.lambda) / (jw_sum + j_alpha);
-            c.lambda += j_dl;
+            float joint_delta_lambda = -(pos_error + joint_compliance * c.lambda) / (joint_weight_sum + joint_compliance);
+            c.lambda += joint_delta_lambda;
 
-            apply_positional_correction(a, -c.normal, j_r_a, j_dl);
-            apply_positional_correction(b, c.normal, j_r_b, j_dl);
+            apply_positional_correction(a, -c.normal, joint_r_a, joint_delta_lambda);
+            apply_positional_correction(b, c.normal, joint_r_b, joint_delta_lambda);
 
         case JOINT_ANGULAR:
             // Angular constraint: correct orientation difference along axis
@@ -768,31 +777,31 @@ fn void solve_xpbd_constraint(XpbdConstraint* c, PhysicsWorld* world, uint itera
             float ang_error = world_err.dot(axis) - c.c_value;
 
             // Angular generalized inverse mass (no lever arm)
-            float aw_a = 0;
-            float aw_b = 0;
+            float angular_weight_a = 0;
+            float angular_weight_b = 0;
             if (!a.is_static) {
                 Vec3 a_accel = a.get_inverse_world_inertia() * axis;
-                aw_a = a_accel.dot(axis);
+                angular_weight_a = a_accel.dot(axis);
             }
             if (!b.is_static) {
                 Vec3 b_accel = b.get_inverse_world_inertia() * axis;
-                aw_b = b_accel.dot(axis);
+                angular_weight_b = b_accel.dot(axis);
             }
-            float aw_sum = aw_a + aw_b;
-            if (aw_sum < 1e-10) return;
+            float angular_weight_sum = angular_weight_a + angular_weight_b;
+            if (angular_weight_sum < WEIGHT_EPSILON) return;
 
             // Progressive stiffness: ramp compliance from high (soft) to target over iterations
-            float a_alpha = c.compliance;
-            if (a_alpha > 0 && total_iterations > 1) {
-                float a_progress = (float)(iteration + 1) / (float)total_iterations;
-                a_alpha = c.compliance * (1.0f + 3.0f * (1.0f - a_progress));
+            float angular_compliance = c.compliance;
+            if (angular_compliance > 0 && total_iterations > 1) {
+                float progress = (float)(iteration + 1) / (float)total_iterations;
+                angular_compliance = c.compliance * (1.0f + 3.0f * (1.0f - progress));
             }
-            float a_dl = -(ang_error + a_alpha * c.lambda) / (aw_sum + a_alpha);
-            c.lambda += a_dl;
+            float angular_delta_lambda = -(ang_error + angular_compliance * c.lambda) / (angular_weight_sum + angular_compliance);
+            c.lambda += angular_delta_lambda;
 
             // Apply angular corrections
-            if (!a.is_static) apply_angular_rotation(a, a.get_inverse_world_inertia() * axis * (-a_dl));
-            if (!b.is_static) apply_angular_rotation(b, b.get_inverse_world_inertia() * axis * a_dl);
+            if (!a.is_static) apply_angular_rotation(a, a.get_inverse_world_inertia() * axis * (-angular_delta_lambda));
+            if (!b.is_static) apply_angular_rotation(b, b.get_inverse_world_inertia() * axis * angular_delta_lambda);
     }
 }
 
@@ -864,8 +873,7 @@ fn void PhysicsWorld.generate_manifold(&self, Collision* collision) @local {
     Vec3 plane_normal = incident_is_a ? -collision.normal : collision.normal;
     Vec3 orig_contact = incident_is_a ? collision.contact[0] : collision.contact[1];
 
-    float depth_tol = collision.depth + 0.02f;
-    const float DEDUP_DIST_SQ = 0.0001f;
+    float depth_tol = collision.depth + MANIFOLD_DEPTH_TOL;
     Vec3 inc_ext = incident.transformed_aabb.size();
     float max_spread_sq = inc_ext.sq_magnitude();
 
@@ -1270,7 +1278,7 @@ fn void PhysicsWorld.xpbd_derive_and_update(&self, float dt) @local {
     // For restitution > 0: target_vn = -e * vn_pre (bounce proportional to impact speed)
     foreach (&c : self.constraints) {
         if (c.type != CONTACT_NORMAL) continue;
-        if (math::abs(c.lambda_normal) < 1e-8) continue;
+        if (math::abs(c.lambda_normal) < EPSILON) continue;
 
         Rigidbody* a = c.body_a;
         Rigidbody* b = c.body_b;
@@ -1283,7 +1291,6 @@ fn void PhysicsWorld.xpbd_derive_and_update(&self, float dt) @local {
         // Target normal velocity
         float target_vn = 0;
         float vn_pre = c.pre_solve_relative_vel_n;
-        const float BOUNCE_THRESHOLD = 1.0f;
         if (c.restitution > 0.01f && math::abs(vn_pre) > BOUNCE_THRESHOLD) {
             target_vn = -c.restitution * vn_pre;
         }
@@ -1291,11 +1298,11 @@ fn void PhysicsWorld.xpbd_derive_and_update(&self, float dt) @local {
         float dv = target_vn - vn;
 
         // Apply velocity correction to reach target (handles both residual approach and overshoot)
-        if (math::abs(dv) > 1e-6) {
+        if (math::abs(dv) > EPSILON) {
             float w_a = compute_generalized_inverse_mass(a, c.r_a, c.normal);
             float w_b = compute_generalized_inverse_mass(b, c.r_b, c.normal);
             float w_sum = w_a + w_b;
-            if (w_sum > 1e-10) {
+            if (w_sum > WEIGHT_EPSILON) {
                 float impulse_mag = dv / w_sum;
                 if (!a.is_static) {
                     a.apply_impulse(c.normal * impulse_mag, c.r_a);
@@ -1677,6 +1684,87 @@ fn void PhysicsWorld.check_coacd_collision(&self, Rigidbody* body_a, Rigidbody* 
     }
 }
 
+fn Vec3 closest_point_on_triangle_helper(Vec3 p, Vec3 a, Vec3 b, Vec3 c) @local {
+    return closest_point_on_triangle(p, a, b, c);
+}
+
+fn bool test_sphere_triangle_collision(Vec3 sphere_center, float radius, Vec3 v0, Vec3 v1, Vec3 v2, 
+                                         Vec3 mesh_normal, Vec3* out_normal, Vec3[2]* out_contact, float* out_depth) @local {
+    Vec3 closest = closest_point_on_triangle_helper(sphere_center, v0, v1, v2);
+    Vec3 diff = sphere_center - closest;
+    float dist_sq = diff.sq_magnitude();
+    
+    if (dist_sq >= radius * radius) return false;
+    
+    if (dist_sq > DEGENERATE_DIST_SQ) {
+        float dist = math::sqrt(dist_sq);
+        *out_normal = diff / dist;
+        *out_depth = radius - dist;
+    } else {
+        *out_normal = mesh_normal;
+        *out_depth = radius;
+    }
+    *out_contact = { closest, sphere_center - *out_normal * radius };
+    return true;
+}
+
+fn bool test_capsule_triangle_collision(Vec3 capsule_p0, Vec3 capsule_p1, float radius, 
+                                        Vec3 v0, Vec3 v1, Vec3 v2, Vec3 mesh_normal,
+                                        Vec3* out_normal, Vec3[2]* out_contact, float* out_depth) @local {
+    float min_dist_sq = float.max;
+    Vec3 closest_on_axis = {0,0,0};
+    Vec3 closest_on_tri = {0,0,0};
+    
+    Vec3 cp = closest_point_on_triangle(capsule_p0, v0, v1, v2);
+    float d = (capsule_p0 - cp).sq_magnitude();
+    if (d < min_dist_sq) { min_dist_sq = d; closest_on_axis = capsule_p0; closest_on_tri = cp; }
+    
+    cp = closest_point_on_triangle(capsule_p1, v0, v1, v2);
+    d = (capsule_p1 - cp).sq_magnitude();
+    if (d < min_dist_sq) { min_dist_sq = d; closest_on_axis = capsule_p1; closest_on_tri = cp; }
+    
+    Vec3 seg_pt = closest_point_on_segment(v0, capsule_p0, capsule_p1);
+    d = (seg_pt - v0).sq_magnitude();
+    if (d < min_dist_sq) { min_dist_sq = d; closest_on_axis = seg_pt; closest_on_tri = v0; }
+    
+    seg_pt = closest_point_on_segment(v1, capsule_p0, capsule_p1);
+    d = (seg_pt - v1).sq_magnitude();
+    if (d < min_dist_sq) { min_dist_sq = d; closest_on_axis = seg_pt; closest_on_tri = v1; }
+    
+    seg_pt = closest_point_on_segment(v2, capsule_p0, capsule_p1);
+    d = (seg_pt - v2).sq_magnitude();
+    if (d < min_dist_sq) { min_dist_sq = d; closest_on_axis = seg_pt; closest_on_tri = v2; }
+    
+    Vec3 c1, c2;
+    closest_points_segments(capsule_p0, capsule_p1, v0, v1, &c1, &c2);
+    d = (c1 - c2).sq_magnitude();
+    if (d < min_dist_sq) { min_dist_sq = d; closest_on_axis = c1; closest_on_tri = c2; }
+    
+    closest_points_segments(capsule_p0, capsule_p1, v1, v2, &c1, &c2);
+    d = (c1 - c2).sq_magnitude();
+    if (d < min_dist_sq) { min_dist_sq = d; closest_on_axis = c1; closest_on_tri = c2; }
+    
+    closest_points_segments(capsule_p0, capsule_p1, v2, v0, &c1, &c2);
+    d = (c1 - c2).sq_magnitude();
+    if (d < min_dist_sq) { min_dist_sq = d; closest_on_axis = c1; closest_on_tri = c2; }
+    
+    if (min_dist_sq >= radius * radius) return false;
+    
+    Vec3 diff = closest_on_axis - closest_on_tri;
+    float dist_sq = diff.sq_magnitude();
+    
+    if (dist_sq > DEGENERATE_DIST_SQ) {
+        float dist = math::sqrt(dist_sq);
+        *out_normal = diff / dist;
+        *out_depth = radius - dist;
+    } else {
+        *out_normal = mesh_normal;
+        *out_depth = radius;
+    }
+    *out_contact = { closest_on_tri, closest_on_axis - *out_normal * radius };
+    return true;
+}
+
 // Thread-safe version of check_bvh_collision that returns result instead of pushing to list
 fn Collision? PhysicsWorld.test_bvh_collision(&self, Rigidbody* body_a, Rigidbody* body_b, Pair pair) @local {
     bool a_has_bvh = body_a.has_mesh_bvh();
@@ -1716,8 +1804,8 @@ fn Collision? PhysicsWorld.test_bvh_collision(&self, Rigidbody* body_a, Rigidbod
     // Check if we can use specialized collision tests (sphere/capsule vs triangle)
     ShapeType other_type = other_body.collider.get_type();
     Vec3 other_scale = other_body.collider.scale;
-    bool uniform_scale = math::abs(other_scale.x - other_scale.y) < 0.001f &&
-                         math::abs(other_scale.y - other_scale.z) < 0.001f;
+    bool uniform_scale = math::abs(other_scale.x - other_scale.y) < UNIFORM_SCALE_TOL &&
+                         math::abs(other_scale.y - other_scale.z) < UNIFORM_SCALE_TOL;
 
     bool use_sphere = uniform_scale && other_type == SPHERE;
     bool use_capsule = uniform_scale && other_type == CAPSULE;
@@ -1775,79 +1863,26 @@ fn Collision? PhysicsWorld.test_bvh_collision(&self, Rigidbody* body_a, Rigidbod
         if (!tri_aabb.collides(other_body.transformed_aabb)) continue;
 
         if (use_specialized) {
-            Vec3 closest_on_axis;
-            Vec3 closest_on_tri;
-
-            if (use_sphere) {
-                closest_on_tri = closest_point_on_triangle(sphere_center, v0, v1, v2);
-                closest_on_axis = sphere_center;
-            } else {
-                // Capsule: find closest points between capsule segment and triangle
-                float min_dist_sq = float.max;
-
-                // Test capsule endpoints against triangle
-                Vec3 cp = closest_point_on_triangle(capsule_p0, v0, v1, v2);
-                float d = (capsule_p0 - cp).sq_magnitude();
-                if (d < min_dist_sq) { min_dist_sq = d; closest_on_axis = capsule_p0; closest_on_tri = cp; }
-
-                cp = closest_point_on_triangle(capsule_p1, v0, v1, v2);
-                d = (capsule_p1 - cp).sq_magnitude();
-                if (d < min_dist_sq) { min_dist_sq = d; closest_on_axis = capsule_p1; closest_on_tri = cp; }
-
-                // Test triangle vertices against capsule segment
-                Vec3 seg_pt = closest_point_on_segment(v0, capsule_p0, capsule_p1);
-                d = (seg_pt - v0).sq_magnitude();
-                if (d < min_dist_sq) { min_dist_sq = d; closest_on_axis = seg_pt; closest_on_tri = v0; }
-
-                seg_pt = closest_point_on_segment(v1, capsule_p0, capsule_p1);
-                d = (seg_pt - v1).sq_magnitude();
-                if (d < min_dist_sq) { min_dist_sq = d; closest_on_axis = seg_pt; closest_on_tri = v1; }
-
-                seg_pt = closest_point_on_segment(v2, capsule_p0, capsule_p1);
-                d = (seg_pt - v2).sq_magnitude();
-                if (d < min_dist_sq) { min_dist_sq = d; closest_on_axis = seg_pt; closest_on_tri = v2; }
-
-                // Test capsule segment against each triangle edge
-                Vec3 c1, c2;
-                closest_points_segments(capsule_p0, capsule_p1, v0, v1, &c1, &c2);
-                d = (c1 - c2).sq_magnitude();
-                if (d < min_dist_sq) { min_dist_sq = d; closest_on_axis = c1; closest_on_tri = c2; }
-
-                closest_points_segments(capsule_p0, capsule_p1, v1, v2, &c1, &c2);
-                d = (c1 - c2).sq_magnitude();
-                if (d < min_dist_sq) { min_dist_sq = d; closest_on_axis = c1; closest_on_tri = c2; }
-
-                closest_points_segments(capsule_p0, capsule_p1, v2, v0, &c1, &c2);
-                d = (c1 - c2).sq_magnitude();
-                if (d < min_dist_sq) { min_dist_sq = d; closest_on_axis = c1; closest_on_tri = c2; }
-            }
-
-            Vec3 diff = closest_on_axis - closest_on_tri;
-            float dist_sq = diff.sq_magnitude();
-
-            if (dist_sq >= world_radius * world_radius) continue;
-
-            float depth;
+            Vec3 tri_normal = (v1 - v0).cross(v2 - v0).normalize();
             Vec3 n;
-            if (dist_sq > 0.00001f * 0.00001f) {
-                float dist = math::sqrt(dist_sq);
-                n = diff / dist;  // Points from triangle toward shape
-                depth = world_radius - dist;
+            Vec3[2] contact;
+            float depth;
+            
+            bool hit = false;
+            if (use_sphere) {
+                hit = test_sphere_triangle_collision(sphere_center, world_radius, v0, v1, v2, tri_normal, &n, &contact, &depth);
             } else {
-                // Degenerate: shape axis is on triangle surface, use face normal
-                n = (v1 - v0).cross(v2 - v0).normalize();
-                depth = world_radius;
+                hit = test_capsule_triangle_collision(capsule_p0, capsule_p1, world_radius, v0, v1, v2, tri_normal, &n, &contact, &depth);
             }
-
-            if (depth > max_depth) {
+            
+            if (hit && depth > max_depth) {
                 max_depth = depth;
-                Vec3 shape_contact = closest_on_axis - n * world_radius;
                 if (mesh_is_a) {
                     best_normal = n;
-                    best_contact = { closest_on_tri, shape_contact };
+                    best_contact = contact;
                 } else {
                     best_normal = -n;
-                    best_contact = { shape_contact, closest_on_tri };
+                    best_contact = { contact[1], contact[0] };
                 }
             }
         } else {
@@ -1873,7 +1908,7 @@ fn Collision? PhysicsWorld.test_bvh_collision(&self, Rigidbody* body_a, Rigidbod
 
     if (max_depth > 0) {
         // Clamp depth to prevent extreme correction forces from BVH triangle collisions
-        float clamped_depth = math::min(max_depth, 1.0f);
+        float clamped_depth = math::min(max_depth, CLAMPED_DEPTH_MAX);
         return {
             .a = pair.a,
             .b = pair.b,
