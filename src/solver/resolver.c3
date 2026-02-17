@@ -154,6 +154,7 @@ struct Rigidbody {
     bool can_sleep;
     bool is_static;
     bool is_trigger;
+    bool is_kinematic;
     int impulse_dir;
 
     Aabb3 aabb;
@@ -293,8 +294,17 @@ fn void? PhysicsWorld.add_constraint(&self, GenericJoint3D joint) {
  @require body.collider.scale != {0,0,0} : `Body scale must not be 0`
 *>
 fn void? PhysicsWorld.add_body(&self, Rigidbody body) {
-    body.is_static = body.mass == 0;
-    body.inverse_mass = !body.is_static ? 1.0f / body.mass : 0;
+    if (body.is_kinematic) {
+        // Kinematic: externally driven, immovable for solver, always active
+        body.is_static = true;
+        body.inverse_mass = 0;
+        body.mass = 0;
+        body.can_sleep = false;
+    } else {
+        // Dynamic or static
+        body.is_static = body.mass == 0;
+        body.inverse_mass = !body.is_static ? 1.0f / body.mass : 0;
+    }
 
     body.impulse_dir = (self.gravity * body.gravity_factor).z > 0 ? 1 : -1;
 
@@ -338,6 +348,38 @@ fn void? PhysicsWorld.add_trigger(&self, Rigidbody body) {
 
     self.bodies.set(body.id, body);
     self.spatial_map.insert(body.transformed_aabb, body.id)!;
+}
+
+<*
+ Set the target position/rotation for a kinematic body. Must be called each frame
+ before run_step(). Computes velocity from the delta so dynamic bodies that collide
+ with this kinematic get correct restitution/friction responses.
+*>
+fn void PhysicsWorld.set_kinematic_target(&self, usz id, Vec3 position, QuaternionValue rotation) {
+    Rigidbody* body = self.find_body(id)!!;
+    if (!body.is_kinematic) return;
+
+    // Save previous state (for velocity derivation in constraint solver)
+    body.prev_position = body.collider.translation;
+    body.prev_rotation = body.collider.rotation;
+
+    // Set new transform
+    body.collider.translation = position;
+    body.collider.rotation = rotation;
+
+    // Derive velocity from delta (assumes called once per frame at physics rate)
+    // These velocities are used by restitution/friction in the constraint solver
+    float inv_dt = 60.0f; // Assume 60Hz physics; exact dt doesn't matter much for kinematic velocity
+    body.linear_velocity = (position - body.prev_position) * inv_dt;
+
+    QuaternionValue dq = rotation * body.prev_rotation.conjugate();
+    if (dq.l < 0) dq = -dq;
+    body.angular_velocity = dq.v.xyz * (2.0f * inv_dt);
+
+    // Update spatial hash
+    Aabb3 new_aabb = body.get_transformed_aabb();
+    self.spatial_map.update(body.transformed_aabb, new_aabb, body.id)!!;
+    body.transformed_aabb = new_aabb;
 }
 
 <*
@@ -1004,11 +1046,15 @@ fn void PhysicsWorld.run_substep(&self, float time, uint step_count) @local {
                 }
             } else {
                 // Regular collision pair
-                // Wake sleeping bodies (must be sequential due to island wake)
-                if (body_a.sleeping && body_b.is_active()) self.wake_island(body_a);
-                if (body_b.sleeping && body_a.is_active()) self.wake_island(body_b);
+                // Kinematic bodies are always "active" for broad phase (externally driven)
+                bool a_active = body_a.is_active() || body_a.is_kinematic;
+                bool b_active = body_b.is_active() || body_b.is_kinematic;
 
-                if (body_a.is_active() || body_b.is_active()) {
+                // Wake sleeping bodies (must be sequential due to island wake)
+                if (body_a.sleeping && b_active) self.wake_island(body_a);
+                if (body_b.sleeping && a_active) self.wake_island(body_b);
+
+                if (a_active || b_active) {
                     candidate_pairs.push(pair);
                 }
             }
