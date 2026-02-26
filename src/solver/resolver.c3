@@ -21,251 +21,268 @@ const float UNIFORM_SCALE_TOL @local = 0.001f;
 const float DEGENERATE_DIST_SQ @local = 0.00001f * 0.00001f;
 const float CLAMPED_DEPTH_MAX @local = 1.0f;
 
-alias CollisionFilter = HashMap{Pair, bool};
-alias RigidBodyMap = LinkedHashMap{usz, Rigidbody};
-alias RigidBodyIterator = LinkedHashMapValueIterator{usz, Rigidbody};
-alias UnionFindMap = HashMap{usz, usz};
-alias ConstraintList = List{XpbdConstraint*};
-alias WarmStartCache = HashMap{Pair, float};
+alias CollisionFilter = HashMap {Pair, bool};
+alias RigidBodyMap = LinkedHashMap {usz, Rigidbody};
+alias RigidBodyIterator = LinkedHashMapValueIterator {usz, Rigidbody};
+alias UnionFindMap = HashMap {usz, usz};
+alias ConstraintList = List {XpbdConstraint*};
+alias WarmStartCache = HashMap {Pair, float};
 
 
 // Task structure for parallel collision testing
-struct CollisionTask {
-    PhysicsWorld* world;
-    Pair pair;
-    Collision* result;       // Where to store result
-    bool has_collision;      // Flag if collision was found
+struct CollisionTask
+{
+	PhysicsWorld* world;
+	Pair pair;
+	Collision* result; // Where to store result
+	bool has_collision; // Flag if collision was found
 }
 
 // Task structure for parallel XPBD predict/derive
-struct XpbdPhaseTask {
-    PhysicsWorld* world;
-    Rigidbody** bodies;      // Array of body pointers to process
-    usz count;               // Number of bodies in this batch
-    float time;
+struct XpbdPhaseTask
+{
+	PhysicsWorld* world;
+	Rigidbody** bodies; // Array of body pointers to process
+	usz count; // Number of bodies in this batch
+	float time;
 }
 
 // Task structure for parallel soft body XPBD solving
-struct SoftBodySolveTask {
-    SoftBody* body;
-    PhysicsWorld* world;
-    Vec3 gravity;
-    float time;
-    float ground_z;
-    bool ground_enabled;
-    float ground_friction;
+struct SoftBodySolveTask
+{
+	SoftBody* body;
+	PhysicsWorld* world;
+	Vec3 gravity;
+	float time;
+	float ground_z;
+	bool ground_enabled;
+	float ground_friction;
 }
 
 // Task structure for island XPBD constraint solving
-struct IslandSolveTask {
-    PhysicsWorld* world;
-    XpbdConstraint** constraints; // Constraints for this island
-    usz count;               // Number of constraints
-    uint iterations;         // Solver iterations
+struct IslandSolveTask
+{
+	PhysicsWorld* world;
+	XpbdConstraint** constraints; // Constraints for this island
+	usz count; // Number of constraints
+	uint iterations; // Solver iterations
 }
 
-enum XpbdConstraintType : char {
-    CONTACT_NORMAL,
-    JOINT_POSITION,
-    JOINT_ANGULAR,
+enum XpbdConstraintType : char
+{
+	CONTACT_NORMAL,
+	JOINT_POSITION,
+	JOINT_ANGULAR,
 }
 
-struct XpbdConstraint {
-    Rigidbody* body_a;
-    Rigidbody* body_b;
-    Vec3 normal;          // Constraint direction
-    Vec3 r_a;             // Contact arm from body_a center (local space for joints, world-offset for contacts)
-    Vec3 r_b;             // Contact arm from body_b center
-    Vec3 r_a_local;       // Contact arm in body_a local space (for recomputing after position changes)
-    Vec3 r_b_local;       // Contact arm in body_b local space
-    float c_value;        // Constraint error (position-level)
-    float compliance;     // 0 = rigid, higher = softer
-    float lambda;         // Accumulated Lagrange multiplier
-    XpbdConstraintType type;
-    // Friction
-    float friction;
-    Vec3 tangent1;
-    Vec3 tangent2;
-    float lambda_tangent1;
-    float lambda_tangent2;
-    float lambda_normal;
-    // Restitution
-    float restitution;
-    float pre_solve_relative_vel_n; // Normal relative velocity before solve (for restitution)
-    // Angular joint data (for recomputing error each iteration)
-    QuaternionValue joint_orientation; // Rest orientation for angular constraints
+struct XpbdConstraint
+{
+	Rigidbody* body_a;
+	Rigidbody* body_b;
+	Vec3 normal; // Constraint direction
+	Vec3 r_a; // Contact arm from body_a center (local space for joints, world-offset for contacts)
+	Vec3 r_b; // Contact arm from body_b center
+	Vec3 r_a_local; // Contact arm in body_a local space (for recomputing after position changes)
+	Vec3 r_b_local; // Contact arm in body_b local space
+	float c_value; // Constraint error (position-level)
+	float compliance; // 0 = rigid, higher = softer
+	float lambda; // Accumulated Lagrange multiplier
+	XpbdConstraintType type;
+	// Friction
+	float friction;
+	Vec3 tangent1;
+	Vec3 tangent2;
+	float lambda_tangent1;
+	float lambda_tangent2;
+	float lambda_normal;
+	// Restitution
+	float restitution;
+	float pre_solve_relative_vel_n; // Normal relative velocity before solve (for restitution)
+	// Angular joint data (for recomputing error each iteration)
+	QuaternionValue joint_orientation; // Rest orientation for angular constraints
 }
 
-struct Collision {
-    usz a;
-    usz b;
-    Vec3 normal;
-    Vec3[2] contact;
-    float depth;
+struct Collision
+{
+	usz a;
+	usz b;
+	Vec3 normal;
+	Vec3[2] contact;
+	float depth;
 }
 
-enum TriggerEventType : char {
-    ENTER,
-    EXIT
+enum TriggerEventType : char
+{
+	ENTER,
+	EXIT
 }
 
-struct TriggerEvent {
-    usz trigger_id;
-    usz other_id;
-    TriggerEventType type;
+struct TriggerEvent
+{
+	usz trigger_id;
+	usz other_id;
+	TriggerEventType type;
 }
 
-enum ContactEventType : char {
-    START,   // First frame of contact
-    END      // Contact ended
+enum ContactEventType : char
+{
+	START, // First frame of contact
+	END // Contact ended
 }
 
-struct ContactEvent {
-    usz body_a;
-    usz body_b;
-    ContactEventType type;
-    Vec3 normal;        // Collision normal (only valid for START)
-    Vec3 contact_point; // Contact point (only valid for START)
+struct ContactEvent
+{
+	usz body_a;
+	usz body_b;
+	ContactEventType type;
+	Vec3 normal; // Collision normal (only valid for START)
+	Vec3 contact_point; // Contact point (only valid for START)
 }
 
-enum PhysicsCombine: inline uint {
-    AVERAGE,
-    MINIMUM,
-    MAXIMUM,
-    MULTIPLY
+enum PhysicsCombine : inline uint
+{
+	AVERAGE,
+	MINIMUM,
+	MAXIMUM,
+	MULTIPLY
 }
 
-struct Material {
-    float static_friction;
-    float dynamic_friction;
-    float restitution;
-    uint friction_combine;
-    uint restitution_combine;
+struct Material
+{
+	float static_friction;
+	float dynamic_friction;
+	float restitution;
+	uint friction_combine;
+	uint restitution_combine;
 }
 
-struct Rigidbody {
-    inline TransformedShape collider;
-    usz id;
-    usz island_id;
+struct Rigidbody
+{
+	inline TransformedShape collider;
+	usz id;
+	usz island_id;
 
-    float sleep_timer;
+	float sleep_timer;
 
-    bool sleeping;
-    bool can_sleep;
-    bool is_static;
-    bool is_trigger;
-    bool is_kinematic;
-    int impulse_dir;
+	bool sleeping;
+	bool can_sleep;
+	bool is_static;
+	bool is_trigger;
+	bool is_kinematic;
+	int impulse_dir;
 
-    Aabb3 aabb;
-    Aabb3 transformed_aabb;
-    Material material;
+	Aabb3 aabb;
+	Aabb3 transformed_aabb;
+	Material material;
 
-    // Motion
-    Vec3 linear_velocity;
-    Vec3 angular_velocity;
-    float mass;
-    float inverse_mass;
-    float gravity_factor;
-    float linear_dampening;
-    float angular_dampening;
+	// Motion
+	Vec3 linear_velocity;
+	Vec3 angular_velocity;
+	float mass;
+	float inverse_mass;
+	float gravity_factor;
+	float linear_dampening;
+	float angular_dampening;
 	float sleep_delta;
 
-    Vec3 mass_center;
-    Matrix3f inertia;
+	Vec3 mass_center;
+	Matrix3f inertia;
 
-    // XPBD: previous state for velocity derivation
-    Vec3 prev_position;
-    QuaternionValue prev_rotation;
+	// XPBD: previous state for velocity derivation
+	Vec3 prev_position;
+	QuaternionValue prev_rotation;
 }
 
-alias TriggerOverlapSet = HashMap{Pair, bool};
-alias ContactOverlapSet = HashMap{Pair, bool};
+alias TriggerOverlapSet = HashMap {Pair, bool};
+alias ContactOverlapSet = HashMap {Pair, bool};
 
-struct PhysicsWorld {
-    RigidBodyMap bodies;
-    List{Collision} collisions;
-    List{XpbdConstraint} constraints;
-    List{GenericJoint3D} joints;
-    SpatialHash3D spatial_map;
-    CollisionFilter filters;
-    UnionFindMap island_parent;
+struct PhysicsWorld
+{
+	RigidBodyMap bodies;
+	List {Collision} collisions;
+	List {XpbdConstraint} constraints;
+	List {GenericJoint3D} joints;
+	SpatialHash3D spatial_map;
+	CollisionFilter filters;
+	UnionFindMap island_parent;
 	bool islands_dirty;
 
-    // Trigger system
-    List{TriggerEvent} trigger_events;
-    TriggerOverlapSet active_triggers;  // Currently overlapping trigger pairs
+	// Trigger system
+	List {TriggerEvent} trigger_events;
+	TriggerOverlapSet active_triggers; // Currently overlapping trigger pairs
 
-    // Contact event system
-    List{ContactEvent} contact_events;
-    ContactOverlapSet active_contacts;  // Currently contacting body pairs
+	// Contact event system
+	List {ContactEvent} contact_events;
+	ContactOverlapSet active_contacts; // Currently contacting body pairs
 
-    // Soft body system (XPBD)
-    SoftBodyList soft_bodies;
-    float ground_plane_z;
-    bool ground_plane_enabled;
+	// Soft body system (XPBD)
+	SoftBodyList soft_bodies;
+	float ground_plane_z;
+	bool ground_plane_enabled;
 
-    Vec3 gravity;
-    float sleep_timer;
+	Vec3 gravity;
+	float sleep_timer;
 	float sleep_delta;
 	float angular_dampening;
 	float linear_dampening;
 
-    // Threading support
-    // Template param sets both queue size AND thread count
-    ThreadPool{NUM_WORKER_THREADS} thread_pool;
-    bool thread_pool_initialized;
+	// Threading support
+	// Template param sets both queue size AND thread count
+	ThreadPool {NUM_WORKER_THREADS} thread_pool;
+	bool thread_pool_initialized;
 
-    // Reusable task lists (avoid per-frame allocations)
-    List{CollisionTask} collision_tasks;
-    List{Collision} collision_results;
-    List{IslandSolveTask} island_tasks;
-    List{XpbdPhaseTask} phase_tasks;
-    List{Rigidbody*} active_bodies;
+	// Reusable task lists (avoid per-frame allocations)
+	List {CollisionTask} collision_tasks;
+	List {Collision} collision_results;
+	List {IslandSolveTask} island_tasks;
+	List {XpbdPhaseTask} phase_tasks;
+	List {Rigidbody*} active_bodies;
 
-    // Contact sorting cache (keep deepest N contacts per pair)
-    Collision[MAX_CONTACTS_PER_PAIR] contact_cache;
-    usz contact_cache_count;
+	// Contact sorting cache (keep deepest N contacts per pair)
+	Collision[MAX_CONTACTS_PER_PAIR] contact_cache;
+	usz contact_cache_count;
 
-    // Warm-start: cache contact lambdas from previous frame
-    WarmStartCache warm_start_cache;
-    WarmStartCache warm_start_prev;
+	// Warm-start: cache contact lambdas from previous frame
+	WarmStartCache warm_start_cache;
+	WarmStartCache warm_start_prev;
 }
 
-fn void PhysicsWorld.free(&self) {
-    if (self.thread_pool_initialized) {
-        self.thread_pool.stop_and_destroy()!!;
-    }
-    self.bodies.free();
-    self.collisions.free();
-    self.spatial_map.free();
-    self.constraints.free();
-    self.filters.free();
-    self.joints.free();
-    self.island_parent.free();
-    // Free reusable task lists
-    self.collision_tasks.free();
-    self.collision_results.free();
-    self.island_tasks.free();
-    self.phase_tasks.free();
-    self.active_bodies.free();
-    // Free trigger system
-    self.trigger_events.free();
-    self.active_triggers.free();
-    // Free contact event system
-    self.contact_events.free();
-    self.active_contacts.free();
-    // Free soft bodies
-    foreach (&sb : self.soft_bodies) sb.free();
-    self.soft_bodies.free();
-    // Free warm-start caches
-    self.warm_start_cache.free();
-    self.warm_start_prev.free();
+fn void PhysicsWorld.free(&self)
+{
+	if (self.thread_pool_initialized)
+	{
+		self.thread_pool.stop_and_destroy()!!;
+	}
+	self.bodies.free();
+	self.collisions.free();
+	self.spatial_map.free();
+	self.constraints.free();
+	self.filters.free();
+	self.joints.free();
+	self.island_parent.free();
+	// Free reusable task lists
+	self.collision_tasks.free();
+	self.collision_results.free();
+	self.island_tasks.free();
+	self.phase_tasks.free();
+	self.active_bodies.free();
+	// Free trigger system
+	self.trigger_events.free();
+	self.active_triggers.free();
+	// Free contact event system
+	self.contact_events.free();
+	self.active_contacts.free();
+	// Free soft bodies
+	foreach (&sb : self.soft_bodies) sb.free();
+	self.soft_bodies.free();
+	// Free warm-start caches
+	self.warm_start_cache.free();
+	self.warm_start_prev.free();
 }
 
 const PhysicsWorld DEFAULT_PHYSICS_WORLD = {
-	.gravity = {0.0f, 0.0f, -9.8f},
-	.spatial_map.cell_size = 2.0,
+	.gravity = { 0.0f, 0.0f, -9.8f },
+	.spatial_map .cell_size = 2.0,
 	.sleep_timer = 5.0,
 	.linear_dampening = 0.9,
 	.angular_dampening = 0.9,
@@ -277,77 +294,83 @@ const PhysicsWorld DEFAULT_PHYSICS_WORLD = {
 *>
 fn Rigidbody*? PhysicsWorld.find_body(self, usz id) => self.bodies.get_ref(id);
 
-fn void? PhysicsWorld.add_constraint(&self, GenericJoint3D joint) {
+fn void? PhysicsWorld.add_constraint(&self, GenericJoint3D joint)
+{
+	// Add collision filter for joints, so they won't collide with eachother
+	if (!joint.collides)
+	{
+		self.filters.set({ joint.body_a, joint.body_b }, true);
+	}
 
-    // Add collision filter for joints, so they won't collide with eachother
-    if (!joint.collides) {
-        self.filters.set({joint.body_a, joint.body_b}, true);
-    }
-
-    self.joints.push(joint);
-    self.islands_dirty = true;
+	self.joints.push(joint);
+	self.islands_dirty = true;
 }
 
 <*
  @require body.collider.shape != null : `Added rigid body must have collision shape`
- @require body.collider.rotation != (QuaternionValue){0,0,0,0} : `Body rotation must not be 0`
- @require body.collider.scale != {0,0,0} : `Body scale must not be 0`
+ @require body.collider.rotation != (QuaternionValue) { 0, 0, 0, 0 } : `Body rotation must not be 0`
+ @require body.collider.scale != { 0, 0, 0 } : `Body scale must not be 0`
 *>
-fn void? PhysicsWorld.add_body(&self, Rigidbody body) {
-    if (body.is_kinematic) {
-        // Kinematic: externally driven, immovable for solver, always active
-        body.is_static = true;
-        body.inverse_mass = 0;
-        body.mass = 0;
-        body.can_sleep = false;
-    } else {
-        // Dynamic or static
-        body.is_static = body.mass == 0;
-        body.inverse_mass = !body.is_static ? 1.0f / body.mass : 0;
-    }
+fn void? PhysicsWorld.add_body(&self, Rigidbody body)
+{
+	if (body.is_kinematic)
+	{
+		// Kinematic: externally driven, immovable for solver, always active
+		body.is_static = true;
+		body.inverse_mass = 0;
+		body.mass = 0;
+		body.can_sleep = false;
+	}
+	else
+	{
+		// Dynamic or static
+		body.is_static = body.mass == 0;
+		body.inverse_mass = !body.is_static ? 1.0f / body.mass : 0;
+	}
 
-    body.impulse_dir = (self.gravity * body.gravity_factor).z > 0 ? 1 : -1;
+	body.impulse_dir = (self.gravity * body.gravity_factor).z > 0 ? 1 : -1;
 
-    // Compute AABB from collider
-    body.aabb = body.collider.get_aabb();
+	// Compute AABB from collider
+	body.aabb = body.collider.get_aabb();
 	body.sleep_delta = self.sleep_delta;
 
-    body.transformed_aabb = body.get_transformed_aabb();
-    // Use AABB-based inertia - consistent for all shape types including mesh
-    if (!body.is_static && &body.collider.shape.inertia_tensor) body.inertia = body.aabb.inertia_tensor(body.mass).inverse()!!;
+	body.transformed_aabb = body.get_transformed_aabb();
+	// Use AABB-based inertia - consistent for all shape types including mesh
+	if (!body.is_static
+		&& &body.collider.shape.inertia_tensor) body.inertia = body.aabb.inertia_tensor(body.mass).inverse()!!;
 
-    // Default to world dampening if not specified per-body
-    if (body.linear_dampening == 0) body.linear_dampening = self.linear_dampening;
-    if (body.angular_dampening == 0) body.angular_dampening = self.angular_dampening;
+	// Default to world dampening if not specified per-body
+	if (body.linear_dampening == 0) body.linear_dampening = self.linear_dampening;
+	if (body.angular_dampening == 0) body.angular_dampening = self.angular_dampening;
 
-    // Initialize XPBD previous state so friction doesn't see phantom displacement
-    body.prev_position = body.collider.translation;
-    body.prev_rotation = body.collider.rotation;
+	// Initialize XPBD previous state so friction doesn't see phantom displacement
+	body.prev_position = body.collider.translation;
+	body.prev_rotation = body.collider.rotation;
 
-    self.bodies.set(body.id, body);
-    self.spatial_map.insert(body.transformed_aabb, body.id)!;
+	self.bodies.set(body.id, body);
+	self.spatial_map.insert(body.transformed_aabb, body.id)!;
 }
 
 <*
  Add a trigger body - detects overlaps but doesn't generate collision responses.
  Use @get_trigger_events() to iterate trigger events after run_step().
-
  @require body.collider.shape != null : `Trigger must have collision shape`
- @require body.collider.rotation != (QuaternionValue){0,0,0,0} : `Trigger rotation must not be 0`
- @require body.collider.scale != {0,0,0} : `Trigger scale must not be 0`
+ @require body.collider.rotation != (QuaternionValue) { 0, 0, 0, 0 } : `Trigger rotation must not be 0`
+ @require body.collider.scale != { 0, 0, 0 } : `Trigger scale must not be 0`
 *>
-fn void? PhysicsWorld.add_trigger(&self, Rigidbody body) {
-    body.is_trigger = true;
-    body.is_static = true;  // Triggers don't move from physics
-    body.inverse_mass = 0;
-    body.mass = 0;
+fn void? PhysicsWorld.add_trigger(&self, Rigidbody body)
+{
+	body.is_trigger = true;
+	body.is_static = true; // Triggers don't move from physics
+	body.inverse_mass = 0;
+	body.mass = 0;
 
-    // Compute AABB from collider
-    body.aabb = body.collider.get_aabb();
-    body.transformed_aabb = body.get_transformed_aabb();
+	// Compute AABB from collider
+	body.aabb = body.collider.get_aabb();
+	body.transformed_aabb = body.get_transformed_aabb();
 
-    self.bodies.set(body.id, body);
-    self.spatial_map.insert(body.transformed_aabb, body.id)!;
+	self.bodies.set(body.id, body);
+	self.spatial_map.insert(body.transformed_aabb, body.id)!;
 }
 
 <*
@@ -355,80 +378,90 @@ fn void? PhysicsWorld.add_trigger(&self, Rigidbody body) {
  before run_step(). Computes velocity from the delta so dynamic bodies that collide
  with this kinematic get correct restitution/friction responses.
 *>
-fn void PhysicsWorld.set_kinematic_target(&self, usz id, Vec3 position, QuaternionValue rotation) {
-    Rigidbody* body = self.find_body(id)!!;
-    if (!body.is_kinematic) return;
+fn void PhysicsWorld.set_kinematic_target(&self, usz id, Vec3 position, QuaternionValue rotation)
+{
+	Rigidbody* body = self.find_body(id)!!;
+	if (!body.is_kinematic) return;
 
-    // Save previous state (for velocity derivation in constraint solver)
-    body.prev_position = body.collider.translation;
-    body.prev_rotation = body.collider.rotation;
+	// Save previous state (for velocity derivation in constraint solver)
+	body.prev_position = body.collider.translation;
+	body.prev_rotation = body.collider.rotation;
 
-    // Set new transform
-    body.collider.translation = position;
-    body.collider.rotation = rotation;
+	// Set new transform
+	body.collider.translation = position;
+	body.collider.rotation = rotation;
 
-    // Derive velocity from delta (assumes called once per frame at physics rate)
-    // These velocities are used by restitution/friction in the constraint solver
-    float inv_dt = 60.0f; // Assume 60Hz physics; exact dt doesn't matter much for kinematic velocity
-    body.linear_velocity = (position - body.prev_position) * inv_dt;
+	// Derive velocity from delta (assumes called once per frame at physics rate)
+	// These velocities are used by restitution/friction in the constraint solver
+	float inv_dt = 60.0f; // Assume 60Hz physics; exact dt doesn't matter much for kinematic velocity
+	body.linear_velocity = (position - body.prev_position) * inv_dt;
 
-    QuaternionValue dq = rotation * body.prev_rotation.conjugate();
-    if (dq.l < 0) dq = -dq;
-    body.angular_velocity = dq.v.xyz * (2.0f * inv_dt);
+	QuaternionValue dq = rotation * body.prev_rotation.conjugate();
+	if (dq.l < 0) dq = -dq;
+	body.angular_velocity = dq.v.xyz * (2.0f * inv_dt);
 
-    // Update spatial hash
-    Aabb3 new_aabb = body.get_transformed_aabb();
-    self.spatial_map.update(body.transformed_aabb, new_aabb, body.id)!!;
-    body.transformed_aabb = new_aabb;
+	// Update spatial hash
+	Aabb3 new_aabb = body.get_transformed_aabb();
+	self.spatial_map.update(body.transformed_aabb, new_aabb, body.id)!!;
+	body.transformed_aabb = new_aabb;
 }
 
 <*
  Add a soft body to the physics world.
  The soft body uses XPBD position-based dynamics, separate from rigidbody solver.
 *>
-fn void PhysicsWorld.add_softbody(&self, SoftBody sb) {
-    self.soft_bodies.push(sb);
+fn void PhysicsWorld.add_softbody(&self, SoftBody sb)
+{
+	self.soft_bodies.push(sb);
 }
 
 <*
  Remove a soft body by ID.
 *>
-fn void PhysicsWorld.remove_softbody(&self, usz id) {
-    for (usz i = 0; i < self.soft_bodies.len(); i++) {
-        if (self.soft_bodies[i].id == id) {
-            self.soft_bodies[i].free();
-            self.soft_bodies.remove_at(i);
-            return;
-        }
-    }
+fn void PhysicsWorld.remove_softbody(&self, usz id)
+{
+	for (usz i = 0; i < self.soft_bodies.len(); i++)
+	{
+		if (self.soft_bodies[i].id == id)
+		{
+			self.soft_bodies[i].free();
+			self.soft_bodies.remove_at(i);
+			return;
+		}
+	}
 }
 
 <*
  Find a soft body by ID.
 *>
-fn SoftBody*? PhysicsWorld.find_softbody(&self, usz id) {
-    foreach (&sb : self.soft_bodies) {
-        if (sb.id == id) return sb;
-    }
-    return NOT_FOUND~;
+fn SoftBody*? PhysicsWorld.find_softbody(&self, usz id)
+{
+	foreach (&sb : self.soft_bodies)
+	{
+		if (sb.id == id) return sb;
+	}
+	return NOT_FOUND~;
 }
 
 <*
  Enable ground plane collision for soft bodies.
 *>
-fn void PhysicsWorld.enable_ground_plane(&self, float z = 0) {
-    self.ground_plane_enabled = true;
-    self.ground_plane_z = z;
+fn void PhysicsWorld.enable_ground_plane(&self, float z = 0)
+{
+	self.ground_plane_enabled = true;
+	self.ground_plane_z = z;
 }
 
 <*
  Iterate trigger events generated during the last run_step().
  Events include ENTER (overlap started) and EXIT (overlap ended).
 *>
-macro void PhysicsWorld.@get_trigger_events(&self; @callback(TriggerEvent event)) {
-    foreach (event : self.trigger_events) {
-        @callback(event);
-    }
+macro void PhysicsWorld.@get_trigger_events(&self; @callback(TriggerEvent event))
+{
+	foreach (event : self.trigger_events)
+	{
+		@callback(event);
+	}
 }
 
 <*
@@ -436,31 +469,41 @@ macro void PhysicsWorld.@get_trigger_events(&self; @callback(TriggerEvent event)
  Events include START (first frame of contact) and END (contact ended).
  Unlike triggers, contacts also generate physics responses (impulses).
 *>
-macro void PhysicsWorld.@get_contact_events(&self; @callback(ContactEvent event)) {
-    foreach (event : self.contact_events) {
-        @callback(event);
-    }
+macro void PhysicsWorld.@get_contact_events(&self; @callback(ContactEvent event))
+{
+	foreach (event : self.contact_events)
+	{
+		@callback(event);
+	}
 }
 
-fn Aabb3 Rigidbody.get_transformed_aabb(&self) {
-    return self.aabb.transform(translation: self.collider.translation, scale: self.collider.scale, rotation: self.collider.rotation);
+fn Aabb3 Rigidbody.get_transformed_aabb(&self)
+{
+	return self.aabb.transform(
+		translation: self.collider.translation,
+		scale: self.collider.scale,
+		rotation: self.collider.rotation
+	);
 }
 
-fn Matrix3f Rigidbody.get_inverse_world_inertia(self) {
-    if (self.is_static) return MATRIX3F_IDENTITY;
-    return self.collider.world_inertia_from_local(self.inertia);
+fn Matrix3f Rigidbody.get_inverse_world_inertia(self)
+{
+	if (self.is_static) return MATRIX3F_IDENTITY;
+	return self.collider.world_inertia_from_local(self.inertia);
 }
 
 fn void Rigidbody.apply_linear_impulse(&self, Vec3 impulse) => self.linear_velocity += impulse * self.inverse_mass;
 
-fn void Rigidbody.apply_angular_impulse(&self, Vec3 impulse) {
-    Matrix3f inertia = self.get_inverse_world_inertia();
-    self.angular_velocity += inertia * impulse;
+fn void Rigidbody.apply_angular_impulse(&self, Vec3 impulse)
+{
+	Matrix3f inertia = self.get_inverse_world_inertia();
+	self.angular_velocity += inertia * impulse;
 }
 
-fn void Rigidbody.apply_impulse(&self, Vec3 impulse, Vec3 point) {
-    self.linear_velocity += impulse * self.inverse_mass;
-    self.apply_angular_impulse(point.cross(impulse));
+fn void Rigidbody.apply_impulse(&self, Vec3 impulse, Vec3 point)
+{
+	self.linear_velocity += impulse * self.inverse_mass;
+	self.apply_angular_impulse(point.cross(impulse));
 }
 
 fn Vec3 Rigidbody.relative_velocity(self, Vec3 point) => self.linear_velocity + self.angular_velocity.cross(point);
@@ -468,1501 +511,1786 @@ fn Vec3 Rigidbody.relative_velocity(self, Vec3 point) => self.linear_velocity + 
 fn bool Rigidbody.is_rotating(self) => self.angular_velocity.sq_magnitude() > self.sleep_delta;
 fn bool Rigidbody.is_moving(self) => self.linear_velocity.sq_magnitude() > self.sleep_delta;
 fn bool Rigidbody.is_sleeping(self) => self.sleeping;
-fn void Rigidbody.stop_sleeping(&self) {
-    self.sleeping = false;
-    self.sleep_timer = 0;
+fn void Rigidbody.stop_sleeping(&self)
+{
+	self.sleeping = false;
+	self.sleep_timer = 0;
 }
 fn bool Rigidbody.is_active(self) => self.sleeping == false && self.is_static == false;
 
 // XPBD generalized inverse mass: w = 1/m + (r×n)^T · I^{-1} · (r×n)
-fn float compute_generalized_inverse_mass(Rigidbody* body, Vec3 r, Vec3 n) {
-    if (body.is_static) return 0;
-    float w = body.inverse_mass;
-    Vec3 rn = r.cross(n);
-    Vec3 inertia_term = body.get_inverse_world_inertia() * rn;
-    w += inertia_term.dot(rn);
-    return w;
+fn float compute_generalized_inverse_mass(Rigidbody* body, Vec3 r, Vec3 n)
+{
+	if (body.is_static) return 0;
+	float w = body.inverse_mass;
+	Vec3 rn = r.cross(n);
+	Vec3 inertia_term = body.get_inverse_world_inertia() * rn;
+	w += inertia_term.dot(rn);
+	return w;
 }
 
 // Apply angular rotation from axis-angle correction vector
-fn void apply_angular_rotation(Rigidbody* body, Vec3 correction) @local {
-    float angle = correction.length();
-    if (angle <= EPSILON) return;
-    body.collider.rotation = (quaternion::from_axis_angle(correction, angle) * body.collider.rotation).normalize();
+fn void apply_angular_rotation(Rigidbody* body, Vec3 correction) @local
+{
+	float angle = correction.length();
+	if (angle <= EPSILON) return;
+	body.collider.rotation = (quaternion::from_axis_angle(correction, angle) * body.collider.rotation).normalize();
 }
 
 // XPBD positional correction: apply delta_lambda along direction n at contact arm r
-fn void apply_positional_correction(Rigidbody* body, Vec3 n, Vec3 r, float delta_lambda) {
-    if (body.is_static) return;
-    body.collider.translation += n * (body.inverse_mass * delta_lambda);
-    apply_angular_rotation(body, body.get_inverse_world_inertia() * r.cross(n) * delta_lambda);
+fn void apply_positional_correction(Rigidbody* body, Vec3 n, Vec3 r, float delta_lambda)
+{
+	if (body.is_static) return;
+	body.collider.translation += n * (body.inverse_mass * delta_lambda);
+	apply_angular_rotation(body, body.get_inverse_world_inertia() * r.cross(n) * delta_lambda);
 }
 
 // Solve friction along a single tangent direction
-fn void solve_tangent_friction(Rigidbody* a, Rigidbody* b, XpbdConstraint* c,
-                               Vec3 tangent, float* lambda_t, float displacement, float max_friction) @local {
-    if (math::abs(displacement) <= EPSILON) return;
-    float w = compute_generalized_inverse_mass(a, c.r_a, tangent)
-            + compute_generalized_inverse_mass(b, c.r_b, tangent);
-    if (w <= WEIGHT_EPSILON) return;
-    float dl = -displacement / w;
-    float new_l = math::clamp(*lambda_t + dl, -max_friction, max_friction);
-    dl = new_l - *lambda_t;
-    *lambda_t = new_l;
-    apply_positional_correction(a, tangent, c.r_a, dl);
-    apply_positional_correction(b, -tangent, c.r_b, dl);
+fn void solve_tangent_friction(
+	Rigidbody* a,
+	Rigidbody* b,
+	XpbdConstraint* c,
+	Vec3 tangent,
+	float* lambda_t,
+	float displacement,
+	float max_friction
+) @local
+{
+	if (math::abs(displacement) <= EPSILON) return;
+	float w = compute_generalized_inverse_mass(a, c.r_a, tangent) + compute_generalized_inverse_mass(b, c.r_b, tangent);
+	if (w <= WEIGHT_EPSILON) return;
+	float dl = -displacement / w;
+	float new_l = math::clamp(*lambda_t + dl, -max_friction, max_friction);
+	dl = new_l - *lambda_t;
+	*lambda_t = new_l;
+	apply_positional_correction(a, tangent, c.r_a, dl);
+	apply_positional_correction(b, -tangent, c.r_b, dl);
 }
 
 // Union-Find: find root with path compression
-fn usz PhysicsWorld.island_find(&self, usz id) {
-    if (!self.island_parent.has_key(id)) {
-        self.island_parent.set(id, id);
-        return id;
-    }
+fn usz PhysicsWorld.island_find(&self, usz id)
+{
+	if (!self.island_parent.has_key(id))
+	{
+		self.island_parent.set(id, id);
+		return id;
+	}
 
-    usz parent = self.island_parent.get(id)!!;
-    if (parent != id) {
-        // Path compression: point directly to root
-        usz root = self.island_find(parent);
-        self.island_parent.set(id, root);
-        return root;
-    }
-    return id;
+	usz parent = self.island_parent.get(id)!!;
+	if (parent != id)
+	{
+		// Path compression: point directly to root
+		usz root = self.island_find(parent);
+		self.island_parent.set(id, root);
+		return root;
+	}
+	return id;
 }
 
 // Union-Find: merge two bodies into same island
-fn void PhysicsWorld.island_union(&self, usz a, usz b) {
-    usz root_a = self.island_find(a);
-    usz root_b = self.island_find(b);
+fn void PhysicsWorld.island_union(&self, usz a, usz b)
+{
+	usz root_a = self.island_find(a);
+	usz root_b = self.island_find(b);
 
-    if (root_a != root_b) {
-        // Use smaller id as root for consistency
-        if (root_a < root_b) {
-            self.island_parent.set(root_b, root_a);
-        } else {
-            self.island_parent.set(root_a, root_b);
-        }
-    }
+	if (root_a != root_b)
+	{
+		// Use smaller id as root for consistency
+		if (root_a < root_b)
+		{
+			self.island_parent.set(root_b, root_a);
+		}
+		else
+		{
+			self.island_parent.set(root_a, root_b);
+		}
+	}
 }
 
 // Compute islands from joints - call when islands_dirty is true
-fn void PhysicsWorld.compute_islands(&self) {
-    if (!self.islands_dirty) return;
+fn void PhysicsWorld.compute_islands(&self)
+{
+	if (!self.islands_dirty) return;
 
-    // Reset parent map
-    self.island_parent.clear();
+	// Reset parent map
+	self.island_parent.clear();
 
-    // Each body starts as its own island
-    RigidBodyIterator iter = self.bodies.value_iter();
-    while (iter.next()) {
-        Rigidbody* body = iter.get()!!;
-        self.island_parent.set(body.id, body.id);
-    }
+	// Each body starts as its own island
+	RigidBodyIterator iter = self.bodies.value_iter();
+	while (iter.next())
+	{
+		Rigidbody* body = iter.get()!!;
+		self.island_parent.set(body.id, body.id);
+	}
 
-    // Union bodies connected by joints
-    foreach (&joint: self.joints) {
-        // Only union non-static bodies
-        Rigidbody*? a = self.find_body(joint.body_a);
-        Rigidbody*? b = self.find_body(joint.body_b);
+	// Union bodies connected by joints
+	foreach (&joint : self.joints)
+	{
+		// Only union non-static bodies
+		Rigidbody*? a = self.find_body(joint.body_a);
+		Rigidbody*? b = self.find_body(joint.body_b);
 
-        if (try body_a = a) {
-            if (try body_b = b) {
-                if (!body_a.is_static && !body_b.is_static) {
-                    self.island_union(joint.body_a, joint.body_b);
-                }
-            }
-        }
-    }
+		if (try body_a = a)
+		{
+			if (try body_b = b)
+			{
+				if (!body_a.is_static && !body_b.is_static)
+				{
+					self.island_union(joint.body_a, joint.body_b);
+				}
+			}
+		}
+	}
 
-    // Assign island_id to each body
-    RigidBodyIterator assign_iter = self.bodies.value_iter();
-    while (assign_iter.next()) {
-        Rigidbody* body = assign_iter.get()!!;
-        body.island_id = self.island_find(body.id);
-    }
+	// Assign island_id to each body
+	RigidBodyIterator assign_iter = self.bodies.value_iter();
+	while (assign_iter.next())
+	{
+		Rigidbody* body = assign_iter.get()!!;
+		body.island_id = self.island_find(body.id);
+	}
 
-    self.islands_dirty = false;
+	self.islands_dirty = false;
 }
 
 // Wake all bodies in the same island - O(n) where n is total bodies
-fn void PhysicsWorld.wake_island(&self, Rigidbody* body) {
-    if (!body.sleeping) return;
+fn void PhysicsWorld.wake_island(&self, Rigidbody* body)
+{
+	if (!body.sleeping) return;
 
-    usz target_island = body.island_id;
+	usz target_island = body.island_id;
 
-    RigidBodyIterator iter = self.bodies.value_iter();
-    while (iter.next()) {
-        Rigidbody* other = iter.get()!!;
-        if (other.island_id == target_island && other.sleeping) {
-            other.stop_sleeping();
-        }
-    }
+	RigidBodyIterator iter = self.bodies.value_iter();
+	while (iter.next())
+	{
+		Rigidbody* other = iter.get()!!;
+		if (other.island_id == target_island && other.sleeping)
+		{
+			other.stop_sleeping();
+		}
+	}
 }
 
 
-fn bool Rigidbody.has_mesh_bvh(&self) {
-    if (self.collider.get_type() == ShapeType.CONVEX) {
-        Mesh* mesh = (Mesh*)self.collider.shape;
-        return mesh.has_bvh();
-    }
-    return false;
+fn bool Rigidbody.has_mesh_bvh(&self)
+{
+	if (self.collider.get_type() == ShapeType.CONVEX)
+	{
+		Mesh* mesh = (Mesh*)self.collider.shape;
+		return mesh.has_bvh();
+	}
+	return false;
 }
 
-fn bool Rigidbody.has_compound(&self) {
-    return self.collider.get_type() == ShapeType.COMPOUND;
+fn bool Rigidbody.has_compound(&self)
+{
+	return self.collider.get_type() == ShapeType.COMPOUND;
 }
 
 // Worker function for parallel collision testing
-fn int collision_test_worker(void* arg) @local {
-    CollisionTask* task = (CollisionTask*)arg;
-    PhysicsWorld* world = task.world;
+fn int collision_test_worker(void* arg) @local
+{
+	CollisionTask* task = (CollisionTask*)arg;
+	PhysicsWorld* world = task.world;
 
-    Rigidbody* body_a = world.find_body(task.pair.a)!!;
-    Rigidbody* body_b = world.find_body(task.pair.b)!!;
+	Rigidbody* body_a = world.find_body(task.pair.a)!!;
+	Rigidbody* body_b = world.find_body(task.pair.b)!!;
 
-    CollisionInfo info = collision::check_convex_collision(&body_a.collider, &body_b.collider, epa:true);
+	CollisionInfo info = collision::check_convex_collision(&body_a.collider, &body_b.collider, epa: true);
 
-    if (info.collided) {
-        *task.result = {
-            .a = task.pair.a,
-            .b = task.pair.b,
-            .normal = info.normal,
-            .contact = info.contact_points,
-            .depth = info.depth,
-        };
-        task.has_collision = true;
-    }
-    return 0;
+	if (info.collided)
+	{
+		*task.result = {
+			.a = task.pair.a,
+			.b = task.pair.b,
+			.normal = info.normal,
+			.contact = info.contact_points,
+			.depth = info.depth,
+		};
+		task.has_collision = true;
+	}
+	return 0;
 }
 
 // Worker function for parallel BVH collision testing
-fn int bvh_collision_test_worker(void* arg) @local {
-    CollisionTask* task = (CollisionTask*)arg;
-    PhysicsWorld* world = task.world;
+fn int bvh_collision_test_worker(void* arg) @local
+{
+	CollisionTask* task = (CollisionTask*)arg;
+	PhysicsWorld* world = task.world;
 
-    Rigidbody* body_a = world.find_body(task.pair.a)!!;
-    Rigidbody* body_b = world.find_body(task.pair.b)!!;
+	Rigidbody* body_a = world.find_body(task.pair.a)!!;
+	Rigidbody* body_b = world.find_body(task.pair.b)!!;
 
-    Collision? collision = world.test_bvh_collision(body_a, body_b, task.pair);
-    if (try c = collision) {
-        *task.result = c;
-        task.has_collision = true;
-    }
-    return 0;
+	Collision? collision = world.test_bvh_collision(body_a, body_b, task.pair);
+	if (try c = collision)
+	{
+		*task.result = c;
+		task.has_collision = true;
+	}
+	return 0;
 }
 
 // Worker function for parallel XPBD predict phase
-fn int predict_worker(void* arg) @local {
-    XpbdPhaseTask* task = (XpbdPhaseTask*)arg;
-    PhysicsWorld* world = task.world;
-    float dt = task.time;
+fn int predict_worker(void* arg) @local
+{
+	XpbdPhaseTask* task = (XpbdPhaseTask*)arg;
+	PhysicsWorld* world = task.world;
+	float dt = task.time;
 
-    for (usz i = 0; i < task.count; i++) {
-        Rigidbody* body = task.bodies[i];
+	for (usz i = 0; i < task.count; i++)
+	{
+		Rigidbody* body = task.bodies[i];
 
-        // Save previous state
-        body.prev_position = body.collider.translation;
-        body.prev_rotation = body.collider.rotation;
+		// Save previous state
+		body.prev_position = body.collider.translation;
+		body.prev_rotation = body.collider.rotation;
 
-        // Apply gravity to velocity
-        body.linear_velocity += world.gravity * body.gravity_factor * dt;
+		// Apply gravity to velocity
+		body.linear_velocity += world.gravity * body.gravity_factor * dt;
 
-        // Advance position using current velocity
-        body.collider.translation += body.linear_velocity * dt;
+		// Advance position using current velocity
+		body.collider.translation += body.linear_velocity * dt;
 
-        // Advance rotation using angular velocity
-        Vec3 axis = body.angular_velocity * (dt * 0.5f);
-        if (axis != {0,0,0}) {
-            body.collider.rotation = (body.collider.rotation + (QuaternionValue){...axis, 0} * body.collider.rotation).normalize();
-        }
-    }
-    return 0;
+		// Advance rotation using angular velocity
+		Vec3 axis = body.angular_velocity * (dt * 0.5f);
+		if (axis != { 0, 0, 0 })
+		{
+			body.collider.rotation = (body.collider.rotation
+				+ (QuaternionValue) { ... axis, 0 } * body.collider.rotation).normalize();
+		}
+	}
+	return 0;
 }
 
 // Worker function for parallel XPBD derive phase
-fn int derive_worker(void* arg) @local {
-    XpbdPhaseTask* task = (XpbdPhaseTask*)arg;
-    PhysicsWorld* world = task.world;
-    float dt = task.time;
-    float inv_dt = 1.0f / dt;
+fn int derive_worker(void* arg) @local
+{
+	XpbdPhaseTask* task = (XpbdPhaseTask*)arg;
+	PhysicsWorld* world = task.world;
+	float dt = task.time;
+	float inv_dt = 1.0f / dt;
 
-    for (usz i = 0; i < task.count; i++) {
-        Rigidbody* body = task.bodies[i];
+	for (usz i = 0; i < task.count; i++)
+	{
+		Rigidbody* body = task.bodies[i];
 
-        // Derive linear velocity from position change
-        body.linear_velocity = (body.collider.translation - body.prev_position) * inv_dt;
+		// Derive linear velocity from position change
+		body.linear_velocity = (body.collider.translation - body.prev_position) * inv_dt;
 
-        // Derive angular velocity: omega = 2 * (q * q_prev_conjugate).xyz / dt
-        QuaternionValue dq = body.collider.rotation * body.prev_rotation.conjugate();
-        // Ensure shortest path
-        if (dq.l < 0) dq = -dq;
-        body.angular_velocity = dq.v.xyz * (2.0f * inv_dt);
+		// Derive angular velocity: omega = 2 * (q * q_prev_conjugate).xyz / dt
+		QuaternionValue dq = body.collider.rotation * body.prev_rotation.conjugate();
+		// Ensure shortest path
+		if (dq.l < 0) dq = -dq;
+		body.angular_velocity = dq.v.xyz * (2.0f * inv_dt);
 
-        // Apply per-body dampening
-        body.angular_velocity *= math::pow(body.angular_dampening, dt);
-        body.linear_velocity *= math::pow(body.linear_dampening, dt);
-    }
-    return 0;
+		// Apply per-body dampening
+		body.angular_velocity *= math::pow(body.angular_dampening, dt);
+		body.linear_velocity *= math::pow(body.linear_dampening, dt);
+	}
+	return 0;
 }
 
 // Worker function for island-parallel XPBD constraint solving
-fn int island_solve_worker(void* arg) @local {
-    IslandSolveTask* task = (IslandSolveTask*)arg;
+fn int island_solve_worker(void* arg) @local
+{
+	IslandSolveTask* task = (IslandSolveTask*)arg;
 
-    for (uint iter = 0; iter < task.iterations; iter++) {
-        for (usz i = 0; i < task.count; i++) {
-            solve_xpbd_constraint(task.constraints[i], task.world, iter, task.iterations);
-        }
-    }
-    return 0;
+	for (uint iter = 0; iter < task.iterations; iter++)
+	{
+		for (usz i = 0; i < task.count; i++)
+		{
+			solve_xpbd_constraint(task.constraints[i], task.world, iter, task.iterations);
+		}
+	}
+	return 0;
 }
 
 // XPBD constraint solver — position-level corrections
-fn void solve_xpbd_constraint(XpbdConstraint* c, PhysicsWorld* world, uint iteration, uint total_iterations) @local {
-    Rigidbody* a = c.body_a;
-    Rigidbody* b = c.body_b;
+fn void solve_xpbd_constraint(XpbdConstraint* c, PhysicsWorld* world, uint iteration, uint total_iterations) @local
+{
+	Rigidbody* a = c.body_a;
+	Rigidbody* b = c.body_b;
 
-    switch (c.type) {
-        case CONTACT_NORMAL:
-            // Recompute contact arms in world space from local-space arms
-            Vec3 cur_r_a = a.collider.rotation * c.r_a_local;
-            Vec3 cur_r_b = b.collider.rotation * c.r_b_local;
+	switch (c.type)
+	{
+		case CONTACT_NORMAL:
+			// Recompute contact arms in world space from local-space arms
+			Vec3 cur_r_a = a.collider.rotation * c.r_a_local;
+			Vec3 cur_r_b = b.collider.rotation * c.r_b_local;
 
-            // Current contact points in world space
-            Vec3 pa = a.collider.translation + cur_r_a;
-            Vec3 pb = b.collider.translation + cur_r_b;
+			// Current contact points in world space
+			Vec3 pa = a.collider.translation + cur_r_a;
+			Vec3 pb = b.collider.translation + cur_r_b;
 
-            // Separation along normal: positive = separated, negative = penetrating
-            float separation = (pb - pa).dot(c.normal);
-            float penetration = c.c_value - separation;
+			// Separation along normal: positive = separated, negative = penetrating
+			float separation = (pb - pa).dot(c.normal);
+			float penetration = c.c_value - separation;
 
-            if (penetration <= 0) return; // Not penetrating, skip
+			if (penetration <= 0) return; // Not penetrating, skip
 
-            // Update r_a/r_b for positional correction
-            c.r_a = cur_r_a;
-            c.r_b = cur_r_b;
+			// Update r_a/r_b for positional correction
+			c.r_a = cur_r_a;
+			c.r_b = cur_r_b;
 
-            float w_a = compute_generalized_inverse_mass(a, c.r_a, c.normal);
-            float w_b = compute_generalized_inverse_mass(b, c.r_b, c.normal);
-            float w_sum = w_a + w_b;
-            if (w_sum < WEIGHT_EPSILON) return;
+			float w_a = compute_generalized_inverse_mass(a, c.r_a, c.normal);
+			float w_b = compute_generalized_inverse_mass(b, c.r_b, c.normal);
+			float w_sum = w_a + w_b;
+			if (w_sum < WEIGHT_EPSILON) return;
 
-            float alpha = c.compliance;
-            // XPBD: C = -penetration (non-penetration constraint: C >= 0)
-            // delta_lambda = -(-pen + alpha * lambda) / (w + alpha) = (pen - alpha*lambda) / (w+alpha)
-            float delta_lambda = (penetration - alpha * c.lambda) / (w_sum + alpha);
+			float alpha = c.compliance;
+			// XPBD: C = -penetration (non-penetration constraint: C >= 0)
+			// delta_lambda = -(-pen + alpha * lambda) / (w + alpha) = (pen - alpha*lambda) / (w+alpha)
+			float delta_lambda = (penetration - alpha * c.lambda) / (w_sum + alpha);
 
-            // Clamp: lambda must be >= 0 (contact can only push, not pull)
-            float new_lambda = c.lambda + delta_lambda;
-            if (new_lambda < 0) {
-                delta_lambda = -c.lambda;
-                new_lambda = 0;
-            }
-            c.lambda = new_lambda;
-            c.lambda_normal = new_lambda;
+			// Clamp: lambda must be >= 0 (contact can only push, not pull)
+			float new_lambda = c.lambda + delta_lambda;
+			if (new_lambda < 0)
+			{
+				delta_lambda = -c.lambda;
+				new_lambda = 0;
+			}
+			c.lambda = new_lambda;
+			c.lambda_normal = new_lambda;
 
-            // Apply positional corrections: push a along -normal, push b along +normal
-            apply_positional_correction(a, -c.normal, c.r_a, delta_lambda);
-            apply_positional_correction(b, c.normal, c.r_b, delta_lambda);
+			// Apply positional corrections: push a along -normal, push b along +normal
+			apply_positional_correction(a, -c.normal, c.r_a, delta_lambda);
+			apply_positional_correction(b, c.normal, c.r_b, delta_lambda);
 
-            // Friction: tangential position correction
-            if (c.friction > 0 && math::abs(c.lambda_normal) > EPSILON) {
-                Vec3 prev_r_a = a.prev_rotation * c.r_a_local;
-                Vec3 prev_r_b = b.prev_rotation * c.r_b_local;
-                Vec3 disp_a = (a.collider.translation + cur_r_a) - (a.prev_position + prev_r_a);
-                Vec3 disp_b = (b.collider.translation + cur_r_b) - (b.prev_position + prev_r_b);
-                Vec3 rel_disp = disp_a - disp_b;
-                float max_friction = c.friction * math::abs(c.lambda_normal);
+			// Friction: tangential position correction
+			if (c.friction > 0 && math::abs(c.lambda_normal) > EPSILON)
+			{
+				Vec3 prev_r_a = a.prev_rotation * c.r_a_local;
+				Vec3 prev_r_b = b.prev_rotation * c.r_b_local;
+				Vec3 disp_a = (a.collider.translation + cur_r_a) - (a.prev_position + prev_r_a);
+				Vec3 disp_b = (b.collider.translation + cur_r_b) - (b.prev_position + prev_r_b);
+				Vec3 rel_disp = disp_a - disp_b;
+				float max_friction = c.friction * math::abs(c.lambda_normal);
 
-                solve_tangent_friction(a, b, c, c.tangent1, &c.lambda_tangent1, rel_disp.dot(c.tangent1), max_friction);
-                solve_tangent_friction(a, b, c, c.tangent2, &c.lambda_tangent2, rel_disp.dot(c.tangent2), max_friction);
-            }
+				solve_tangent_friction(a, b, c, c.tangent1, &c.lambda_tangent1, rel_disp.dot(c.tangent1), max_friction);
+				solve_tangent_friction(a, b, c, c.tangent2, &c.lambda_tangent2, rel_disp.dot(c.tangent2), max_friction);
+			}
 
-        case JOINT_POSITION:
-            // Recompute anchor arms in world space (r_a/r_b store local-space anchors for joints)
-            Vec3 joint_r_a = a.collider.rotation * c.r_a;
-            Vec3 joint_r_b = b.collider.rotation * c.r_b;
+		case JOINT_POSITION:
+			// Recompute anchor arms in world space (r_a/r_b store local-space anchors for joints)
+			Vec3 joint_r_a = a.collider.rotation * c.r_a;
+			Vec3 joint_r_b = b.collider.rotation * c.r_b;
 
-            Vec3 world_a = a.collider.translation + joint_r_a;
-            Vec3 world_b = b.collider.translation + joint_r_b;
-            float pos_error = (world_b - world_a).dot(c.normal);
+			Vec3 world_a = a.collider.translation + joint_r_a;
+			Vec3 world_b = b.collider.translation + joint_r_b;
+			float pos_error = (world_b - world_a).dot(c.normal);
 
-            float joint_weight_a = compute_generalized_inverse_mass(a, joint_r_a, c.normal);
-            float joint_weight_b = compute_generalized_inverse_mass(b, joint_r_b, c.normal);
-            float joint_weight_sum = joint_weight_a + joint_weight_b;
-            if (joint_weight_sum < WEIGHT_EPSILON) return;
+			float joint_weight_a = compute_generalized_inverse_mass(a, joint_r_a, c.normal);
+			float joint_weight_b = compute_generalized_inverse_mass(b, joint_r_b, c.normal);
+			float joint_weight_sum = joint_weight_a + joint_weight_b;
+			if (joint_weight_sum < WEIGHT_EPSILON) return;
 
-            // Progressive stiffness: ramp compliance from high (soft) to target over iterations
-            // This lets weak forces propagate before stiff forces dominate
-            float joint_compliance = c.compliance;
-            if (joint_compliance > 0 && total_iterations > 1) {
-                float progress = (float)(iteration + 1) / (float)total_iterations;
-                // Start at 4x compliance (1/4 stiffness), ramp to target
-                joint_compliance = c.compliance * (1.0f + 3.0f * (1.0f - progress));
-            }
-            float joint_delta_lambda = -(pos_error + joint_compliance * c.lambda) / (joint_weight_sum + joint_compliance);
-            c.lambda += joint_delta_lambda;
+			// Progressive stiffness: ramp compliance from high (soft) to target over iterations
+			// This lets weak forces propagate before stiff forces dominate
+			float joint_compliance = c.compliance;
+			if (joint_compliance > 0 && total_iterations > 1)
+			{
+				float progress = (float)(iteration + 1) / (float)total_iterations;
+				// Start at 4x compliance (1/4 stiffness), ramp to target
+				joint_compliance = c.compliance * (1.0f + 3.0f * (1.0f - progress));
+			}
+			float joint_delta_lambda = -(pos_error + joint_compliance * c.lambda)
+				/ (joint_weight_sum + joint_compliance);
+			c.lambda += joint_delta_lambda;
 
-            apply_positional_correction(a, -c.normal, joint_r_a, joint_delta_lambda);
-            apply_positional_correction(b, c.normal, joint_r_b, joint_delta_lambda);
+			apply_positional_correction(a, -c.normal, joint_r_a, joint_delta_lambda);
+			apply_positional_correction(b, c.normal, joint_r_b, joint_delta_lambda);
 
-        case JOINT_ANGULAR:
-            // Angular constraint: correct orientation difference along axis
-            // Recompute world-space axis from local-space axis (stored in r_a)
-            Vec3 axis = a.collider.rotation * c.r_a;
+		case JOINT_ANGULAR:
+			// Angular constraint: correct orientation difference along axis
+			// Recompute world-space axis from local-space axis (stored in r_a)
+			Vec3 axis = a.collider.rotation * c.r_a;
 
-            // Recompute angular error from current orientations
-            QuaternionValue err_q = a.collider.rotation.conjugate() * b.collider.rotation * c.joint_orientation.conjugate();
-            float err_dir = err_q.l >= 0 ? 1.0f : -1.0f;
-            Vec3 err_local = err_q.v.xyz * 2 * err_dir;
-            Vec3 world_err = a.collider.rotation * err_local;
-            float ang_error = world_err.dot(axis) - c.c_value;
+			// Recompute angular error from current orientations
+			QuaternionValue err_q = a.collider.rotation.conjugate() * b.collider.rotation
+				* c.joint_orientation.conjugate();
+			float err_dir = err_q.l >= 0 ? 1.0f : -1.0f;
+			Vec3 err_local = err_q.v.xyz * 2 * err_dir;
+			Vec3 world_err = a.collider.rotation * err_local;
+			float ang_error = world_err.dot(axis) - c.c_value;
 
-            // Angular generalized inverse mass (no lever arm)
-            float angular_weight_a = 0;
-            float angular_weight_b = 0;
-            if (!a.is_static) {
-                Vec3 a_accel = a.get_inverse_world_inertia() * axis;
-                angular_weight_a = a_accel.dot(axis);
-            }
-            if (!b.is_static) {
-                Vec3 b_accel = b.get_inverse_world_inertia() * axis;
-                angular_weight_b = b_accel.dot(axis);
-            }
-            float angular_weight_sum = angular_weight_a + angular_weight_b;
-            if (angular_weight_sum < WEIGHT_EPSILON) return;
+			// Angular generalized inverse mass (no lever arm)
+			float angular_weight_a = 0;
+			float angular_weight_b = 0;
+			if (!a.is_static)
+			{
+				Vec3 a_accel = a.get_inverse_world_inertia() * axis;
+				angular_weight_a = a_accel.dot(axis);
+			}
+			if (!b.is_static)
+			{
+				Vec3 b_accel = b.get_inverse_world_inertia() * axis;
+				angular_weight_b = b_accel.dot(axis);
+			}
+			float angular_weight_sum = angular_weight_a + angular_weight_b;
+			if (angular_weight_sum < WEIGHT_EPSILON) return;
 
-            // Progressive stiffness: ramp compliance from high (soft) to target over iterations
-            float angular_compliance = c.compliance;
-            if (angular_compliance > 0 && total_iterations > 1) {
-                float progress = (float)(iteration + 1) / (float)total_iterations;
-                angular_compliance = c.compliance * (1.0f + 3.0f * (1.0f - progress));
-            }
-            float angular_delta_lambda = -(ang_error + angular_compliance * c.lambda) / (angular_weight_sum + angular_compliance);
-            c.lambda += angular_delta_lambda;
+			// Progressive stiffness: ramp compliance from high (soft) to target over iterations
+			float angular_compliance = c.compliance;
+			if (angular_compliance > 0 && total_iterations > 1)
+			{
+				float progress = (float)(iteration + 1) / (float)total_iterations;
+				angular_compliance = c.compliance * (1.0f + 3.0f * (1.0f - progress));
+			}
+			float angular_delta_lambda = -(ang_error + angular_compliance * c.lambda)
+				/ (angular_weight_sum + angular_compliance);
+			c.lambda += angular_delta_lambda;
 
-            // Apply angular corrections
-            if (!a.is_static) apply_angular_rotation(a, a.get_inverse_world_inertia() * axis * (-angular_delta_lambda));
-            if (!b.is_static) apply_angular_rotation(b, b.get_inverse_world_inertia() * axis * angular_delta_lambda);
-    }
+			// Apply angular corrections
+			if (!a.is_static) apply_angular_rotation(a, a.get_inverse_world_inertia() * axis * (-angular_delta_lambda));
+			if (!b.is_static) apply_angular_rotation(b, b.get_inverse_world_inertia() * axis * angular_delta_lambda);
+	}
 }
 
 
-fn bool is_manifold_shape(TransformedShape* collider) @local @inline {
-    ShapeType t = collider.get_type();
-    if (t == ShapeType.BOX) return true;
-    if (t == ShapeType.CONVEX && &collider.shape.vertex_count) return collider.shape.vertex_count() < 24;
-    return false;
+fn bool is_manifold_shape(TransformedShape* collider) @local @inline
+{
+	ShapeType t = collider.get_type();
+	if (t == ShapeType.BOX) return true;
+	if (t == ShapeType.CONVEX && &collider.shape.vertex_count) return collider.shape.vertex_count() < 24;
+	return false;
 }
 
 // Expand a single EPA contact into a multi-contact manifold.
 // For flat-on-flat contacts (box on floor), projects vertices of the incident body
 // onto the reference body's contact plane and creates additional contacts.
-fn void PhysicsWorld.generate_manifold(&self, Collision* collision) @local {
-    Rigidbody* a = self.find_body(collision.a)!!;
-    Rigidbody* b = self.find_body(collision.b)!!;
+fn void PhysicsWorld.generate_manifold(&self, Collision* collision) @local
+{
+	Rigidbody* a = self.find_body(collision.a)!!;
+	Rigidbody* b = self.find_body(collision.b)!!;
 
-    if (!is_manifold_shape(&a.collider) && !is_manifold_shape(&b.collider)) {
-        self.collisions.push(*collision);
-        return;
-    }
+	if (!is_manifold_shape(&a.collider) && !is_manifold_shape(&b.collider))
+	{
+		self.collisions.push(*collision);
+		return;
+	}
 
-    // Incident body: must be a dynamic manifold shape (never expand static ground)
-    bool incident_is_a;
-    bool a_candidate = is_manifold_shape(&a.collider) && !a.is_static;
-    bool b_candidate = is_manifold_shape(&b.collider) && !b.is_static;
+	// Incident body: must be a dynamic manifold shape (never expand static ground)
+	bool incident_is_a;
+	bool a_candidate = is_manifold_shape(&a.collider) && !a.is_static;
+	bool b_candidate = is_manifold_shape(&b.collider) && !b.is_static;
 
-    if (!a_candidate && !b_candidate) {
-        self.collisions.push(*collision);
-        return;
-    }
+	if (!a_candidate && !b_candidate)
+	{
+		self.collisions.push(*collision);
+		return;
+	}
 
-    if (a_candidate && b_candidate) {
-        Vec3 ext_a = a.transformed_aabb.size();
-        Vec3 ext_b = b.transformed_aabb.size();
-        float sa_a = ext_a.x*ext_a.y + ext_a.y*ext_a.z + ext_a.z*ext_a.x;
-        float sa_b = ext_b.x*ext_b.y + ext_b.y*ext_b.z + ext_b.z*ext_b.x;
-        incident_is_a = sa_a <= sa_b;
-    } else {
-        incident_is_a = a_candidate;
-    }
+	if (a_candidate && b_candidate)
+	{
+		Vec3 ext_a = a.transformed_aabb.size();
+		Vec3 ext_b = b.transformed_aabb.size();
+		float sa_a = ext_a.x * ext_a.y + ext_a.y * ext_a.z + ext_a.z * ext_a.x;
+		float sa_b = ext_b.x * ext_b.y + ext_b.y * ext_b.z + ext_b.z * ext_b.x;
+		incident_is_a = sa_a <= sa_b;
+	}
+	else
+	{
+		incident_is_a = a_candidate;
+	}
 
-    Rigidbody* incident = incident_is_a ? a : b;
-    ShapeType incident_type = incident.collider.get_type();
+	Rigidbody* incident = incident_is_a ? a : b;
+	ShapeType incident_type = incident.collider.get_type();
 
-    Vec3[8] box_corners;
-    Vec3[] local_verts;
+	Vec3[8] box_corners;
+	Vec3[] local_verts;
 
-    if (incident_type == ShapeType.BOX) {
-        Aabb3* box = (Aabb3*)incident.collider.shape;
-        box_corners = {
-            box.min,
-            { box.max.x, box.min.y, box.min.z },
-            { box.min.x, box.max.y, box.min.z },
-            { box.min.x, box.min.y, box.max.z },
-            { box.max.x, box.max.y, box.min.z },
-            { box.max.x, box.min.y, box.max.z },
-            { box.min.x, box.max.y, box.max.z },
-            box.max,
-        };
-        local_verts = &box_corners;
-    } else {
-        Mesh* mesh = (Mesh*)incident.collider.shape;
-        local_verts = mesh.vertices.entries[:mesh.vertices.size];
-    }
+	if (incident_type == ShapeType.BOX)
+	{
+		Aabb3* box = (Aabb3*)incident.collider.shape;
+		box_corners = {
+			box.min,
+			{ box.max.x, box.min.y, box.min.z },
+			{ box.min.x, box.max.y, box.min.z },
+			{ box.min.x, box.min.y, box.max.z },
+			{ box.max.x, box.max.y, box.min.z },
+			{ box.max.x, box.min.y, box.max.z },
+			{ box.min.x, box.max.y, box.max.z },
+			box.max,
+		};
+		local_verts = &box_corners;
+	}
+	else
+	{
+		Mesh* mesh = (Mesh*)incident.collider.shape;
+		local_verts = mesh.vertices.entries[:mesh.vertices.size];
+	}
 
-    Vec3 plane_point = incident_is_a ? collision.contact[1] : collision.contact[0];
-    Vec3 plane_normal = incident_is_a ? -collision.normal : collision.normal;
-    Vec3 orig_contact = incident_is_a ? collision.contact[0] : collision.contact[1];
+	Vec3 plane_point = incident_is_a ? collision.contact[1] : collision.contact[0];
+	Vec3 plane_normal = incident_is_a ? -collision.normal : collision.normal;
+	Vec3 orig_contact = incident_is_a ? collision.contact[0] : collision.contact[1];
 
-    float depth_tol = collision.depth + MANIFOLD_DEPTH_TOL;
-    Vec3 inc_ext = incident.transformed_aabb.size();
-    float max_spread_sq = inc_ext.sq_magnitude();
+	float depth_tol = collision.depth + MANIFOLD_DEPTH_TOL;
+	Vec3 inc_ext = incident.transformed_aabb.size();
+	float max_spread_sq = inc_ext.sq_magnitude();
 
-    // Always include original EPA contact
-    self.collisions.push(*collision);
+	// Always include original EPA contact
+	self.collisions.push(*collision);
 
-    foreach (i, local_v : local_verts) {
-        Vec3 v = incident.collider.rotation * (local_v * incident.collider.scale)
-               + incident.collider.translation;
+	foreach (i, local_v : local_verts)
+	{
+		Vec3 v = incident.collider.rotation * (local_v * incident.collider.scale) + incident.collider.translation;
 
-        float dist_to_orig = v.distance_sq(orig_contact);
-        if (dist_to_orig < DEDUP_DIST_SQ || dist_to_orig > max_spread_sq) continue;
+		float dist_to_orig = v.distance_sq(orig_contact);
+		if (dist_to_orig < DEDUP_DIST_SQ || dist_to_orig > max_spread_sq) continue;
 
-        float signed_dist = (v - plane_point).dot(plane_normal);
-        if (signed_dist >= depth_tol) continue;
+		float signed_dist = (v - plane_point).dot(plane_normal);
+		if (signed_dist >= depth_tol) continue;
 
-        float depth = math::max(0.0f, -signed_dist);
-        Vec3 projected = v - plane_normal * signed_dist;
+		float depth = math::max(0.0f, -signed_dist);
+		Vec3 projected = v - plane_normal * signed_dist;
 
-        Collision new_c = {
-            .a = collision.a,
-            .b = collision.b,
-            .normal = collision.normal,
-            .depth = depth,
-        };
+		Collision new_c = { .a = collision.a, .b = collision.b, .normal = collision.normal, .depth = depth, };
 
-        if (incident_is_a) {
-            new_c.contact = { v, projected };
-        } else {
-            new_c.contact = { projected, v };
-        }
+		if (incident_is_a)
+		{
+			new_c.contact = { v, projected };
+		}
+		else
+		{
+			new_c.contact = { projected, v };
+		}
 
-        self.collisions.push(new_c);
-    }
+		self.collisions.push(new_c);
+	}
 }
 
-fn void PhysicsWorld.dispatch_collision_tasks(&self, Pair[] pairs, ThreadFn worker_fn) @local {
-    usz count = pairs.len;
-    if (count == 0) return;
+fn void PhysicsWorld.dispatch_collision_tasks(&self, Pair[] pairs, ThreadFn worker_fn) @local
+{
+	usz count = pairs.len;
+	if (count == 0) return;
 
-    self.collision_tasks.clear();
-    self.collision_results.clear();
+	self.collision_tasks.clear();
+	self.collision_results.clear();
 
-    for (usz i = 0; i < count; i++) {
-        self.collision_results.push({});
-    }
+	for (usz i = 0; i < count; i++)
+	{
+		self.collision_results.push({ });
+	}
 
-    for (usz i = 0; i < count; i++) {
-        self.collision_tasks.push({
-            .world = self,
-            .pair = pairs[i],
-            .result = &self.collision_results[i],
-            .has_collision = false,
-        });
-    }
+	for (usz i = 0; i < count; i++)
+	{
+		self.collision_tasks.push(
+			{ .world = self, .pair = pairs[i], .result = &self.collision_results[i], .has_collision = false, }
+		);
+	}
 
-    for (usz i = 0; i < count; i++) {
-        self.thread_pool.push(worker_fn, &self.collision_tasks[i])!!;
-    }
+	for (usz i = 0; i < count; i++)
+	{
+		self.thread_pool.push(worker_fn, &self.collision_tasks[i])!!;
+	}
 
-    self.thread_pool.join()!!;
+	self.thread_pool.join()!!;
 
-    for (usz i = 0; i < count; i++) {
-        if (self.collision_tasks[i].has_collision) {
-            self.collisions.push(*self.collision_tasks[i].result);
-        }
-    }
+	for (usz i = 0; i < count; i++)
+	{
+		if (self.collision_tasks[i].has_collision)
+		{
+			self.collisions.push(*self.collision_tasks[i].result);
+		}
+	}
 }
 
 <*
  @require self.bodies.len() > 0 : `Must have some bodies to simulate`
 *>
-fn void PhysicsWorld.run_step(&self, float time, uint step_count = 1, uint sub_steps = 1) {
-    // Lazy init thread pool (can't do in create_world because workers get pointer before move)
-    if (!self.thread_pool_initialized) {
-        self.thread_pool.init()!!;
-        self.thread_pool_initialized = true;
-    }
+fn void PhysicsWorld.run_step(&self, float time, uint step_count = 1, uint sub_steps = 1)
+{
+	// Lazy init thread pool (can't do in create_world because workers get pointer before move)
+	if (!self.thread_pool_initialized)
+	{
+		self.thread_pool.init()!!;
+		self.thread_pool_initialized = true;
+	}
 
-    self.trigger_events.clear();
-    self.contact_events.clear();
+	self.trigger_events.clear();
+	self.contact_events.clear();
 
-    float sub_time = time / (float)sub_steps;
-    for (uint i = 0; i < sub_steps; i++) {
-        self.run_substep(sub_time, step_count);
-    }
+	float sub_time = time / (float)sub_steps;
+	for (uint i = 0; i < sub_steps; i++)
+	{
+		self.run_substep(sub_time, step_count);
+	}
 }
 
-fn void PhysicsWorld.run_substep(&self, float time, uint step_count) @local {
+fn void PhysicsWorld.run_substep(&self, float time, uint step_count) @local
+{
+	// Swap warm-start caches: previous frame's results become seeds for this frame
+	self.warm_start_prev.free();
+	self.warm_start_prev = self.warm_start_cache;
+	self.warm_start_cache = { };
 
-    // Swap warm-start caches: previous frame's results become seeds for this frame
-    self.warm_start_prev.free();
-    self.warm_start_prev = self.warm_start_cache;
-    self.warm_start_cache = {};
+	// Recompute islands if joint topology changed
+	self.compute_islands();
 
-    // Recompute islands if joint topology changed
-    self.compute_islands();
+	// === Phase 1: Predict — save prev state, apply gravity, advance positions ===
+	self.xpbd_predict(time);
 
-    // === Phase 1: Predict — save prev state, apply gravity, advance positions ===
-    self.xpbd_predict(time);
+	// === Phase 2: Broad-phase — collect candidate pairs ===
+	List {Pair} candidate_pairs;
+	TriggerOverlapSet current_triggers; // Triggers overlapping this frame
+	defer candidate_pairs.free();
+	defer current_triggers.free();
 
-    // === Phase 2: Broad-phase — collect candidate pairs ===
-    List{Pair} candidate_pairs;
-    TriggerOverlapSet current_triggers;  // Triggers overlapping this frame
-    defer candidate_pairs.free();
-    defer current_triggers.free();
+	self.spatial_map.@get_pairs(; Pair pair)
+	{
+		Rigidbody* body_a = self.find_body(pair.a)!!;
+		Rigidbody* body_b = self.find_body(pair.b)!!;
 
-    self.spatial_map.@get_pairs(;Pair pair) {
-        Rigidbody* body_a = self.find_body(pair.a)!!;
-        Rigidbody* body_b = self.find_body(pair.b)!!;
+		bool has_filter = self.filters.has_key({ body_a.id, body_b.id });
 
-        bool has_filter = self.filters.has_key({body_a.id, body_b.id});
+		if (!has_filter && body_a.transformed_aabb.collides(body_b.transformed_aabb))
+		{
+			// Check if either body is a trigger
+			if (body_a.is_trigger || body_b.is_trigger)
+			{
+				// Normalize pair so trigger is always first
+				Pair trigger_pair = body_a.is_trigger ? pair : { pair.b, pair.a };
+				current_triggers.set(trigger_pair, true);
 
-        if (!has_filter && body_a.transformed_aabb.collides(body_b.transformed_aabb)) {
-            // Check if either body is a trigger
-            if (body_a.is_trigger || body_b.is_trigger) {
-                // Normalize pair so trigger is always first
-                Pair trigger_pair = body_a.is_trigger ? pair : {pair.b, pair.a};
-                current_triggers.set(trigger_pair, true);
+				// Generate ENTER event if this is a new overlap
+				if (!self.active_triggers.has_key(trigger_pair))
+				{
+					self.trigger_events.push(
+						{ .trigger_id = trigger_pair.a, .other_id = trigger_pair.b, .type = TriggerEventType.ENTER }
+					);
+				}
+			}
+			else
+			{
+				// Regular collision pair
+				// Kinematic bodies are always "active" for broad phase (externally driven)
+				bool a_active = body_a.is_active() || body_a.is_kinematic;
+				bool b_active = body_b.is_active() || body_b.is_kinematic;
 
-                // Generate ENTER event if this is a new overlap
-                if (!self.active_triggers.has_key(trigger_pair)) {
-                    self.trigger_events.push({
-                        .trigger_id = trigger_pair.a,
-                        .other_id = trigger_pair.b,
-                        .type = TriggerEventType.ENTER
-                    });
-                }
-            } else {
-                // Regular collision pair
-                // Kinematic bodies are always "active" for broad phase (externally driven)
-                bool a_active = body_a.is_active() || body_a.is_kinematic;
-                bool b_active = body_b.is_active() || body_b.is_kinematic;
+				// Wake sleeping bodies (must be sequential due to island wake)
+				if (body_a.sleeping && b_active) self.wake_island(body_a);
+				if (body_b.sleeping && a_active) self.wake_island(body_b);
 
-                // Wake sleeping bodies (must be sequential due to island wake)
-                if (body_a.sleeping && b_active) self.wake_island(body_a);
-                if (body_b.sleeping && a_active) self.wake_island(body_b);
+				if (a_active || b_active)
+				{
+					candidate_pairs.push(pair);
+				}
+			}
+		}
+	};
 
-                if (a_active || b_active) {
-                    candidate_pairs.push(pair);
-                }
-            }
-        }
-    };
+	// Generate EXIT events for triggers that are no longer overlapping
+	self.active_triggers.@each(; Pair old_pair, bool active)
+	{
+		if (!current_triggers.has_key(old_pair))
+		{
+			self.trigger_events.push(
+				{ .trigger_id = old_pair.a, .other_id = old_pair.b, .type = TriggerEventType.EXIT }
+			);
+		}
+	};
 
-    // Generate EXIT events for triggers that are no longer overlapping
-    self.active_triggers.@each(;Pair old_pair, bool active) {
-        if (!current_triggers.has_key(old_pair)) {
-            self.trigger_events.push({
-                .trigger_id = old_pair.a,
-                .other_id = old_pair.b,
-                .type = TriggerEventType.EXIT
-            });
-        }
-    };
+	// Swap active triggers with current frame's triggers
+	self.active_triggers.free();
+	self.active_triggers = current_triggers;
+	current_triggers = { }; // Prevent double-free in defer
 
-    // Swap active triggers with current frame's triggers
-    self.active_triggers.free();
-    self.active_triggers = current_triggers;
-    current_triggers = {};  // Prevent double-free in defer
+	// === Phase 3: Narrow-phase collision testing ===
+	// Convex and BVH collisions run in parallel via thread pool
+	usz num_pairs = candidate_pairs.len();
 
-    // === Phase 3: Narrow-phase collision testing ===
-    // Convex and BVH collisions run in parallel via thread pool
-    usz num_pairs = candidate_pairs.len();
+	if (num_pairs > 0)
+	{
+		// Separate pairs by collision type
+		List {Pair} convex_pairs;
+		List {Pair} bvh_pairs;
+		List {Pair} compound_pairs;
+		defer convex_pairs.free();
+		defer bvh_pairs.free();
+		defer compound_pairs.free();
 
-    if (num_pairs > 0) {
-        // Separate pairs by collision type
-        List{Pair} convex_pairs;
-        List{Pair} bvh_pairs;
-        List{Pair} compound_pairs;
-        defer convex_pairs.free();
-        defer bvh_pairs.free();
-        defer compound_pairs.free();
+		for (usz i = 0; i < num_pairs; i++)
+		{
+			Pair pair = candidate_pairs[i];
+			Rigidbody* body_a = self.find_body(pair.a)!!;
+			Rigidbody* body_b = self.find_body(pair.b)!!;
 
-        for (usz i = 0; i < num_pairs; i++) {
-            Pair pair = candidate_pairs[i];
-            Rigidbody* body_a = self.find_body(pair.a)!!;
-            Rigidbody* body_b = self.find_body(pair.b)!!;
+			if (body_a.has_mesh_bvh() || body_b.has_mesh_bvh())
+			{
+				bvh_pairs.push(pair);
+			}
+			else if (body_a.has_compound() || body_b.has_compound())
+			{
+				compound_pairs.push(pair);
+			}
+			else
+			{
+				convex_pairs.push(pair);
+			}
+		}
 
-            if (body_a.has_mesh_bvh() || body_b.has_mesh_bvh()) {
-                bvh_pairs.push(pair);
-            } else if (body_a.has_compound() || body_b.has_compound()) {
-                compound_pairs.push(pair);
-            } else {
-                convex_pairs.push(pair);
-            }
-        }
+		// Process convex pairs in parallel
+		self.dispatch_collision_tasks(convex_pairs.array_view(), &collision_test_worker);
 
-        // Process convex pairs in parallel
-        self.dispatch_collision_tasks(convex_pairs.array_view(), &collision_test_worker);
+		// Process BVH pairs in parallel
+		self.dispatch_collision_tasks(bvh_pairs.array_view(), &bvh_collision_test_worker);
 
-        // Process BVH pairs in parallel
-        self.dispatch_collision_tasks(bvh_pairs.array_view(), &bvh_collision_test_worker);
+		foreach (pair : compound_pairs)
+		{
+			Rigidbody* body_a = self.find_body(pair.a)!!;
+			Rigidbody* body_b = self.find_body(pair.b)!!;
+			self.check_coacd_collision(body_a, body_b, pair);
+		}
+	}
 
-        foreach (pair : compound_pairs) {
-            Rigidbody* body_a = self.find_body(pair.a)!!;
-            Rigidbody* body_b = self.find_body(pair.b)!!;
-            self.check_coacd_collision(body_a, body_b, pair);
-        }
-    }
+	// === Phase 4: Generate contact events ===
+	ContactOverlapSet current_contacts;
+	defer current_contacts.free();
 
-    // === Phase 4: Generate contact events ===
-    ContactOverlapSet current_contacts;
-    defer current_contacts.free();
+	// Track all collisions this frame and generate START events
+	foreach (&collision : self.collisions)
+	{
+		Pair contact_pair = { collision.a, collision.b };
+		current_contacts.set(contact_pair, true);
 
-    // Track all collisions this frame and generate START events
-    foreach (&collision: self.collisions) {
-        Pair contact_pair = { collision.a, collision.b };
-        current_contacts.set(contact_pair, true);
+		// Generate START event if this is a new contact
+		if (!self.active_contacts.has_key(contact_pair))
+		{
+			self.contact_events.push(
+				{
+					.body_a = collision.a,
+					.body_b = collision.b,
+					.type = ContactEventType.START,
+					.normal = collision.normal,
+					.contact_point = collision.contact[0]
+				}
+			);
+		}
+	}
 
-        // Generate START event if this is a new contact
-        if (!self.active_contacts.has_key(contact_pair)) {
-            self.contact_events.push({
-                .body_a = collision.a,
-                .body_b = collision.b,
-                .type = ContactEventType.START,
-                .normal = collision.normal,
-                .contact_point = collision.contact[0]
-            });
-        }
-    }
+	// Generate END events for contacts that ended
+	self.active_contacts.@each(; Pair old_pair, bool active)
+	{
+		if (!current_contacts.has_key(old_pair))
+		{
+			self.contact_events.push(
+				{
+					.body_a = old_pair.a,
+					.body_b = old_pair.b,
+					.type = ContactEventType.END,
+					.normal = { 0, 0, 0 },
+					.contact_point = { 0, 0, 0 }
+				}
+			);
+		}
+	};
 
-    // Generate END events for contacts that ended
-    self.active_contacts.@each(;Pair old_pair, bool active) {
-        if (!current_contacts.has_key(old_pair)) {
-            self.contact_events.push({
-                .body_a = old_pair.a,
-                .body_b = old_pair.b,
-                .type = ContactEventType.END,
-                .normal = {0, 0, 0},
-                .contact_point = {0, 0, 0}
-            });
-        }
-    };
+	// Swap active contacts with current frame's contacts
+	self.active_contacts.free();
+	self.active_contacts = current_contacts;
+	current_contacts = { }; // Prevent double-free in defer
 
-    // Swap active contacts with current frame's contacts
-    self.active_contacts.free();
-    self.active_contacts = current_contacts;
-    current_contacts = {};  // Prevent double-free in defer
+	// === Phase 4.5: Expand contact manifolds ===
+	// EPA gives one contact per pair. For box-on-box or box-on-floor contacts,
+	// expand into multiple contacts by projecting vertices near the contact plane.
+	{
+		usz raw_count = self.collisions.len();
+		for (usz i = 0; i < raw_count; i++)
+		{
+			Collision c = self.collisions[i];
+			self.generate_manifold(&c);
+		}
+		if (raw_count > 0)
+		{
+			usz expanded_count = self.collisions.len() - raw_count;
+			for (usz i = 0; i < expanded_count; i++)
+			{
+				self.collisions[i] = self.collisions[raw_count + i];
+			}
+			while (self.collisions.len() > expanded_count)
+			{
+				self.collisions.pop()!!;
+			}
+		}
+	}
 
-    // === Phase 4.5: Expand contact manifolds ===
-    // EPA gives one contact per pair. For box-on-box or box-on-floor contacts,
-    // expand into multiple contacts by projecting vertices near the contact plane.
-    {
-        usz raw_count = self.collisions.len();
-        for (usz i = 0; i < raw_count; i++) {
-            Collision c = self.collisions[i];
-            self.generate_manifold(&c);
-        }
-        if (raw_count > 0) {
-            usz expanded_count = self.collisions.len() - raw_count;
-            for (usz i = 0; i < expanded_count; i++) {
-                self.collisions[i] = self.collisions[raw_count + i];
-            }
-            while (self.collisions.len() > expanded_count) {
-                self.collisions.pop()!!;
-            }
-        }
-    }
+	// === Phase 5: Create XPBD constraints (from collisions + joints) ===
+	foreach (&collision : self.collisions)
+	{
+		collision.create_xpbd_constraint(self, time);
+	}
 
-    // === Phase 5: Create XPBD constraints (from collisions + joints) ===
-    foreach (&collision: self.collisions) {
-        collision.create_xpbd_constraint(self, time);
-    }
+	foreach (&joint : self.joints)
+	{
+		joint.create_xpbd_constraint(self, time);
+	}
 
-    foreach (&joint: self.joints) {
-        joint.create_xpbd_constraint(self, time);
-    }
+	// === Phase 6: Solve XPBD constraints — island-parallel ===
+	self.xpbd_solve_constraints(step_count);
 
-    // === Phase 6: Solve XPBD constraints — island-parallel ===
-    self.xpbd_solve_constraints(step_count);
+	// Store solved contact lambdas into warm-start cache for next frame
+	foreach (&c : self.constraints)
+	{
+		if (c.type == CONTACT_NORMAL && c.lambda > 0)
+		{
+			Pair cpair = { c.body_a.id, c.body_b.id };
+			if (try existing = self.warm_start_cache.get(cpair))
+			{
+				// Keep maximum lambda for this pair (best approximation for multi-contact)
+				if (c.lambda > existing)
+				{
+					self.warm_start_cache.set(cpair, c.lambda);
+				}
+			}
+			else
+			{
+				self.warm_start_cache.set(cpair, c.lambda);
+			}
+		}
+	}
 
-    // Store solved contact lambdas into warm-start cache for next frame
-    foreach (&c : self.constraints) {
-        if (c.type == CONTACT_NORMAL && c.lambda > 0) {
-            Pair cpair = { c.body_a.id, c.body_b.id };
-            if (try existing = self.warm_start_cache.get(cpair)) {
-                // Keep maximum lambda for this pair (best approximation for multi-contact)
-                if (c.lambda > existing) {
-                    self.warm_start_cache.set(cpair, c.lambda);
-                }
-            } else {
-                self.warm_start_cache.set(cpair, c.lambda);
-            }
-        }
-    }
+	self.collisions.clear();
 
-    self.collisions.clear();
+	// === Phase 7: Soft body solve ===
+	self.solve_soft_bodies(time);
 
-    // === Phase 7: Soft body solve ===
-    self.solve_soft_bodies(time);
+	// === Phase 8: Derive velocities, restitution, update spatial map ===
+	self.xpbd_derive_and_update(time);
 
-    // === Phase 8: Derive velocities, restitution, update spatial map ===
-    self.xpbd_derive_and_update(time);
-
-    // === Phase 9: Sleep management ===
-    self.update_sleep_state();
+	// === Phase 9: Sleep management ===
+	self.update_sleep_state();
 }
 
 // XPBD predict phase: save prev state, apply gravity, advance positions
-fn void PhysicsWorld.xpbd_predict(&self, float dt) @local {
-    self.active_bodies.clear();
+fn void PhysicsWorld.xpbd_predict(&self, float dt) @local
+{
+	self.active_bodies.clear();
 
-    RigidBodyIterator collect_iter = self.bodies.value_iter();
-    while (collect_iter.next()) {
-        Rigidbody* body = collect_iter.get()!!;
-        if (body.is_active()) {
-            self.active_bodies.push(body);
-        }
-    }
+	RigidBodyIterator collect_iter = self.bodies.value_iter();
+	while (collect_iter.next())
+	{
+		Rigidbody* body = collect_iter.get()!!;
+		if (body.is_active())
+		{
+			self.active_bodies.push(body);
+		}
+	}
 
-    usz num_active = self.active_bodies.len();
-    if (num_active == 0) return;
+	usz num_active = self.active_bodies.len();
+	if (num_active == 0) return;
 
-    usz batch_size = (num_active + NUM_WORKER_THREADS - 1) / NUM_WORKER_THREADS;
+	usz batch_size = (num_active + NUM_WORKER_THREADS - 1) / NUM_WORKER_THREADS;
 
-    if (num_active >= NUM_WORKER_THREADS * 2) {
-        usz num_tasks = (num_active + batch_size - 1) / batch_size;
-        self.phase_tasks.clear();
+	if (num_active >= NUM_WORKER_THREADS * 2)
+	{
+		usz num_tasks = (num_active + batch_size - 1) / batch_size;
+		self.phase_tasks.clear();
 
-        Rigidbody** all_bodies_ptr = self.active_bodies.array_view().ptr;
+		Rigidbody** all_bodies_ptr = self.active_bodies.array_view().ptr;
 
-        for (usz i = 0; i < num_tasks; i++) {
-            usz start = i * batch_size;
-            usz count = math::min(batch_size, num_active - start);
-            self.phase_tasks.push({
-                .world = self,
-                .bodies = all_bodies_ptr + start,
-                .count = count,
-                .time = dt,
-            });
-        }
+		for (usz i = 0; i < num_tasks; i++)
+		{
+			usz start = i * batch_size;
+			usz count = math::min(batch_size, num_active - start);
+			self.phase_tasks.push({ .world = self, .bodies = all_bodies_ptr + start, .count = count, .time = dt, });
+		}
 
-        for (usz i = 0; i < num_tasks; i++) {
-            self.thread_pool.push(&predict_worker, &self.phase_tasks[i])!!;
-        }
-        self.thread_pool.join()!!;
-    } else {
-        foreach (body : self.active_bodies) {
-            body.prev_position = body.collider.translation;
-            body.prev_rotation = body.collider.rotation;
-            body.linear_velocity += self.gravity * body.gravity_factor * dt;
-            body.collider.translation += body.linear_velocity * dt;
+		for (usz i = 0; i < num_tasks; i++)
+		{
+			self.thread_pool.push(&predict_worker, &self.phase_tasks[i])!!;
+		}
+		self.thread_pool.join()!!;
+	}
+	else
+	{
+		foreach (body : self.active_bodies)
+		{
+			body.prev_position = body.collider.translation;
+			body.prev_rotation = body.collider.rotation;
+			body.linear_velocity += self.gravity * body.gravity_factor * dt;
+			body.collider.translation += body.linear_velocity * dt;
 
-            Vec3 axis = body.angular_velocity * (dt * 0.5f);
-            if (axis != {0,0,0}) {
-                body.collider.rotation = (body.collider.rotation + (QuaternionValue){...axis, 0} * body.collider.rotation).normalize();
-            }
-        }
-    }
+			Vec3 axis = body.angular_velocity * (dt * 0.5f);
+			if (axis != { 0, 0, 0 })
+			{
+				body.collider.rotation = (body.collider.rotation
+					+ (QuaternionValue) { ... axis, 0 } * body.collider.rotation).normalize();
+			}
+		}
+	}
 
-    // Sequential: update spatial map AABBs after predict (must happen before broad phase)
-    foreach (body : self.active_bodies) {
-        Aabb3 new_aabb = body.get_transformed_aabb();
-        self.spatial_map.update(body.transformed_aabb, new_aabb, body.id)!!;
-        body.transformed_aabb = new_aabb;
-    }
+	// Sequential: update spatial map AABBs after predict (must happen before broad phase)
+	foreach (body : self.active_bodies)
+	{
+		Aabb3 new_aabb = body.get_transformed_aabb();
+		self.spatial_map.update(body.transformed_aabb, new_aabb, body.id)!!;
+		body.transformed_aabb = new_aabb;
+	}
 }
 
 // XPBD derive phase: compute velocities from position deltas, restitution, update spatial map
-fn void PhysicsWorld.xpbd_derive_and_update(&self, float dt) @local {
-    usz num_active = self.active_bodies.len();
-    if (num_active == 0) return;
+fn void PhysicsWorld.xpbd_derive_and_update(&self, float dt) @local
+{
+	usz num_active = self.active_bodies.len();
+	if (num_active == 0) return;
 
-    float inv_dt = 1.0f / dt;
+	float inv_dt = 1.0f / dt;
 
-    // Derive velocities (parallelizable)
-    usz batch_size = (num_active + NUM_WORKER_THREADS - 1) / NUM_WORKER_THREADS;
+	// Derive velocities (parallelizable)
+	usz batch_size = (num_active + NUM_WORKER_THREADS - 1) / NUM_WORKER_THREADS;
 
-    if (num_active >= NUM_WORKER_THREADS * 2) {
-        usz num_tasks = (num_active + batch_size - 1) / batch_size;
-        self.phase_tasks.clear();
+	if (num_active >= NUM_WORKER_THREADS * 2)
+	{
+		usz num_tasks = (num_active + batch_size - 1) / batch_size;
+		self.phase_tasks.clear();
 
-        Rigidbody** all_bodies_ptr = self.active_bodies.array_view().ptr;
+		Rigidbody** all_bodies_ptr = self.active_bodies.array_view().ptr;
 
-        for (usz i = 0; i < num_tasks; i++) {
-            usz start = i * batch_size;
-            usz count = math::min(batch_size, num_active - start);
-            self.phase_tasks.push({
-                .world = self,
-                .bodies = all_bodies_ptr + start,
-                .count = count,
-                .time = dt,
-            });
-        }
+		for (usz i = 0; i < num_tasks; i++)
+		{
+			usz start = i * batch_size;
+			usz count = math::min(batch_size, num_active - start);
+			self.phase_tasks.push({ .world = self, .bodies = all_bodies_ptr + start, .count = count, .time = dt, });
+		}
 
-        for (usz i = 0; i < num_tasks; i++) {
-            self.thread_pool.push(&derive_worker, &self.phase_tasks[i])!!;
-        }
-        self.thread_pool.join()!!;
-    } else {
-        foreach (body : self.active_bodies) {
-            body.linear_velocity = (body.collider.translation - body.prev_position) * inv_dt;
+		for (usz i = 0; i < num_tasks; i++)
+		{
+			self.thread_pool.push(&derive_worker, &self.phase_tasks[i])!!;
+		}
+		self.thread_pool.join()!!;
+	}
+	else
+	{
+		foreach (body : self.active_bodies)
+		{
+			body.linear_velocity = (body.collider.translation - body.prev_position) * inv_dt;
 
-            QuaternionValue dq = body.collider.rotation * body.prev_rotation.conjugate();
-            if (dq.l < 0) dq = -dq;
-            body.angular_velocity = dq.v.xyz * (2.0f * inv_dt);
+			QuaternionValue dq = body.collider.rotation * body.prev_rotation.conjugate();
+			if (dq.l < 0) dq = -dq;
+			body.angular_velocity = dq.v.xyz * (2.0f * inv_dt);
 
-            body.angular_velocity *= math::pow(body.angular_dampening, dt);
-            body.linear_velocity *= math::pow(body.linear_dampening, dt);
-        }
-    }
+			body.angular_velocity *= math::pow(body.angular_dampening, dt);
+			body.linear_velocity *= math::pow(body.linear_dampening, dt);
+		}
+	}
 
-    // Post-derive: velocity correction at contacts
-    // For zero restitution: target_vn = 0 (inelastic, no bounce)
-    // For restitution > 0: target_vn = -e * vn_pre (bounce proportional to impact speed)
-    foreach (&c : self.constraints) {
-        if (c.type != CONTACT_NORMAL) continue;
-        if (math::abs(c.lambda_normal) < EPSILON) continue;
+	// Post-derive: velocity correction at contacts
+	// For zero restitution: target_vn = 0 (inelastic, no bounce)
+	// For restitution > 0: target_vn = -e * vn_pre (bounce proportional to impact speed)
+	foreach (&c : self.constraints)
+	{
+		if (c.type != CONTACT_NORMAL) continue;
+		if (math::abs(c.lambda_normal) < EPSILON) continue;
 
-        Rigidbody* a = c.body_a;
-        Rigidbody* b = c.body_b;
+		Rigidbody* a = c.body_a;
+		Rigidbody* b = c.body_b;
 
-        // Current relative velocity at contact (after derive)
-        Vec3 va = a.relative_velocity(c.r_a);
-        Vec3 vb = b.relative_velocity(c.r_b);
-        float vn = (va - vb).dot(c.normal);
+		// Current relative velocity at contact (after derive)
+		Vec3 va = a.relative_velocity(c.r_a);
+		Vec3 vb = b.relative_velocity(c.r_b);
+		float vn = (va - vb).dot(c.normal);
 
-        // Target normal velocity
-        float target_vn = 0;
-        float vn_pre = c.pre_solve_relative_vel_n;
-        if (c.restitution > 0.01f && math::abs(vn_pre) > BOUNCE_THRESHOLD) {
-            target_vn = -c.restitution * vn_pre;
-        }
+		// Target normal velocity
+		float target_vn = 0;
+		float vn_pre = c.pre_solve_relative_vel_n;
+		if (c.restitution > 0.01f && math::abs(vn_pre) > BOUNCE_THRESHOLD)
+		{
+			target_vn = -c.restitution * vn_pre;
+		}
 
-        float dv = target_vn - vn;
+		float dv = target_vn - vn;
 
-        // Apply velocity correction to reach target (handles both residual approach and overshoot)
-        if (math::abs(dv) > EPSILON) {
-            float w_a = compute_generalized_inverse_mass(a, c.r_a, c.normal);
-            float w_b = compute_generalized_inverse_mass(b, c.r_b, c.normal);
-            float w_sum = w_a + w_b;
-            if (w_sum > WEIGHT_EPSILON) {
-                float impulse_mag = dv / w_sum;
-                if (!a.is_static) {
-                    a.apply_impulse(c.normal * impulse_mag, c.r_a);
-                }
-                if (!b.is_static) {
-                    b.apply_impulse(-c.normal * impulse_mag, c.r_b);
-                }
-            }
-        }
-    }
+		// Apply velocity correction to reach target (handles both residual approach and overshoot)
+		if (math::abs(dv) > EPSILON)
+		{
+			float w_a = compute_generalized_inverse_mass(a, c.r_a, c.normal);
+			float w_b = compute_generalized_inverse_mass(b, c.r_b, c.normal);
+			float w_sum = w_a + w_b;
+			if (w_sum > WEIGHT_EPSILON)
+			{
+				float impulse_mag = dv / w_sum;
+				if (!a.is_static)
+				{
+					a.apply_impulse(c.normal * impulse_mag, c.r_a);
+				}
+				if (!b.is_static)
+				{
+					b.apply_impulse(-c.normal * impulse_mag, c.r_b);
+				}
+			}
+		}
+	}
 
-    self.constraints.clear();
+	self.constraints.clear();
 
-    // Sequential: update spatial map and sleep timers
-    foreach (body : self.active_bodies) {
-        bool rotating = body.is_rotating();
-        bool moving = body.is_moving();
+	// Sequential: update spatial map and sleep timers
+	foreach (body : self.active_bodies)
+	{
+		bool rotating = body.is_rotating();
+		bool moving = body.is_moving();
 
-        if (rotating || moving) {
-            Aabb3 new_aabb = body.get_transformed_aabb();
-            self.spatial_map.update(body.transformed_aabb, new_aabb, body.id)!!;
-            body.transformed_aabb = new_aabb;
-        }
+		if (rotating || moving)
+		{
+			Aabb3 new_aabb = body.get_transformed_aabb();
+			self.spatial_map.update(body.transformed_aabb, new_aabb, body.id)!!;
+			body.transformed_aabb = new_aabb;
+		}
 
-        if (body.can_sleep && !moving && !rotating) {
-            body.sleep_timer += dt;
-        } else {
-            body.sleep_timer = 0;
-        }
-    }
+		if (body.can_sleep && !moving && !rotating)
+		{
+			body.sleep_timer += dt;
+		}
+		else
+		{
+			body.sleep_timer = 0;
+		}
+	}
 }
 
 
 // Island-parallel XPBD constraint solving
-fn void PhysicsWorld.xpbd_solve_constraints(&self, uint step_count) @local {
-    if (self.constraints.len() == 0) return;
+fn void PhysicsWorld.xpbd_solve_constraints(&self, uint step_count) @local
+{
+	if (self.constraints.len() == 0) return;
 
-    // Group constraints by island
-    HashMap{usz, ConstraintList} island_constraints;
-    defer {
-        island_constraints.@each(; usz id, ConstraintList list) {
-            list.free();
-        };
-        island_constraints.free();
-    }
+	// Group constraints by island
+	HashMap {usz, ConstraintList} island_constraints;
+	defer
+	{
+		island_constraints.@each(; usz id, ConstraintList list)
+		{
+			list.free();
+		};
+		island_constraints.free();
+	}
 
-    for (usz i = 0; i < self.constraints.len(); i++) {
-        XpbdConstraint* constraint = &self.constraints[i];
-        usz island_id = constraint.body_a.island_id;
+	for (usz i = 0; i < self.constraints.len(); i++)
+	{
+		XpbdConstraint* constraint = &self.constraints[i];
+		usz island_id = constraint.body_a.island_id;
 
-        if (!island_constraints.has_key(island_id)) {
-            island_constraints.set(island_id, {});
-        }
-        island_constraints.get_ref(island_id)!!.push(constraint);
-    }
+		if (!island_constraints.has_key(island_id))
+		{
+			island_constraints.set(island_id, { });
+		}
+		island_constraints.get_ref(island_id)!!.push(constraint);
+	}
 
-    usz num_islands = island_constraints.len();
+	usz num_islands = island_constraints.len();
 
-    if (num_islands <= 1) {
-        for (uint i = 0; i < step_count; i++) {
-            for (usz j = 0; j < self.constraints.len(); j++) {
-                solve_xpbd_constraint(&self.constraints[j], self, i, step_count);
-            }
-        }
-        return;
-    }
+	if (num_islands <= 1)
+	{
+		for (uint i = 0; i < step_count; i++)
+		{
+			for (usz j = 0; j < self.constraints.len(); j++)
+			{
+				solve_xpbd_constraint(&self.constraints[j], self, i, step_count);
+			}
+		}
+		return;
+	}
 
-    self.island_tasks.clear();
+	self.island_tasks.clear();
 
-    island_constraints.@each(; usz id, ConstraintList list) {
-        XpbdConstraint*[] arr = list.array_view();
+	island_constraints.@each(; usz id, ConstraintList list)
+	{
+		XpbdConstraint*[] arr = list.array_view();
 
-        self.island_tasks.push({
-            .world = self,
-            .constraints = arr.ptr,
-            .count = arr.len,
-            .iterations = step_count,
-        });
-    };
+		self.island_tasks.push({ .world = self, .constraints = arr.ptr, .count = arr.len, .iterations = step_count, });
+	};
 
-    for (usz i = 0; i < num_islands; i++) {
-        self.thread_pool.push(&island_solve_worker, &self.island_tasks[i])!!;
-    }
+	for (usz i = 0; i < num_islands; i++)
+	{
+		self.thread_pool.push(&island_solve_worker, &self.island_tasks[i])!!;
+	}
 
-    self.thread_pool.join()!!;
+	self.thread_pool.join()!!;
 }
 
 // Worker function for parallel soft body XPBD solving
-fn int softbody_solve_worker(void* arg) @local {
-    SoftBodySolveTask* task = (SoftBodySolveTask*)arg;
-    SoftBody* sb = task.body;
+fn int softbody_solve_worker(void* arg) @local
+{
+	SoftBodySolveTask* task = (SoftBodySolveTask*)arg;
+	SoftBody* sb = task.body;
 
-    // Generate ground plane collisions
-    if (task.ground_enabled) {
-        sb.generate_ground_collisions(task.ground_z, task.ground_friction);
-    }
+	// Generate ground plane collisions
+	if (task.ground_enabled)
+	{
+		sb.generate_ground_collisions(task.ground_z, task.ground_friction);
+	}
 
-    // Run XPBD solver (no rigidbody collisions in parallel — not thread-safe)
-    sb.xpbd_solve(task.gravity, task.time, task.world);
+	// Run XPBD solver (no rigidbody collisions in parallel — not thread-safe)
+	sb.xpbd_solve(task.gravity, task.time, task.world);
 
-    return 0;
+	return 0;
 }
 
 // XPBD soft body solving phase
-fn void PhysicsWorld.solve_soft_bodies(&self, float time) @local {
-    if (self.soft_bodies.len() == 0) return;
+fn void PhysicsWorld.solve_soft_bodies(&self, float time) @local
+{
+	if (self.soft_bodies.len() == 0) return;
 
-    // Sequential: generate rigidbody collision constraints (needs shared body access)
-    foreach (&sb : self.soft_bodies) {
-        if (sb.sleeping) continue;
+	// Sequential: generate rigidbody collision constraints (needs shared body access)
+	foreach (&sb : self.soft_bodies)
+	{
+		if (sb.sleeping) continue;
 
-        RigidBodyIterator rb_iter = self.bodies.value_iter();
-        while (rb_iter.next()) {
-            Rigidbody* body = rb_iter.get()!!;
-            sb.generate_rigidbody_collisions(body);
-        }
-    }
+		RigidBodyIterator rb_iter = self.bodies.value_iter();
+		while (rb_iter.next())
+		{
+			Rigidbody* body = rb_iter.get()!!;
+			sb.generate_rigidbody_collisions(body);
+		}
+	}
 
-    // Count active soft bodies
-    usz active_count = 0;
-    foreach (&sb : self.soft_bodies) {
-        if (!sb.sleeping) active_count++;
-    }
+	// Count active soft bodies
+	usz active_count = 0;
+	foreach (&sb : self.soft_bodies)
+	{
+		if (!sb.sleeping) active_count++;
+	}
 
-    if (active_count == 0) return;
+	if (active_count == 0) return;
 
-    // Parallel XPBD solving if multiple active soft bodies
-    if (active_count >= 2) {
-        List{SoftBodySolveTask} sb_tasks;
-        defer sb_tasks.free();
+	// Parallel XPBD solving if multiple active soft bodies
+	if (active_count >= 2)
+	{
+		List {SoftBodySolveTask} sb_tasks;
+		defer sb_tasks.free();
 
-        foreach (&sb : self.soft_bodies) {
-            if (sb.sleeping) continue;
-            sb_tasks.push({
-                .body = sb,
-                .world = self,
-                .gravity = self.gravity,
-                .time = time,
-                .ground_z = self.ground_plane_z,
-                .ground_enabled = self.ground_plane_enabled,
-                .ground_friction = sb.material.static_friction,
-            });
-        }
+		foreach (&sb : self.soft_bodies)
+		{
+			if (sb.sleeping) continue;
+			sb_tasks.push(
+				{
+					.body = sb,
+					.world = self,
+					.gravity = self.gravity,
+					.time = time,
+					.ground_z = self.ground_plane_z,
+					.ground_enabled = self.ground_plane_enabled,
+					.ground_friction = sb.material.static_friction,
+				}
+			);
+		}
 
-        for (usz i = 0; i < sb_tasks.len(); i++) {
-            self.thread_pool.push(&softbody_solve_worker, &sb_tasks[i])!!;
-        }
-        self.thread_pool.join()!!;
-    } else {
-        // Single soft body — solve inline
-        foreach (&sb : self.soft_bodies) {
-            if (sb.sleeping) continue;
+		for (usz i = 0; i < sb_tasks.len(); i++)
+		{
+			self.thread_pool.push(&softbody_solve_worker, &sb_tasks[i])!!;
+		}
+		self.thread_pool.join()!!;
+	}
+	else
+	{
+		// Single soft body — solve inline
+		foreach (&sb : self.soft_bodies)
+		{
+			if (sb.sleeping) continue;
 
-            if (self.ground_plane_enabled) {
-                sb.generate_ground_collisions(self.ground_plane_z,
-                    sb.material.static_friction);
-            }
+			if (self.ground_plane_enabled)
+			{
+				sb.generate_ground_collisions(self.ground_plane_z, sb.material.static_friction);
+			}
 
-            sb.xpbd_solve(self.gravity, time, self);
-        }
-    }
+			sb.xpbd_solve(self.gravity, time, self);
+		}
+	}
 
-    // Sequential: manage soft body sleep
-    foreach (&sb : self.soft_bodies) {
-        if (sb.sleeping) continue;
+	// Sequential: manage soft body sleep
+	foreach (&sb : self.soft_bodies)
+	{
+		if (sb.sleeping) continue;
 
-        // Sleep management
-        if (sb.can_sleep) {
-            if (!sb.is_moving()) {
-                sb.sleep_timer += time;
-                if (sb.sleep_timer >= self.sleep_timer) {
-                    sb.sleeping = true;
-                }
-            } else {
-                sb.sleep_timer = 0;
-            }
-        }
-    }
+		// Sleep management
+		if (sb.can_sleep)
+		{
+			if (!sb.is_moving())
+			{
+				sb.sleep_timer += time;
+				if (sb.sleep_timer >= self.sleep_timer)
+				{
+					sb.sleeping = true;
+				}
+			}
+			else
+			{
+				sb.sleep_timer = 0;
+			}
+		}
+	}
 }
 
 
 // Shared sleep state update logic
-fn void PhysicsWorld.update_sleep_state(&self) @local {
-    HashMap{usz, bool} island_can_sleep;
-    HashMap{usz, bool} island_checked;
-    defer island_can_sleep.free();
-    defer island_checked.free();
+fn void PhysicsWorld.update_sleep_state(&self) @local
+{
+	HashMap {usz, bool} island_can_sleep;
+	HashMap {usz, bool} island_checked;
+	defer island_can_sleep.free();
+	defer island_checked.free();
 
-    // First pass: determine which islands can sleep
-    RigidBodyIterator sleep_check = self.bodies.value_iter();
-    while (sleep_check.next()) {
-        Rigidbody* body = sleep_check.get()!!;
+	// First pass: determine which islands can sleep
+	RigidBodyIterator sleep_check = self.bodies.value_iter();
+	while (sleep_check.next())
+	{
+		Rigidbody* body = sleep_check.get()!!;
 
-        if (body.is_static) continue;
+		if (body.is_static) continue;
 
-        usz island = body.island_id;
+		usz island = body.island_id;
 
-        if (!island_checked.has_key(island)) {
-            island_checked.set(island, true);
-            island_can_sleep.set(island, true);
-        }
+		if (!island_checked.has_key(island))
+		{
+			island_checked.set(island, true);
+			island_can_sleep.set(island, true);
+		}
 
-        if (!body.can_sleep || body.is_moving() || body.is_rotating() || body.sleep_timer < self.sleep_timer) {
-            island_can_sleep.set(island, false);
-        }
-    }
+		if (!body.can_sleep || body.is_moving() || body.is_rotating() || body.sleep_timer < self.sleep_timer)
+		{
+			island_can_sleep.set(island, false);
+		}
+	}
 
-    // Second pass: put entire islands to sleep
-    RigidBodyIterator sleep_apply = self.bodies.value_iter();
-    while (sleep_apply.next()) {
-        Rigidbody* body = sleep_apply.get()!!;
+	// Second pass: put entire islands to sleep
+	RigidBodyIterator sleep_apply = self.bodies.value_iter();
+	while (sleep_apply.next())
+	{
+		Rigidbody* body = sleep_apply.get()!!;
 
-        if (body.is_static || body.sleeping) continue;
+		if (body.is_static || body.sleeping) continue;
 
-        if (try can_sleep = island_can_sleep.get(body.island_id)) {
-            if (can_sleep) {
-                body.sleeping = true;
-                body.sleep_timer = 0;
-            }
-        }
-    }
+		if (try can_sleep = island_can_sleep.get(body.island_id))
+		{
+			if (can_sleep)
+			{
+				body.sleeping = true;
+				body.sleep_timer = 0;
+			}
+		}
+	}
 }
 
-fn float combine_values(float a, float b, PhysicsCombine mode) @local {
-    switch (mode) {
-        case AVERAGE: return (a + b) * 0.5f;
-        case MINIMUM: return math::min(a, b);
-        case MAXIMUM: return math::max(a, b);
-        case MULTIPLY:	return a * b;
-    }
+fn float combine_values(float a, float b, PhysicsCombine mode) @local
+{
+	switch (mode)
+	{
+		case AVERAGE:
+			return (a + b) * 0.5f;
+		case MINIMUM:
+			return math::min(a, b);
+		case MAXIMUM:
+			return math::max(a, b);
+		case MULTIPLY:
+			return a * b;
+	}
 }
 
-fn void Collision.create_xpbd_constraint(&collision, PhysicsWorld* world, float dt) @local {
-    Rigidbody* a = world.find_body(collision.a)!!;
-    Rigidbody* b = world.find_body(collision.b)!!;
-    Vec3 normal = collision.normal.normalize();
+fn void Collision.create_xpbd_constraint(&collision, PhysicsWorld* world, float dt) @local
+{
+	Rigidbody* a = world.find_body(collision.a)!!;
+	Rigidbody* b = world.find_body(collision.b)!!;
+	Vec3 normal = collision.normal.normalize();
 
-    // Combine material properties
-    PhysicsCombine friction_mode = (PhysicsCombine)math::max((int)a.material.friction_combine, (int)b.material.friction_combine);
-    PhysicsCombine restitution_mode = (PhysicsCombine)math::max((int)a.material.restitution_combine, (int)b.material.restitution_combine);
+	// Combine material properties
+	PhysicsCombine friction_mode = (PhysicsCombine)math::max(
+		(int)a.material.friction_combine,
+		(int)b.material.friction_combine
+	);
+	PhysicsCombine restitution_mode = (PhysicsCombine)math::max(
+		(int)a.material.restitution_combine,
+		(int)b.material.restitution_combine
+	);
 
-    float restitution = combine_values(a.material.restitution, b.material.restitution, restitution_mode);
-    float static_friction = combine_values(a.material.static_friction, b.material.static_friction, friction_mode);
+	float restitution = combine_values(a.material.restitution, b.material.restitution, restitution_mode);
+	float static_friction = combine_values(a.material.static_friction, b.material.static_friction, friction_mode);
 
-    // Contact arms (world-space offset from body center)
-    Vec3 rA = collision.contact[0] - a.collider.translation;
-    Vec3 rB = collision.contact[1] - b.collider.translation;
-    // Store in local space for recomputing after position changes
-    Vec3 rA_local = a.collider.rotation.conjugate() * rA;
-    Vec3 rB_local = b.collider.rotation.conjugate() * rB;
+	// Contact arms (world-space offset from body center)
+	Vec3 rA = collision.contact[0] - a.collider.translation;
+	Vec3 rB = collision.contact[1] - b.collider.translation;
+	// Store in local space for recomputing after position changes
+	Vec3 rA_local = a.collider.rotation.conjugate() * rA;
+	Vec3 rB_local = b.collider.rotation.conjugate() * rB;
 
-    // Compute tangent basis
-    Vec3 helper = (math::abs(normal.y) > 0.99)
-        ? {1.0f, 0.0f, 0.0f}
-        : {0.0f, 1.0f, 0.0f};
-    Vec3 tangent_1 = normal.cross(helper).normalize();
-    Vec3 tangent_2 = normal.cross(tangent_1);
+	// Compute tangent basis
+	Vec3 helper = (math::abs(normal.y) > 0.99) ? { 1.0f, 0.0f, 0.0f } : { 0.0f, 1.0f, 0.0f };
+	Vec3 tangent_1 = normal.cross(helper).normalize();
+	Vec3 tangent_2 = normal.cross(tangent_1);
 
-    // Pre-solve relative velocity for restitution (before XPBD changes positions)
-    Vec3 va = a.relative_velocity(rA);
-    Vec3 vb = b.relative_velocity(rB);
-    float rel_vel_n = (va - vb).dot(normal);
+	// Pre-solve relative velocity for restitution (before XPBD changes positions)
+	Vec3 va = a.relative_velocity(rA);
+	Vec3 vb = b.relative_velocity(rB);
+	float rel_vel_n = (va - vb).dot(normal);
 
-    XpbdConstraint constraint = {
-        .body_a = a,
-        .body_b = b,
-        .normal = normal,
-        .r_a = rA,
-        .r_b = rB,
-        .r_a_local = rA_local,
-        .r_b_local = rB_local,
-        .c_value = 0,  // Contact points are on body surfaces; separation already encodes penetration
-        .compliance = 0,
-        .lambda = 0,
-        .type = CONTACT_NORMAL,
-        .friction = static_friction,
-        .tangent1 = tangent_1,
-        .tangent2 = tangent_2,
-        .lambda_tangent1 = 0,
-        .lambda_tangent2 = 0,
-        .lambda_normal = 0,
-        .restitution = restitution,
-        .pre_solve_relative_vel_n = rel_vel_n,
-    };
+	XpbdConstraint constraint = {
+		.body_a = a,
+		.body_b = b,
+		.normal = normal,
+		.r_a = rA,
+		.r_b = rB,
+		.r_a_local = rA_local,
+		.r_b_local = rB_local,
+		.c_value = 0, // Contact points are on body surfaces; separation already encodes penetration
+		.compliance = 0,
+		.lambda = 0,
+		.type = CONTACT_NORMAL,
+		.friction = static_friction,
+		.tangent1 = tangent_1,
+		.tangent2 = tangent_2,
+		.lambda_tangent1 = 0,
+		.lambda_tangent2 = 0,
+		.lambda_normal = 0,
+		.restitution = restitution,
+		.pre_solve_relative_vel_n = rel_vel_n,
+	};
 
-    world.constraints.push(constraint);
+	world.constraints.push(constraint);
 }
 
 
 // Insert a contact into the sorted cache (deepest contacts first, up to MAX_CONTACTS_PER_PAIR)
-fn void PhysicsWorld.insert_contact_sorted(&self, Collision contact) @local {
-    usz insert_pos = self.contact_cache_count;
-    for (usz i = 0; i < self.contact_cache_count; i++) {
-        if (contact.depth > self.contact_cache[i].depth) {
-            insert_pos = i;
-            break;
-        }
-    }
+fn void PhysicsWorld.insert_contact_sorted(&self, Collision contact) @local
+{
+	usz insert_pos = self.contact_cache_count;
+	for (usz i = 0; i < self.contact_cache_count; i++)
+	{
+		if (contact.depth > self.contact_cache[i].depth)
+		{
+			insert_pos = i;
+			break;
+		}
+	}
 
-    if (self.contact_cache_count < MAX_CONTACTS_PER_PAIR) {
-        for (usz i = self.contact_cache_count; i > insert_pos; i--) {
-            self.contact_cache[i] = self.contact_cache[i - 1];
-        }
-        self.contact_cache[insert_pos] = contact;
-        self.contact_cache_count++;
-    } else if (insert_pos < MAX_CONTACTS_PER_PAIR) {
-        for (usz i = MAX_CONTACTS_PER_PAIR - 1; i > insert_pos; i--) {
-            self.contact_cache[i] = self.contact_cache[i - 1];
-        }
-        self.contact_cache[insert_pos] = contact;
-    }
+	if (self.contact_cache_count < MAX_CONTACTS_PER_PAIR)
+	{
+		for (usz i = self.contact_cache_count; i > insert_pos; i--)
+		{
+			self.contact_cache[i] = self.contact_cache[i - 1];
+		}
+		self.contact_cache[insert_pos] = contact;
+		self.contact_cache_count++;
+	}
+	else if (insert_pos < MAX_CONTACTS_PER_PAIR)
+	{
+		for (usz i = MAX_CONTACTS_PER_PAIR - 1; i > insert_pos; i--)
+		{
+			self.contact_cache[i] = self.contact_cache[i - 1];
+		}
+		self.contact_cache[insert_pos] = contact;
+	}
 }
 
 // Check collisions using CoACD decomposed convex pieces
 // Each piece is tested as a convex-convex collision (much faster than BVH triangles)
 // Note: At least one body must have a compound shape (pairs are pre-categorized)
-fn void PhysicsWorld.check_coacd_collision(&self, Rigidbody* body_a, Rigidbody* body_b, Pair pair) {
-    bool a_has_compound = body_a.collider.get_type() == ShapeType.COMPOUND;
-    bool b_has_compound = body_b.collider.get_type() == ShapeType.COMPOUND;
+fn void PhysicsWorld.check_coacd_collision(&self, Rigidbody* body_a, Rigidbody* body_b, Pair pair)
+{
+	bool a_has_compound = body_a.collider.get_type() == ShapeType.COMPOUND;
+	bool b_has_compound = body_b.collider.get_type() == ShapeType.COMPOUND;
 
-    // Determine which body has the compound shape
-    Rigidbody* compound_body;
-    Rigidbody* other_body;
-    bool compound_is_a;
+	// Determine which body has the compound shape
+	Rigidbody* compound_body;
+	Rigidbody* other_body;
+	bool compound_is_a;
 
-    if (a_has_compound) {
-        compound_body = body_a;
-        other_body = body_b;
-        compound_is_a = true;
-    } else {
-        // b must have compound (pairs are pre-categorized to ensure at least one has compound)
-        compound_body = body_b;
-        other_body = body_a;
-        compound_is_a = false;
-    }
+	if (a_has_compound)
+	{
+		compound_body = body_a;
+		other_body = body_b;
+		compound_is_a = true;
+	}
+	else
+	{
+		// b must have compound (pairs are pre-categorized to ensure at least one has compound)
+		compound_body = body_b;
+		other_body = body_a;
+		compound_is_a = false;
+	}
 
-    CompoundShape* compound = (CompoundShape*)compound_body.collider.shape;
+	CompoundShape* compound = (CompoundShape*)compound_body.collider.shape;
 
-    // Reset contact cache
-    self.contact_cache_count = 0;
+	// Reset contact cache
+	self.contact_cache_count = 0;
 
-    // Test each convex piece against the other body
-    foreach (&piece : compound.shapes) {
-        // Create transformed shape for this piece
-        // Piece transform is relative to compound body
-        TransformedShape piece_shape = {
-            .translation = compound_body.collider.translation + compound_body.collider.rotation * piece.offset,
-            .scale = compound_body.collider.scale,
-            .rotation = compound_body.collider.rotation,
-            .shape = piece.shape,
-        };
+	// Test each convex piece against the other body
+	foreach (&piece : compound.shapes)
+	{
+		// Create transformed shape for this piece
+		// Piece transform is relative to compound body
+		TransformedShape piece_shape = {
+			.translation = compound_body.collider.translation + compound_body.collider.rotation * piece.offset,
+			.scale = compound_body.collider.scale,
+			.rotation = compound_body.collider.rotation,
+			.shape = piece.shape,
+		};
 
-        // Early AABB rejection (use transformed AABB for world-space comparison)
-        Aabb3 piece_aabb = piece_shape.get_transformed_aabb();
-        if (!piece_aabb.collides(other_body.transformed_aabb)) continue;
+		// Early AABB rejection (use transformed AABB for world-space comparison)
+		Aabb3 piece_aabb = piece_shape.get_transformed_aabb();
+		if (!piece_aabb.collides(other_body.transformed_aabb)) continue;
 
-        // Check collision
-        CollisionInfo info;
-        if (compound_is_a) {
-            info = collision::check_convex_collision(&piece_shape, &other_body.collider, epa:true);
-        } else {
-            info = collision::check_convex_collision(&other_body.collider, &piece_shape, epa:true);
-        }
+		// Check collision
+		CollisionInfo info;
+		if (compound_is_a)
+		{
+			info = collision::check_convex_collision(&piece_shape, &other_body.collider, epa: true);
+		}
+		else
+		{
+			info = collision::check_convex_collision(&other_body.collider, &piece_shape, epa: true);
+		}
 
-        if (info.collided && info.depth > 0) {
-            self.insert_contact_sorted({
-                .a = pair.a,
-                .b = pair.b,
-                .normal = info.normal,
-                .contact = info.contact_points,
-                .depth = info.depth,
-            });
-        }
-    }
+		if (info.collided && info.depth > 0)
+		{
+			self.insert_contact_sorted(
+				{
+					.a = pair.a,
+					.b = pair.b,
+					.normal = info.normal,
+					.contact = info.contact_points,
+					.depth = info.depth,
+				}
+			);
+		}
+	}
 
-    // Push the best contacts to collision list
-    for (usz i = 0; i < self.contact_cache_count; i++) {
-        self.collisions.push(self.contact_cache[i]);
-    }
+	// Push the best contacts to collision list
+	for (usz i = 0; i < self.contact_cache_count; i++)
+	{
+		self.collisions.push(self.contact_cache[i]);
+	}
 }
 
-fn Vec3 closest_point_on_triangle_helper(Vec3 p, Vec3 a, Vec3 b, Vec3 c) @local {
-    return closest_point_on_triangle(p, a, b, c);
+fn Vec3 closest_point_on_triangle_helper(Vec3 p, Vec3 a, Vec3 b, Vec3 c) @local
+{
+	return closest_point_on_triangle(p, a, b, c);
 }
 
-fn bool test_sphere_triangle_collision(Vec3 sphere_center, float radius, Vec3 v0, Vec3 v1, Vec3 v2, 
-                                         Vec3 mesh_normal, Vec3* out_normal, Vec3[2]* out_contact, float* out_depth) @local {
-    Vec3 closest = closest_point_on_triangle_helper(sphere_center, v0, v1, v2);
-    Vec3 diff = sphere_center - closest;
-    float dist_sq = diff.sq_magnitude();
-    
-    if (dist_sq >= radius * radius) return false;
-    
-    if (dist_sq > DEGENERATE_DIST_SQ) {
-        float dist = math::sqrt(dist_sq);
-        *out_normal = diff / dist;
-        *out_depth = radius - dist;
-    } else {
-        *out_normal = mesh_normal;
-        *out_depth = radius;
-    }
-    *out_contact = { closest, sphere_center - *out_normal * radius };
-    return true;
+fn bool test_sphere_triangle_collision(
+	Vec3 sphere_center,
+	float radius,
+	Vec3 v0,
+	Vec3 v1,
+	Vec3 v2,
+	Vec3 mesh_normal,
+	Vec3* out_normal,
+	Vec3[2]* out_contact,
+	float* out_depth
+) @local
+{
+	Vec3 closest = closest_point_on_triangle_helper(sphere_center, v0, v1, v2);
+	Vec3 diff = sphere_center - closest;
+	float dist_sq = diff.sq_magnitude();
+
+	if (dist_sq >= radius * radius) return false;
+
+	if (dist_sq > DEGENERATE_DIST_SQ)
+	{
+		float dist = math::sqrt(dist_sq);
+		*out_normal = diff / dist;
+		*out_depth = radius - dist;
+	}
+	else
+	{
+		*out_normal = mesh_normal;
+		*out_depth = radius;
+	}
+	*out_contact = { closest, sphere_center - *out_normal * radius };
+	return true;
 }
 
-fn bool test_capsule_triangle_collision(Vec3 capsule_p0, Vec3 capsule_p1, float radius, 
-                                        Vec3 v0, Vec3 v1, Vec3 v2, Vec3 mesh_normal,
-                                        Vec3* out_normal, Vec3[2]* out_contact, float* out_depth) @local {
-    float min_dist_sq = float.max;
-    Vec3 closest_on_axis = {0,0,0};
-    Vec3 closest_on_tri = {0,0,0};
-    
-    Vec3 cp = closest_point_on_triangle(capsule_p0, v0, v1, v2);
-    float d = (capsule_p0 - cp).sq_magnitude();
-    if (d < min_dist_sq) { min_dist_sq = d; closest_on_axis = capsule_p0; closest_on_tri = cp; }
-    
-    cp = closest_point_on_triangle(capsule_p1, v0, v1, v2);
-    d = (capsule_p1 - cp).sq_magnitude();
-    if (d < min_dist_sq) { min_dist_sq = d; closest_on_axis = capsule_p1; closest_on_tri = cp; }
-    
-    Vec3 seg_pt = closest_point_on_segment(v0, capsule_p0, capsule_p1);
-    d = (seg_pt - v0).sq_magnitude();
-    if (d < min_dist_sq) { min_dist_sq = d; closest_on_axis = seg_pt; closest_on_tri = v0; }
-    
-    seg_pt = closest_point_on_segment(v1, capsule_p0, capsule_p1);
-    d = (seg_pt - v1).sq_magnitude();
-    if (d < min_dist_sq) { min_dist_sq = d; closest_on_axis = seg_pt; closest_on_tri = v1; }
-    
-    seg_pt = closest_point_on_segment(v2, capsule_p0, capsule_p1);
-    d = (seg_pt - v2).sq_magnitude();
-    if (d < min_dist_sq) { min_dist_sq = d; closest_on_axis = seg_pt; closest_on_tri = v2; }
-    
-    Vec3 c1, c2;
-    closest_points_segments(capsule_p0, capsule_p1, v0, v1, &c1, &c2);
-    d = (c1 - c2).sq_magnitude();
-    if (d < min_dist_sq) { min_dist_sq = d; closest_on_axis = c1; closest_on_tri = c2; }
-    
-    closest_points_segments(capsule_p0, capsule_p1, v1, v2, &c1, &c2);
-    d = (c1 - c2).sq_magnitude();
-    if (d < min_dist_sq) { min_dist_sq = d; closest_on_axis = c1; closest_on_tri = c2; }
-    
-    closest_points_segments(capsule_p0, capsule_p1, v2, v0, &c1, &c2);
-    d = (c1 - c2).sq_magnitude();
-    if (d < min_dist_sq) { min_dist_sq = d; closest_on_axis = c1; closest_on_tri = c2; }
-    
-    if (min_dist_sq >= radius * radius) return false;
-    
-    Vec3 diff = closest_on_axis - closest_on_tri;
-    float dist_sq = diff.sq_magnitude();
-    
-    if (dist_sq > DEGENERATE_DIST_SQ) {
-        float dist = math::sqrt(dist_sq);
-        *out_normal = diff / dist;
-        *out_depth = radius - dist;
-    } else {
-        *out_normal = mesh_normal;
-        *out_depth = radius;
-    }
-    *out_contact = { closest_on_tri, closest_on_axis - *out_normal * radius };
-    return true;
+fn bool test_capsule_triangle_collision(
+	Vec3 capsule_p0,
+	Vec3 capsule_p1,
+	float radius,
+	Vec3 v0,
+	Vec3 v1,
+	Vec3 v2,
+	Vec3 mesh_normal,
+	Vec3* out_normal,
+	Vec3[2]* out_contact,
+	float* out_depth
+) @local
+{
+	float min_dist_sq = float.max;
+	Vec3 closest_on_axis = { 0, 0, 0 };
+	Vec3 closest_on_tri = { 0, 0, 0 };
+
+	Vec3 cp = closest_point_on_triangle(capsule_p0, v0, v1, v2);
+	float d = (capsule_p0 - cp).sq_magnitude();
+	if (d < min_dist_sq)
+	{
+		min_dist_sq = d;
+		closest_on_axis = capsule_p0;
+		closest_on_tri = cp;
+	}
+
+	cp = closest_point_on_triangle(capsule_p1, v0, v1, v2);
+	d = (capsule_p1 - cp).sq_magnitude();
+	if (d < min_dist_sq)
+	{
+		min_dist_sq = d;
+		closest_on_axis = capsule_p1;
+		closest_on_tri = cp;
+	}
+
+	Vec3 seg_pt = closest_point_on_segment(v0, capsule_p0, capsule_p1);
+	d = (seg_pt - v0).sq_magnitude();
+	if (d < min_dist_sq)
+	{
+		min_dist_sq = d;
+		closest_on_axis = seg_pt;
+		closest_on_tri = v0;
+	}
+
+	seg_pt = closest_point_on_segment(v1, capsule_p0, capsule_p1);
+	d = (seg_pt - v1).sq_magnitude();
+	if (d < min_dist_sq)
+	{
+		min_dist_sq = d;
+		closest_on_axis = seg_pt;
+		closest_on_tri = v1;
+	}
+
+	seg_pt = closest_point_on_segment(v2, capsule_p0, capsule_p1);
+	d = (seg_pt - v2).sq_magnitude();
+	if (d < min_dist_sq)
+	{
+		min_dist_sq = d;
+		closest_on_axis = seg_pt;
+		closest_on_tri = v2;
+	}
+
+	Vec3 c1, c2;
+	closest_points_segments(capsule_p0, capsule_p1, v0, v1, &c1, &c2);
+	d = (c1 - c2).sq_magnitude();
+	if (d < min_dist_sq)
+	{
+		min_dist_sq = d;
+		closest_on_axis = c1;
+		closest_on_tri = c2;
+	}
+
+	closest_points_segments(capsule_p0, capsule_p1, v1, v2, &c1, &c2);
+	d = (c1 - c2).sq_magnitude();
+	if (d < min_dist_sq)
+	{
+		min_dist_sq = d;
+		closest_on_axis = c1;
+		closest_on_tri = c2;
+	}
+
+	closest_points_segments(capsule_p0, capsule_p1, v2, v0, &c1, &c2);
+	d = (c1 - c2).sq_magnitude();
+	if (d < min_dist_sq)
+	{
+		min_dist_sq = d;
+		closest_on_axis = c1;
+		closest_on_tri = c2;
+	}
+
+	if (min_dist_sq >= radius * radius) return false;
+
+	Vec3 diff = closest_on_axis - closest_on_tri;
+	float dist_sq = diff.sq_magnitude();
+
+	if (dist_sq > DEGENERATE_DIST_SQ)
+	{
+		float dist = math::sqrt(dist_sq);
+		*out_normal = diff / dist;
+		*out_depth = radius - dist;
+	}
+	else
+	{
+		*out_normal = mesh_normal;
+		*out_depth = radius;
+	}
+	*out_contact = { closest_on_tri, closest_on_axis - *out_normal * radius };
+	return true;
 }
 
 // Thread-safe version of check_bvh_collision that returns result instead of pushing to list
-fn Collision? PhysicsWorld.test_bvh_collision(&self, Rigidbody* body_a, Rigidbody* body_b, Pair pair) @local {
-    bool a_has_bvh = body_a.has_mesh_bvh();
+fn Collision? PhysicsWorld.test_bvh_collision(&self, Rigidbody* body_a, Rigidbody* body_b, Pair pair) @local
+{
+	bool a_has_bvh = body_a.has_mesh_bvh();
 
-    Rigidbody* mesh_body;
-    Rigidbody* other_body;
-    bool mesh_is_a;
+	Rigidbody* mesh_body;
+	Rigidbody* other_body;
+	bool mesh_is_a;
 
-    if (a_has_bvh) {
-        mesh_body = body_a;
-        other_body = body_b;
-        mesh_is_a = true;
-    } else {
-        mesh_body = body_b;
-        other_body = body_a;
-        mesh_is_a = false;
-    }
+	if (a_has_bvh)
+	{
+		mesh_body = body_a;
+		other_body = body_b;
+		mesh_is_a = true;
+	}
+	else
+	{
+		mesh_body = body_b;
+		other_body = body_a;
+		mesh_is_a = false;
+	}
 
-    Mesh* mesh = (Mesh*)mesh_body.collider.shape;
+	Mesh* mesh = (Mesh*)mesh_body.collider.shape;
 
-    // Pre-compute transform values for AABB calculation
-    Vec3 mesh_translation = mesh_body.collider.translation;
-    Vec3 mesh_scale = mesh_body.collider.scale;
-    QuaternionValue mesh_rotation = mesh_body.collider.rotation;
+	// Pre-compute transform values for AABB calculation
+	Vec3 mesh_translation = mesh_body.collider.translation;
+	Vec3 mesh_scale = mesh_body.collider.scale;
+	QuaternionValue mesh_rotation = mesh_body.collider.rotation;
 
-    Aabb3 local_aabb = other_body.transformed_aabb.inverse_transform(
-        mesh_translation,
-        mesh_scale,
-        mesh_rotation
-    );
+	Aabb3 local_aabb = other_body.transformed_aabb.inverse_transform(mesh_translation, mesh_scale, mesh_rotation);
 
-    List{TriangleVerts} triangles;
-    triangles.init(allocator: mem);
-    defer triangles.free();
-    mesh.bvh.query_all_triangles(local_aabb, &triangles);
+	List {TriangleVerts} triangles;
+	triangles.init(allocator: mem);
+	defer triangles.free();
+	mesh.bvh.query_all_triangles(local_aabb, &triangles);
 
-    // Check if we can use specialized collision tests (sphere/capsule vs triangle)
-    ShapeType other_type = other_body.collider.get_type();
-    Vec3 other_scale = other_body.collider.scale;
-    bool uniform_scale = math::abs(other_scale.x - other_scale.y) < UNIFORM_SCALE_TOL &&
-                         math::abs(other_scale.y - other_scale.z) < UNIFORM_SCALE_TOL;
+	// Check if we can use specialized collision tests (sphere/capsule vs triangle)
+	ShapeType other_type = other_body.collider.get_type();
+	Vec3 other_scale = other_body.collider.scale;
+	bool uniform_scale = math::abs(other_scale.x - other_scale.y) < UNIFORM_SCALE_TOL
+		&& math::abs(other_scale.y - other_scale.z) < UNIFORM_SCALE_TOL;
 
-    bool use_sphere = uniform_scale && other_type == SPHERE;
-    bool use_capsule = uniform_scale && other_type == CAPSULE;
-    bool use_specialized = use_sphere || use_capsule;
+	bool use_sphere = uniform_scale && other_type == SPHERE;
+	bool use_capsule = uniform_scale && other_type == CAPSULE;
+	bool use_specialized = use_sphere || use_capsule;
 
-    Vec3 sphere_center;
-    Vec3 capsule_p0;
-    Vec3 capsule_p1;
-    float world_radius = 0;
+	Vec3 sphere_center;
+	Vec3 capsule_p0;
+	Vec3 capsule_p1;
+	float world_radius = 0;
 
-    if (use_sphere) {
-        Sphere* sphere = (Sphere*)other_body.collider.shape;
-        sphere_center = other_body.collider.rotation * (sphere.center * other_scale) + other_body.collider.translation;
-        world_radius = sphere.radius * other_scale.x;
-    } else if (use_capsule) {
-        Capsule* capsule = (Capsule*)other_body.collider.shape;
-        // Capsule axis endpoints in local space (from support function convention)
-        Vec3 local_p0 = {0, capsule.radius_bottom, 0};
-        Vec3 local_p1 = {0, capsule.radius_top, 0};
-        capsule_p0 = other_body.collider.rotation * (local_p0 * other_scale) + other_body.collider.translation;
-        capsule_p1 = other_body.collider.rotation * (local_p1 * other_scale) + other_body.collider.translation;
-        world_radius = capsule.height * other_scale.x;
-    }
+	if (use_sphere)
+	{
+		Sphere* sphere = (Sphere*)other_body.collider.shape;
+		sphere_center = other_body.collider.rotation * (sphere.center * other_scale) + other_body.collider.translation;
+		world_radius = sphere.radius * other_scale.x;
+	}
+	else if (use_capsule)
+	{
+		Capsule* capsule = (Capsule*)other_body.collider.shape;
+		// Capsule axis endpoints in local space (from support function convention)
+		Vec3 local_p0 = { 0, capsule.radius_bottom, 0 };
+		Vec3 local_p1 = { 0, capsule.radius_top, 0 };
+		capsule_p0 = other_body.collider.rotation * (local_p0 * other_scale) + other_body.collider.translation;
+		capsule_p1 = other_body.collider.rotation * (local_p1 * other_scale) + other_body.collider.translation;
+		world_radius = capsule.height * other_scale.x;
+	}
 
-    // GJK/EPA fallback: create reusable triangle mesh
-    Mesh tri_mesh;
-    TransformedShape tri_shape;
-    if (!use_specialized) {
-        tri_mesh.vertices.init(allocator: mem);
-        tri_mesh.vertices.push_all({{0,0,0}, {0,0,0}, {0,0,0}, {0, 1, 2}});
-        tri_shape = {
-            .translation = mesh_translation,
-            .scale = mesh_scale,
-            .rotation = mesh_rotation,
-            .shape = &tri_mesh,
-        };
-    }
-    defer tri_mesh.free();
+	// GJK/EPA fallback: create reusable triangle mesh
+	Mesh tri_mesh;
+	TransformedShape tri_shape;
+	if (!use_specialized)
+	{
+		tri_mesh.vertices.init(allocator: mem);
+		tri_mesh.vertices.push_all({ { 0, 0, 0 }, { 0, 0, 0 }, { 0, 0, 0 }, { 0, 1, 2 } });
+		tri_shape = {
+			.translation = mesh_translation,
+			.scale = mesh_scale,
+			.rotation = mesh_rotation,
+			.shape = &tri_mesh,
+		};
+	}
+	defer tri_mesh.free();
 
-    Vec3 best_normal;
-    Vec3[2] best_contact;
-    float max_depth = 0;
+	Vec3 best_normal;
+	Vec3[2] best_contact;
+	float max_depth = 0;
 
-    foreach (tri : triangles) {
-        // Transform triangle to world space
-        Vec3 v0 = mesh_rotation * (tri[0] * mesh_scale) + mesh_translation;
-        Vec3 v1 = mesh_rotation * (tri[1] * mesh_scale) + mesh_translation;
-        Vec3 v2 = mesh_rotation * (tri[2] * mesh_scale) + mesh_translation;
+	foreach (tri : triangles)
+	{
+		// Transform triangle to world space
+		Vec3 v0 = mesh_rotation * (tri[0] * mesh_scale) + mesh_translation;
+		Vec3 v1 = mesh_rotation * (tri[1] * mesh_scale) + mesh_translation;
+		Vec3 v2 = mesh_rotation * (tri[2] * mesh_scale) + mesh_translation;
 
-        Aabb3 tri_aabb = {
-            .min = math::min(v0, math::min(v1, v2)),
-            .max = math::max(v0, math::max(v1, v2))
-        };
+		Aabb3 tri_aabb = { .min = math::min(v0, math::min(v1, v2)), .max = math::max(v0, math::max(v1, v2)) };
 
-        if (!tri_aabb.collides(other_body.transformed_aabb)) continue;
+		if (!tri_aabb.collides(other_body.transformed_aabb)) continue;
 
-        if (use_specialized) {
-            Vec3 tri_normal = (v1 - v0).cross(v2 - v0).normalize();
-            Vec3 n;
-            Vec3[2] contact;
-            float depth;
-            
-            bool hit = false;
-            if (use_sphere) {
-                hit = test_sphere_triangle_collision(sphere_center, world_radius, v0, v1, v2, tri_normal, &n, &contact, &depth);
-            } else {
-                hit = test_capsule_triangle_collision(capsule_p0, capsule_p1, world_radius, v0, v1, v2, tri_normal, &n, &contact, &depth);
-            }
-            
-            if (hit && depth > max_depth) {
-                max_depth = depth;
-                if (mesh_is_a) {
-                    best_normal = n;
-                    best_contact = contact;
-                } else {
-                    best_normal = -n;
-                    best_contact = { contact[1], contact[0] };
-                }
-            }
-        } else {
-            // GJK/EPA fallback for other shape types
-            tri_mesh.vertices[0] = tri[0];
-            tri_mesh.vertices[1] = tri[1];
-            tri_mesh.vertices[2] = tri[2];
+		if (use_specialized)
+		{
+			Vec3 tri_normal = (v1 - v0).cross(v2 - v0).normalize();
+			Vec3 n;
+			Vec3[2] contact;
+			float depth;
 
-            CollisionInfo info;
-            if (mesh_is_a) {
-                info = collision::check_convex_collision(&tri_shape, &other_body.collider, epa:true);
-            } else {
-                info = collision::check_convex_collision(&other_body.collider, &tri_shape, epa:true);
-            }
+			bool hit = false;
+			if (use_sphere)
+			{
+				hit = test_sphere_triangle_collision(
+					sphere_center,
+					world_radius,
+					v0,
+					v1,
+					v2,
+					tri_normal,
+					&n,
+					&contact,
+					&depth
+				);
+			}
+			else
+			{
+				hit = test_capsule_triangle_collision(
+					capsule_p0,
+					capsule_p1,
+					world_radius,
+					v0,
+					v1,
+					v2,
+					tri_normal,
+					&n,
+					&contact,
+					&depth
+				);
+			}
 
-            if (info.collided && info.depth > max_depth) {
-                max_depth = info.depth;
-                best_normal = info.normal;
-                best_contact = info.contact_points;
-            }
-        }
-    }
+			if (hit && depth > max_depth)
+			{
+				max_depth = depth;
+				if (mesh_is_a)
+				{
+					best_normal = n;
+					best_contact = contact;
+				}
+				else
+				{
+					best_normal = -n;
+					best_contact = { contact[1], contact[0] };
+				}
+			}
+		}
+		else
+		{
+			// GJK/EPA fallback for other shape types
+			tri_mesh.vertices[0] = tri[0];
+			tri_mesh.vertices[1] = tri[1];
+			tri_mesh.vertices[2] = tri[2];
 
-    if (max_depth > 0) {
-        // Clamp depth to prevent extreme correction forces from BVH triangle collisions
-        float clamped_depth = math::min(max_depth, CLAMPED_DEPTH_MAX);
-        return {
-            .a = pair.a,
-            .b = pair.b,
-            .normal = best_normal,
-            .contact = best_contact,
-            .depth = clamped_depth,
-        };
-    }
+			CollisionInfo info;
+			if (mesh_is_a)
+			{
+				info = collision::check_convex_collision(&tri_shape, &other_body.collider, epa: true);
+			}
+			else
+			{
+				info = collision::check_convex_collision(&other_body.collider, &tri_shape, epa: true);
+			}
 
-    return NOT_FOUND~;
+			if (info.collided && info.depth > max_depth)
+			{
+				max_depth = info.depth;
+				best_normal = info.normal;
+				best_contact = info.contact_points;
+			}
+		}
+	}
+
+	if (max_depth > 0)
+	{
+		// Clamp depth to prevent extreme correction forces from BVH triangle collisions
+		float clamped_depth = math::min(max_depth, CLAMPED_DEPTH_MAX);
+		return { .a = pair.a, .b = pair.b, .normal = best_normal, .contact = best_contact, .depth = clamped_depth, };
+	}
+
+	return NOT_FOUND~;
 }
