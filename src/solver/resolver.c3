@@ -958,7 +958,7 @@ fn bool is_manifold_shape(TransformedShape* collider) @local @inline
 // Expand a single EPA contact into a multi-contact manifold.
 // For flat-on-flat contacts (box on floor), projects vertices of the incident body
 // onto the reference body's contact plane and creates additional contacts.
-fn void PhysicsWorld.generate_manifold(&self, Collision* collision) @local
+fn void PhysicsWorld.generate_manifold(&self, Collision* collision)
 {
 	Rigidbody* a = self.find_body(collision.a)!!;
 	Rigidbody* b = self.find_body(collision.b)!!;
@@ -1059,7 +1059,7 @@ fn void PhysicsWorld.generate_manifold(&self, Collision* collision) @local
 	}
 }
 
-fn void PhysicsWorld.dispatch_collision_tasks(&self, Pair[] pairs, ThreadFn worker_fn) @local
+fn void PhysicsWorld.dispatch_collision_tasks(&self, Pair[] pairs, ThreadFn worker_fn)
 {
 	usz count = pairs.len;
 	if (count == 0) return;
@@ -1117,7 +1117,7 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 1, uint sub_s
 	}
 }
 
-fn void PhysicsWorld.run_substep(&self, float time, uint step_count) @local
+fn void PhysicsWorld.run_substep(&self, float time, uint step_count)
 {
 	// Swap warm-start caches: previous frame's results become seeds for this frame
 	self.warm_start_prev.free();
@@ -1362,7 +1362,7 @@ fn void PhysicsWorld.run_substep(&self, float time, uint step_count) @local
 }
 
 // XPBD predict phase: save prev state, apply gravity, advance positions
-fn void PhysicsWorld.xpbd_predict(&self, float dt) @local
+fn void PhysicsWorld.xpbd_predict(&self, float dt)
 {
 	self.active_bodies.clear();
 
@@ -1429,7 +1429,7 @@ fn void PhysicsWorld.xpbd_predict(&self, float dt) @local
 }
 
 // XPBD derive phase: compute velocities from position deltas, restitution, update spatial map
-fn void PhysicsWorld.xpbd_derive_and_update(&self, float dt) @local
+fn void PhysicsWorld.xpbd_derive_and_update(&self, float dt)
 {
 	usz num_active = self.active_bodies.len();
 	if (num_active == 0) return;
@@ -1549,7 +1549,7 @@ fn void PhysicsWorld.xpbd_derive_and_update(&self, float dt) @local
 
 
 // Island-parallel XPBD constraint solving
-fn void PhysicsWorld.xpbd_solve_constraints(&self, uint step_count) @local
+fn void PhysicsWorld.xpbd_solve_constraints(&self, uint step_count)
 {
 	if (self.constraints.len() == 0) return;
 
@@ -1626,7 +1626,7 @@ fn int softbody_solve_worker(void* arg) @local
 }
 
 // XPBD soft body solving phase
-fn void PhysicsWorld.solve_soft_bodies(&self, float time) @local
+fn void PhysicsWorld.solve_soft_bodies(&self, float time)
 {
 	if (self.soft_bodies.len() == 0) return;
 
@@ -1722,7 +1722,7 @@ fn void PhysicsWorld.solve_soft_bodies(&self, float time) @local
 
 
 // Shared sleep state update logic
-fn void PhysicsWorld.update_sleep_state(&self) @local
+fn void PhysicsWorld.update_sleep_state(&self)
 {
 	HashMap {usz, bool} island_can_sleep;
 	HashMap {usz, bool} island_checked;
@@ -1785,7 +1785,7 @@ fn float combine_values(float a, float b, PhysicsCombine mode) @local
 	}
 }
 
-fn void Collision.create_xpbd_constraint(&collision, PhysicsWorld* world, float dt) @local
+fn void Collision.create_xpbd_constraint(&collision, PhysicsWorld* world, float dt)
 {
 	Rigidbody* a = world.find_body(collision.a)!!;
 	Rigidbody* b = world.find_body(collision.b)!!;
@@ -1848,7 +1848,7 @@ fn void Collision.create_xpbd_constraint(&collision, PhysicsWorld* world, float 
 
 
 // Insert a contact into the sorted cache (deepest contacts first, up to MAX_CONTACTS_PER_PAIR)
-fn void PhysicsWorld.insert_contact_sorted(&self, Collision contact) @local
+fn void PhysicsWorld.insert_contact_sorted(&self, Collision contact)
 {
 	usz insert_pos = self.contact_cache_count;
 	for (usz i = 0; i < self.contact_cache_count; i++)
@@ -2108,7 +2108,7 @@ fn bool test_capsule_triangle_collision(
 }
 
 // Thread-safe version of check_bvh_collision that returns result instead of pushing to list
-fn Collision? PhysicsWorld.test_bvh_collision(&self, Rigidbody* body_a, Rigidbody* body_b, Pair pair) @local
+fn Collision? PhysicsWorld.test_bvh_collision(&self, Rigidbody* body_a, Rigidbody* body_b, Pair pair)
 {
 	bool a_has_bvh = body_a.has_mesh_bvh();
 

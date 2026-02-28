@@ -395,7 +395,7 @@ fn void SoftBody.xpbd_solve(&self, Vec3 gravity, float dt, PhysicsWorld* world =
 }
 
 // XPBD distance constraint solver
-fn void SoftBody.solve_distance_constraint(&self, DistanceConstraint* c, float dt) @local
+fn void SoftBody.solve_distance_constraint(&self, DistanceConstraint* c, float dt)
 {
 	Vec3 p0 = self.positions[c.p0];
 	Vec3 p1 = self.positions[c.p1];
@@ -423,7 +423,7 @@ fn void SoftBody.solve_distance_constraint(&self, DistanceConstraint* c, float d
 }
 
 // XPBD volume constraint solver (pressure-based)
-fn void SoftBody.solve_volume_constraint(&self, VolumeConstraint* c, float dt) @local
+fn void SoftBody.solve_volume_constraint(&self, VolumeConstraint* c, float dt)
 {
 	float current_volume = self.compute_signed_volume();
 	float constraint_value = current_volume - c.rest_volume;
@@ -484,7 +484,7 @@ fn void SoftBody.solve_volume_constraint(&self, VolumeConstraint* c, float dt) @
 }
 
 // XPBD bending constraint solver (dihedral angle)
-fn void SoftBody.solve_bending_constraint(&self, BendingConstraint* c, float dt) @local
+fn void SoftBody.solve_bending_constraint(&self, BendingConstraint* c, float dt)
 {
 	Vec3 p0 = self.positions[c.p0];
 	Vec3 p1 = self.positions[c.p1];
@@ -553,7 +553,7 @@ fn void SoftBody.apply_particle_friction(
 	float correction,
 	float friction,
 	float dt
-) @local
+)
 {
 	if (friction <= 0) return;
 	Vec3 vel = self.velocities[particle];
@@ -572,7 +572,7 @@ fn void SoftBody.solve_collision_constraint(
 	SoftCollisionConstraint* c,
 	float dt,
 	PhysicsWorld* world = null
-) @local
+)
 {
 	float w_particle = self.inverse_masses[c.particle];
 	if (w_particle == 0) return;
@@ -613,7 +613,7 @@ fn void SoftBody.solve_collision_constraint(
 }
 
 // Apply particle pin constraint
-fn void SoftBody.apply_pin(&self, ParticlePin* pin, PhysicsWorld* world = null) @local
+fn void SoftBody.apply_pin(&self, ParticlePin* pin, PhysicsWorld* world = null)
 {
 	if (pin.body_id != 0 && world != null)
 	{

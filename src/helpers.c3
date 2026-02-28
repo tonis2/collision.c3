@@ -112,9 +112,9 @@ fn Matrix3f QuaternionValue.as_mat3(self)
 	};
 }
 
-fn void Vec3.set(&self, Vec3 new) @private => mem::copy(self, &new, Vec3.sizeof, 0);
+fn void Vec3.set(&self, Vec3 new) => mem::copy(self, &new, Vec3.sizeof, 0);
 
-fn usz Vec3.hash(&self) @private
+fn usz Vec3.hash(&self)
 {
 	usz hash = 17;
 	hash = (usz)(hash * 23f + self.x);

@@ -169,7 +169,6 @@ fn Vec3 Ray.intersect(&self, Vec3 direction)
 	return intersection;
 }
 
-
 fn float Sphere.intersect(&self, Ray ray) @dynamic
 {
 	Vec3 oc = ray.origin - self.center;

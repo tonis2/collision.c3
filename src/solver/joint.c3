@@ -43,7 +43,7 @@ struct GenericJoint3D
 	float stifness;
 }
 
-fn void GenericJoint3D.create_xpbd_constraint(&joint, PhysicsWorld* world, float dt) @local
+fn void GenericJoint3D.create_xpbd_constraint(&joint, PhysicsWorld* world, float dt)
 {
 	Rigidbody* a = world.find_body(joint.body_a)!!;
 	Rigidbody* b = world.find_body(joint.body_b)!!;
