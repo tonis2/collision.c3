@@ -6,7 +6,7 @@ import std::math;
 import std::collections::list;
 import std::time;
 
-enum Axis : const int {
+constdef Axis {
    X,
    Y,
    Z,
