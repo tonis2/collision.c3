@@ -142,7 +142,7 @@ fn int find_farthest_from_plane(Vec3[] points, int p0, int p1, int p2) @local {
 }
 
 // Build initial tetrahedron from 4 non-coplanar points
-fn bool build_initial_tetrahedron(Vec3[] points, List{HullFace}* faces) @local {
+fn bool build_initial_tetrahedron(Vec3[] points, List{HullFace}* faces) {
     if (points.len < 4) return false;
 
     // Find extreme points
@@ -194,7 +194,7 @@ fn bool build_initial_tetrahedron(Vec3[] points, List{HullFace}* faces) @local {
 }
 
 // Assign each point to the face it's farthest outside of
-fn void assign_points_to_faces(Vec3[] points, List{HullFace}* faces, usz[4] tetra_verts) @local {
+fn void assign_points_to_faces(Vec3[] points, List{HullFace}* faces, usz[4] tetra_verts) {
     for (usz i = 0; i < points.len; i++) {
         // Skip tetrahedron vertices
         bool is_tetra = false;
@@ -227,7 +227,7 @@ fn void assign_points_to_faces(Vec3[] points, List{HullFace}* faces, usz[4] tetr
 
 // Find horizon edges - edges between visible and non-visible faces
 fn void find_horizon(List{HullFace}* faces, Vec3 eye_point, Vec3[] points,
-                     List{Pair}* horizon, List{int}* visible_faces) @local {
+                     List{Pair}* horizon, List{int}* visible_faces) {
     // Mark all faces as visible or not from eye point
     for (usz i = 0; i < faces.len(); i++) {
         if (!faces.get(i).alive) continue;
@@ -284,7 +284,7 @@ fn void find_horizon(List{HullFace}* faces, Vec3 eye_point, Vec3[] points,
 
 // Main QuickHull iteration - expand hull to include a point
 // Returns true if hull was modified, false otherwise
-fn bool expand_hull(List{HullFace}* faces, Vec3[] points, int point_idx) @local {
+fn bool expand_hull(List{HullFace}* faces, Vec3[] points, int point_idx) {
     Vec3 eye = points[point_idx];
 
     List{Pair} horizon;
@@ -317,7 +317,7 @@ fn bool expand_hull(List{HullFace}* faces, Vec3[] points, int point_idx) @local 
 }
 
 // Redistribute points from removed faces to new faces
-fn void redistribute_points(List{HullFace}* faces, Vec3[] points, usz first_new_face, bool[] hull_vertices) @local {
+fn void redistribute_points(List{HullFace}* faces, Vec3[] points, usz first_new_face, bool[] hull_vertices) {
     // Collect orphaned points from dead faces
     List{int} orphans;
     defer orphans.free();

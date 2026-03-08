@@ -299,7 +299,7 @@ fn Aabb3 Cylinder.get_aabb(&self) @dynamic {
 
 fn Vec3 TransformedShape.get_world_center_of_mass(&self, Vec3 center_of_mass) => self.rotation * center_of_mass + self.translation;
 
-fn float scalar_triple_product(Vec3 a, Vec3 b, Vec3 c) @local {
+fn float scalar_triple_product(Vec3 a, Vec3 b, Vec3 c) {
     // (a x b) . c
     float cross_x = a.y * b.z - a.z * b.y;
     float cross_y = a.z * b.x - a.x * b.z;

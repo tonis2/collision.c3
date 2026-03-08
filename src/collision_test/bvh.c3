@@ -58,7 +58,7 @@ fn void TriBVHNode.free_indexed(&self) {
     self.free();
 }
 
-fn int compare_triangles(TriangleInfo a, TriangleInfo b, usz* split_axis) @local {
+fn int compare_triangles(TriangleInfo a, TriangleInfo b, usz* split_axis) {
     float val_a, val_b;
 
     if (*split_axis == 0) {
@@ -211,7 +211,7 @@ fn TriBVHNode* create_indexed_tri_bvh(Vec3* vertices, Triangle* triangles, usz t
     return tree;
 }
 
-fn void set_indexed_bvh_data(TriBVHNode* node, Vec3* vertices, Triangle* triangles, usz* sorted_indices) @local {
+fn void set_indexed_bvh_data(TriBVHNode* node, Vec3* vertices, Triangle* triangles, usz* sorted_indices) {
     node.vertices = vertices;
     node.triangles = triangles;
     node.sorted_indices = sorted_indices;

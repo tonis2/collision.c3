@@ -39,133 +39,81 @@ struct GenericJoint3D {
    float dampening;
    float stifness;
 
-   // AVBD warm-start caches (linear[0..2], angular[3..5])
-   float[6] impulse;        // Lambda cache
-   float[6] penalty_cache;  // Penalty cache
+   // AVBD warm-start caches
+   Vec3 lambda_lin;
+   Vec3 lambda_ang;
+   Vec3 penalty_lin;
+   Vec3 penalty_ang;
 }
 
-fn void GenericJoint3D.create_force(&joint, PhysicsWorld* world, float dt) @local {
+// Create JointForce(s) from GenericJoint3D (matching reference Joint::initialize + constructor)
+fn void GenericJoint3D.create_force(&joint, PhysicsWorld* world, float dt) {
     Rigidbody* a = world.find_body(joint.body_a)!!;
     Rigidbody* b = world.find_body(joint.body_b)!!;
 
-    Vec3 world_a = a.collider.translation + (a.collider.rotation * joint.anchor_a);
-    Vec3 world_b = b.collider.translation + (b.collider.rotation * joint.anchor_b);
+    // Compute torque arm (reference: lengthSq(sizeA + sizeB))
+    Vec3 size_a = a.transformed_aabb.max - a.transformed_aabb.min;
+    Vec3 size_b = b.transformed_aabb.max - b.transformed_aabb.min;
+    float torque_arm = (size_a + size_b).sq_magnitude();
+    if (torque_arm < 1.0f) torque_arm = 1.0f;
 
-    // === Linear limits → one AvbdForce (up to 3 rows) ===
+    float alpha = world.avbd_alpha;
+    float gamma = world.avbd_gamma;
+
+    // Determine stiffness for linear and angular parts
+    float stiffness_lin = 0.0f;
+    float stiffness_ang = 0.0f;
+
+    // If we have linear limits, this is a ball-socket (infinite stiffness for lock axes)
     if (joint.linear_limits.len() > 0) {
-        AvbdForce force = {
-            .body_a = a, .body_b = b,
-            .anchor_a = joint.anchor_a,
-            .anchor_b = joint.anchor_b,
-            .is_contact = false,
-            .is_angular = false,
-        };
-
-        usz num_rows = 0;
-        Vec3 diff = world_a - world_b;
-
-        foreach (limit: joint.linear_limits) {
-            if (num_rows >= MAX_FORCE_ROWS) break;
-
-            Vec3 normal = limit.axes;
-            usz row = num_rows;
-
-            // Position error: (A-B).dot(axis) to match AVBD Jacobian convention
-            float position_error = diff.dot(normal);
-
-            force.basis[row] = normal;
-            force.c_value[row] = position_error;
-            force.fmin[row] = -float.max;
-            force.fmax[row] = float.max;
-            force.stiffness[row] = float.max;
-
-            // Warm-start: decay lambda and penalty from previous frame
-            usz cache_idx = row;
-            force.lambda[row] = joint.impulse[cache_idx] * AVBD_ALPHA * AVBD_GAMMA;
-            force.penalty[row] = math::clamp(
-                (joint.penalty_cache[cache_idx] > 0 ? joint.penalty_cache[cache_idx] : PENALTY_MIN) * AVBD_GAMMA,
-                PENALTY_MIN, PENALTY_MAX);
-
-            // Handle limits
-            if (limit.min != 0 || limit.max != 0) {
-                if (limit.min != 0 && position_error < limit.min) {
-                    force.c_value[row] = position_error - limit.min;
-                    force.fmin[row] = 0;
-                    force.fmax[row] = float.max;
-                } else if (limit.max != 0 && position_error > limit.max) {
-                    force.c_value[row] = position_error - limit.max;
-                    force.fmin[row] = -float.max;
-                    force.fmax[row] = 0;
-                }
-            }
-
-            num_rows++;
-        }
-
-        force.num_rows = num_rows;
-        if (num_rows > 0) {
-            world.forces.push(force);
-        }
+        stiffness_lin = float.max;  // Hard constraint by default
     }
 
-    // === Angular limits → one AvbdForce (up to 3 rows) ===
     if (joint.angular_limits.len() > 0) {
-        AvbdForce force = {
-            .body_a = a, .body_b = b,
-            .is_contact = false,
-            .is_angular = true,
-        };
-
-        // Compute angular error
-        QuaternionValue error_orientation = a.collider.rotation.conjugate() * b.collider.rotation * joint.relative_orientation.conjugate();
-        float error_direction = error_orientation.l >= 0 ? 1.0f : -1.0f;
-        Vec3 error_local = error_orientation.v.xyz * 2.0f * error_direction;
-        Vec3 world_error = a.collider.rotation * error_local;
-
-        usz num_rows = 0;
-
-        foreach (limit: joint.angular_limits) {
-            if (num_rows >= MAX_FORCE_ROWS) break;
-
-            Vec3 normal = limit.axes;
-            Vec3 world_axis = a.collider.rotation * (joint.relative_orientation * normal);
-            usz row = num_rows;
-
-            float rotation_error = world_error.dot(world_axis);
-
-            force.basis[row] = world_axis;
-            force.c_value[row] = rotation_error;
-            force.fmin[row] = -float.max;
-            force.fmax[row] = float.max;
-            force.stiffness[row] = float.max;
-
-            // Warm-start
-            usz cache_idx = 3 + row;
-            force.lambda[row] = joint.impulse[cache_idx] * AVBD_ALPHA * AVBD_GAMMA;
-            force.penalty[row] = math::clamp(
-                (joint.penalty_cache[cache_idx] > 0 ? joint.penalty_cache[cache_idx] : PENALTY_MIN) * AVBD_GAMMA,
-                PENALTY_MIN, PENALTY_MAX);
-
-            // Handle angular limits
-            if (limit.min != 0 && rotation_error < limit.min) {
-                force.c_value[row] = rotation_error - limit.min;
-                force.fmin[row] = 0;
-                force.fmax[row] = float.max;
-            } else if (limit.max != 0 && rotation_error > limit.max) {
-                force.c_value[row] = rotation_error - limit.max;
-                force.fmin[row] = -float.max;
-                force.fmax[row] = 0;
-            }
-
-            num_rows++;
-        }
-
-        force.num_rows = num_rows;
-        if (num_rows > 0) {
-            world.forces.push(force);
-        }
+        stiffness_ang = float.max;  // Hard constraint by default
     }
 
-    // Store current lambda/penalty back for next frame warm-start
-    // (will be overwritten by solver, but we seed from joint cache)
+    JointForce jf = {
+        .body_a = a,
+        .body_b = b,
+        .rA = joint.anchor_a,
+        .rB = joint.anchor_b,
+        .stiffness_lin = stiffness_lin,
+        .stiffness_ang = stiffness_ang,
+        .fracture = float.max,  // No fracture by default
+        .torque_arm = torque_arm,
+        .broken = false,
+    };
+
+    // Compute C0 at beginning of timestep (reference joint.cpp:37-38)
+    jf.c0_lin = quat_transform(a.collider.translation, a.collider.rotation, joint.anchor_a)
+              - quat_transform(b.collider.translation, b.collider.rotation, joint.anchor_b);
+    jf.c0_ang = quat_sub(a.collider.rotation, b.collider.rotation) * torque_arm;
+
+    // Warmstart from cached values (reference joint.cpp:42-49)
+    jf.lambda_lin = joint.lambda_lin * (alpha * gamma);
+    jf.lambda_ang = joint.lambda_ang * (alpha * gamma);
+    jf.penalty_lin = vec3_clamp(joint.penalty_lin * gamma, PENALTY_MIN, PENALTY_MAX);
+    jf.penalty_ang = vec3_clamp(joint.penalty_ang * gamma, PENALTY_MIN, PENALTY_MAX);
+
+    // Clamp penalty to material stiffness
+    jf.penalty_lin = vec3_min(jf.penalty_lin, stiffness_lin);
+    jf.penalty_ang = vec3_min(jf.penalty_ang, stiffness_ang);
+
+    // If no linear limits, zero out linear penalty
+    if (joint.linear_limits.len() == 0) {
+        jf.penalty_lin = { 0, 0, 0 };
+        jf.lambda_lin = { 0, 0, 0 };
+    }
+
+    // If no angular limits, zero out angular penalty
+    if (joint.angular_limits.len() == 0) {
+        jf.penalty_ang = { 0, 0, 0 };
+        jf.lambda_ang = { 0, 0, 0 };
+    }
+
+    world.joint_forces.push(jf);
+
+    // Store back reference index for warm-start save-back
+    // (the actual save-back happens after the solve in run_step)
 }

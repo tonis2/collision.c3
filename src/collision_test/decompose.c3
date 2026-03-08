@@ -170,7 +170,7 @@ fn void add_cap_surface(List{BorderEdge}* border, Plane plane, Mesh* mesh, bool 
 }
 
 // MeshClipper functions - properly splits triangles at plane intersection
-fn void clip_triangle(Mesh* mesh, Triangle tri, Plane plane, Mesh* pos_mesh, Mesh* neg_mesh, List{BorderEdge}* border) @local {
+fn void clip_triangle(Mesh* mesh, Triangle tri, Plane plane, Mesh* pos_mesh, Mesh* neg_mesh, List{BorderEdge}* border) {
     Vec3 v0 = mesh.vertices[tri.x];
     Vec3 v1 = mesh.vertices[tri.y];
     Vec3 v2 = mesh.vertices[tri.z];
@@ -262,7 +262,7 @@ fn void clip_triangle(Mesh* mesh, Triangle tri, Plane plane, Mesh* pos_mesh, Mes
     }
 }
 
-fn void clip_mesh(Mesh* mesh, Plane plane, Mesh* pos_mesh, Mesh* neg_mesh) @local {
+fn void clip_mesh(Mesh* mesh, Plane plane, Mesh* pos_mesh, Mesh* neg_mesh) {
     foreach (tri : mesh.triangles) {
         clip_triangle(mesh, tri, plane, pos_mesh, neg_mesh, null);
     }
@@ -343,7 +343,7 @@ struct CutPlane @local {
 // ----------------------------------------------------------------------------
 
 // Compute Rv: radius of sphere with equivalent volume difference
-fn float compute_rv(Mesh* mesh, Mesh* hull, float k) @local {
+fn float compute_rv(Mesh* mesh, Mesh* hull, float k) {
     double mesh_vol = math::abs(mesh.get_volume());
     double hull_vol = math::abs(hull.get_volume());
     double vol_diff = math::abs(hull_vol - mesh_vol);
@@ -356,7 +356,7 @@ fn float compute_rv(Mesh* mesh, Mesh* hull, float k) @local {
 
 // Compute Rv for merged hulls (used in cut evaluation)
 // v1, v2 = volumes of two parts, v_combined = volume of combined hull
-fn float compute_rv_merged(double v1, double v2, double v_combined, float k) @local {
+fn float compute_rv_merged(double v1, double v2, double v_combined, float k) {
     double vol_diff = math::abs(v1 + v2 - v_combined);
     if (vol_diff < 1e-10) return 0;
 
@@ -365,7 +365,7 @@ fn float compute_rv_merged(double v1, double v2, double v_combined, float k) @lo
 }
 
 // Compute concavity as normalized Rv (scale-invariant)
-fn float compute_concavity(Mesh* mesh, Mesh* hull, float k, float diagonal) @local {
+fn float compute_concavity(Mesh* mesh, Mesh* hull, float k, float diagonal) {
     float rv = compute_rv(mesh, hull, k);
     // Normalize by mesh diagonal for scale invariance
     return rv / math::max(diagonal, 0.001f);
@@ -377,13 +377,13 @@ fn float compute_concavity(Mesh* mesh, Mesh* hull, float k, float diagonal) @loc
 // ----------------------------------------------------------------------------
 
 // Split mesh by a cutting plane
-fn void split_mesh_by_plane(Mesh* mesh, CutPlane cut, Mesh* pos_mesh, Mesh* neg_mesh) @local {
+fn void split_mesh_by_plane(Mesh* mesh, CutPlane cut, Mesh* pos_mesh, Mesh* neg_mesh) {
     Plane plane = create_plane(cut.normal, cut.d);
     clip_mesh(mesh, plane, pos_mesh, neg_mesh);
 }
 
 // Count vertices on each side of a cutting plane
-fn bool count_vertices_on_sides(Mesh* mesh, CutPlane cut, int* pos_count, int* neg_count) @local {
+fn bool count_vertices_on_sides(Mesh* mesh, CutPlane cut, int* pos_count, int* neg_count) {
     *pos_count = 0;
     *neg_count = 0;
 
