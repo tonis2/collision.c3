@@ -1060,7 +1060,7 @@ fn void clamp_angular_velocity(Rigidbody* body) {
 <*
  @require self.bodies.len() > 0 : `Must have some bodies to simulate`
 *>
-fn void PhysicsWorld.run_step(&self, float time, uint step_count = 25) {
+fn void PhysicsWorld.run_step_internal(&self, float time, uint step_count = 25) {
     // Lazy init thread pool
     if (!self.thread_pool_initialized) {
         self.thread_pool.init()!!;
@@ -1286,13 +1286,18 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 25) {
         self.joints[ji].penalty_ang = jf.penalty_ang;
     }
 
+    // === PHASE 6.5: Sleep management ===
+    self.update_sleep_state();
+}
+
+// Public entry point - runs physics then clears transient data
+fn void PhysicsWorld.run_step(&self, float time, uint step_count = 25) {
+    self.run_step_internal(time, step_count);
+    // Clear transient collision data (must be captured before this if needed for debug)
     self.collisions.clear();
     self.manifolds.clear();
     self.joint_forces.clear();
     self.spring_forces.clear();
-
-    // === PHASE 7: Sleep management ===
-    self.update_sleep_state();
 }
 
 // === PHASE 4: Predict body states ===

@@ -244,6 +244,8 @@ fn Vec3 vec3_min(Vec3 a, float b) {
 // Solves symmetric PD system [aLin, aCross^T; aCross, aAng] * [xLin; xAng] = [bLin; bAng]
 fn void solve_ldlt(Matrix3f a_lin, Matrix3f a_ang, Matrix3f a_cross,
                    Vec3 b_lin, Vec3 b_ang, Vec3* x_lin, Vec3* x_ang) {
+    const float EPS = 1e-10f;
+    
     // Extract elements from lower triangle storage
     float a11 = a_lin.m00;
     float a21 = a_lin.m10; float a22 = a_lin.m11;
@@ -252,16 +254,18 @@ fn void solve_ldlt(Matrix3f a_lin, Matrix3f a_ang, Matrix3f a_cross,
     float a51 = a_cross.m10; float a52 = a_cross.m11; float a53 = a_cross.m12; float a54 = a_ang.m10; float a55 = a_ang.m11;
     float a61 = a_cross.m20; float a62 = a_cross.m21; float a63 = a_cross.m22; float a64 = a_ang.m20; float a65 = a_ang.m21; float a66 = a_ang.m22;
 
-    // Step 1: LDL^T decomposition
-    float l21 = a21 / a11;
-    float l31 = a31 / a11;
-    float l41 = a41 / a11;
-    float l51 = a51 / a11;
-    float l61 = a61 / a11;
-
+    // Step 1: LDL^T decomposition with epsilon protection
     float d1 = a11;
+    if (math::abs(d1) < EPS) d1 = EPS;
+    
+    float l21 = a21 / d1;
+    float l31 = a31 / d1;
+    float l41 = a41 / d1;
+    float l51 = a51 / d1;
+    float l61 = a61 / d1;
 
     float d2 = a22 - l21 * l21 * d1;
+    if (math::abs(d2) < EPS) d2 = EPS;
 
     float l32 = (a32 - l21 * l31 * d1) / d2;
     float l42 = (a42 - l21 * l41 * d1) / d2;
@@ -269,21 +273,25 @@ fn void solve_ldlt(Matrix3f a_lin, Matrix3f a_ang, Matrix3f a_cross,
     float l62 = (a62 - l21 * l61 * d1) / d2;
 
     float d3 = a33 - (l31 * l31 * d1 + l32 * l32 * d2);
+    if (math::abs(d3) < EPS) d3 = EPS;
 
     float l43 = (a43 - l31 * l41 * d1 - l32 * l42 * d2) / d3;
     float l53 = (a53 - l31 * l51 * d1 - l32 * l52 * d2) / d3;
     float l63 = (a63 - l31 * l61 * d1 - l32 * l62 * d2) / d3;
 
     float d4 = a44 - (l41 * l41 * d1 + l42 * l42 * d2 + l43 * l43 * d3);
+    if (math::abs(d4) < EPS) d4 = EPS;
 
     float l54 = (a54 - l41 * l51 * d1 - l42 * l52 * d2 - l43 * l53 * d3) / d4;
     float l64 = (a64 - l41 * l61 * d1 - l42 * l62 * d2 - l43 * l63 * d3) / d4;
 
     float d5 = a55 - (l51 * l51 * d1 + l52 * l52 * d2 + l53 * l53 * d3 + l54 * l54 * d4);
+    if (math::abs(d5) < EPS) d5 = EPS;
 
     float l65 = (a65 - l51 * l61 * d1 - l52 * l62 * d2 - l53 * l63 * d3 - l54 * l64 * d4) / d5;
 
     float d6 = a66 - (l61 * l61 * d1 + l62 * l62 * d2 + l63 * l63 * d3 + l64 * l64 * d4 + l65 * l65 * d5);
+    if (math::abs(d6) < EPS) d6 = EPS;
 
     // Step 2: Forward substitution: Solve Ly = b
     float y1 = b_lin.x;
