@@ -656,9 +656,13 @@ fn void PhysicsWorld.create_manifold_forces(&self, float alpha, float gamma, flo
 
         // Initial penalty: must be comparable to M/dt² to resist gravity from first iteration.
         // With small substeps (dt << 1/60), PENALTY_MIN=1 is far too low.
+        // For deep penetrations, scale penalty by depth to push objects out faster.
         float eff_mass = math::max(a.mass, b.mass);
         float inv_dt2 = 1.0f / (dt * dt);
-        float initial_penalty = math::max(PENALTY_MIN, eff_mass * inv_dt2);
+        float base_penalty = math::max(PENALTY_MIN, eff_mass * inv_dt2);
+        // Scale penalty by penetration depth - deeper penetrations need stronger response
+        float depth_scale = 1.0f + math::abs(collision.depth) * 10.0f;
+        float initial_penalty = base_penalty * depth_scale;
 
         int ci = mf.num_contacts;
         mf.contacts[ci].feature_key = feature_key;
@@ -874,10 +878,8 @@ fn void ManifoldForce.update_dual(&self, float alpha, float beta_lin) {
         // Store updated force
         self.contacts[i].lambda = f;
 
-        // Update penalty (Eq. 16)
-        if (f.x < 0) {
-            self.contacts[i].penalty.x = math::min(self.contacts[i].penalty.x + beta_lin * math::abs(c.x), PENALTY_MAX);
-        }
+        // Update penalty (Eq. 16) - always increase based on error magnitude to handle deep penetration
+        self.contacts[i].penalty.x = math::min(self.contacts[i].penalty.x + beta_lin * math::abs(c.x), PENALTY_MAX);
         if (friction_scale <= bounds) {
             self.contacts[i].penalty.y = math::min(self.contacts[i].penalty.y + beta_lin * math::abs(c.y), PENALTY_MAX);
             self.contacts[i].penalty.z = math::min(self.contacts[i].penalty.z + beta_lin * math::abs(c.z), PENALTY_MAX);
