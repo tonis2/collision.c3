@@ -29,7 +29,7 @@ fn Aabb3 Aabb3.add(self, Vec3 value) @operator(+)
 	return { .min = self.min + value, .max = self.max + value };
 }
 
-fn bool Aabb3.is_empty(self) => self.size().sq_magnitude() == 0;
+fn bool Aabb3.is_empty(self) => self.size().length_sq() == 0;
 
 fn void Aabb3.fix(&self)
 {

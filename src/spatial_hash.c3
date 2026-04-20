@@ -39,8 +39,8 @@ fn Vec3 SpatialHash3D.world_to_grid(&self, Vec3 pos)
  Adds a 3D AABB box into SpatialHash
  @param box : `3D aabb box, that's inserted into the map`
  @param id : `ID thats attached to the box, could be mesh ID`
- @require box.size().sq_magnitude() < 100000 : `Aabb box is too big, could be because memory errors`
- @require box.size().sq_magnitude() > 0.1 : `Aabb box is too small, could be because memory errors`
+ @require box.size().length_sq() < 100000 : `Aabb box is too big, could be because memory errors`
+ @require box.size().length_sq() > 0.1 : `Aabb box is too small, could be because memory errors`
 *>
 fn void? SpatialHash3D.insert(&self, Aabb3 box, usz id)
 {
@@ -69,8 +69,8 @@ fn void? SpatialHash3D.insert(&self, Aabb3 box, usz id)
  @param old_box : `Previous box location`
  @param new_box : `New box location`
  @param id : `Box id`
- @require old_box.size().sq_magnitude() < 10000 && old_box.size().sq_magnitude() > 0.1 : `Aabb box size invalid, could be because memory errors`
- @require new_box.size().sq_magnitude() < 10000 && new_box.size().sq_magnitude() > 0.1 : `Aabb box size invalid, could be because memory errors`
+ @require old_box.size().length_sq() < 10000 && old_box.size().length_sq() > 0.1 : `Aabb box size invalid, could be because memory errors`
+ @require new_box.size().length_sq() < 10000 && new_box.size().length_sq() > 0.1 : `Aabb box size invalid, could be because memory errors`
 *>
 fn void? SpatialHash3D.update(&self, Aabb3 old_box, Aabb3 new_box, usz id)
 {

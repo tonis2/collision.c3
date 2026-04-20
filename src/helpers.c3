@@ -98,7 +98,7 @@ fn usz? MinMax.to_format(
 
 fn Matrix3f QuaternionValue.as_mat3(self)
 {
-	Matrix4f matrix = self.to_matrixf();
+	Matrix4f matrix = self.to_matrix();
 	return {
 		matrix.m00,
 		matrix.m01,
@@ -123,7 +123,7 @@ fn usz Vec3.hash(&self)
 	return hash;
 }
 
-fn float Vec3.distance_sq(self, Vec3 v2) => (self - v2).sq_magnitude();
+fn float Vec3.distance_sq(self, Vec3 v2) => (self - v2).length_sq();
 
 fn usz? ContactPoints.to_format(
 	&self,
@@ -138,4 +138,4 @@ macro uint Pair.hash(&self)
 	return builtin::@generic_hash(self.a) + builtin::@generic_hash(self.b);
 }
 
-macro bool QuaternionValue.equals(self, QuaternionValue b) @operator(==) => self.v.xyzw == b.v.xyzw;
+// Removed: QuaternionValue.equals is now provided by std::math::quaternion

@@ -308,7 +308,6 @@ fn void? PhysicsWorld.add_constraint(&self, GenericJoint3D joint)
 
 <*
  @require body.collider.shape != null : `Added rigid body must have collision shape`
- @require body.collider.rotation != (QuaternionValue) { 0, 0, 0, 0 } : `Body rotation must not be 0`
  @require body.collider.scale != { 0, 0, 0 } : `Body scale must not be 0`
 *>
 fn void? PhysicsWorld.add_body(&self, Rigidbody body)
@@ -355,7 +354,6 @@ fn void? PhysicsWorld.add_body(&self, Rigidbody body)
  Add a trigger body - detects overlaps but doesn't generate collision responses.
  Use @get_trigger_events() to iterate trigger events after run_step().
  @require body.collider.shape != null : `Trigger must have collision shape`
- @require body.collider.rotation != (QuaternionValue) { 0, 0, 0, 0 } : `Trigger rotation must not be 0`
  @require body.collider.scale != { 0, 0, 0 } : `Trigger scale must not be 0`
 *>
 fn void? PhysicsWorld.add_trigger(&self, Rigidbody body)
@@ -488,7 +486,7 @@ fn Aabb3 Rigidbody.get_transformed_aabb(&self)
 
 fn Matrix3f Rigidbody.get_inverse_world_inertia(self)
 {
-	if (self.is_static) return MATRIX3F_IDENTITY;
+	if (self.is_static) return matrix::IDENTITY3;
 	return self.collider.world_inertia_from_local(self.inertia);
 }
 
@@ -508,8 +506,8 @@ fn void Rigidbody.apply_impulse(&self, Vec3 impulse, Vec3 point)
 
 fn Vec3 Rigidbody.relative_velocity(self, Vec3 point) => self.linear_velocity + self.angular_velocity.cross(point);
 
-fn bool Rigidbody.is_rotating(self) => self.angular_velocity.sq_magnitude() > self.sleep_delta;
-fn bool Rigidbody.is_moving(self) => self.linear_velocity.sq_magnitude() > self.sleep_delta;
+fn bool Rigidbody.is_rotating(self) => self.angular_velocity.length_sq() > self.sleep_delta;
+fn bool Rigidbody.is_moving(self) => self.linear_velocity.length_sq() > self.sleep_delta;
 fn bool Rigidbody.is_sleeping(self) => self.sleeping;
 fn void Rigidbody.stop_sleeping(&self)
 {
@@ -1026,7 +1024,7 @@ fn void PhysicsWorld.generate_manifold(&self, Collision* collision)
 
 	float depth_tol = collision.depth + MANIFOLD_DEPTH_TOL;
 	Vec3 inc_ext = incident.transformed_aabb.size();
-	float max_spread_sq = inc_ext.sq_magnitude();
+	float max_spread_sq = inc_ext.length_sq();
 
 	// Always include original EPA contact
 	self.collisions.push(*collision);
@@ -1978,7 +1976,7 @@ fn bool test_sphere_triangle_collision(
 {
 	Vec3 closest = closest_point_on_triangle_helper(sphere_center, v0, v1, v2);
 	Vec3 diff = sphere_center - closest;
-	float dist_sq = diff.sq_magnitude();
+	float dist_sq = diff.length_sq();
 
 	if (dist_sq >= radius * radius) return false;
 
@@ -2015,7 +2013,7 @@ fn bool test_capsule_triangle_collision(
 	Vec3 closest_on_tri = { 0, 0, 0 };
 
 	Vec3 cp = closest_point_on_triangle(capsule_p0, v0, v1, v2);
-	float d = (capsule_p0 - cp).sq_magnitude();
+	float d = (capsule_p0 - cp).length_sq();
 	if (d < min_dist_sq)
 	{
 		min_dist_sq = d;
@@ -2024,7 +2022,7 @@ fn bool test_capsule_triangle_collision(
 	}
 
 	cp = closest_point_on_triangle(capsule_p1, v0, v1, v2);
-	d = (capsule_p1 - cp).sq_magnitude();
+	d = (capsule_p1 - cp).length_sq();
 	if (d < min_dist_sq)
 	{
 		min_dist_sq = d;
@@ -2033,7 +2031,7 @@ fn bool test_capsule_triangle_collision(
 	}
 
 	Vec3 seg_pt = closest_point_on_segment(v0, capsule_p0, capsule_p1);
-	d = (seg_pt - v0).sq_magnitude();
+	d = (seg_pt - v0).length_sq();
 	if (d < min_dist_sq)
 	{
 		min_dist_sq = d;
@@ -2042,7 +2040,7 @@ fn bool test_capsule_triangle_collision(
 	}
 
 	seg_pt = closest_point_on_segment(v1, capsule_p0, capsule_p1);
-	d = (seg_pt - v1).sq_magnitude();
+	d = (seg_pt - v1).length_sq();
 	if (d < min_dist_sq)
 	{
 		min_dist_sq = d;
@@ -2051,7 +2049,7 @@ fn bool test_capsule_triangle_collision(
 	}
 
 	seg_pt = closest_point_on_segment(v2, capsule_p0, capsule_p1);
-	d = (seg_pt - v2).sq_magnitude();
+	d = (seg_pt - v2).length_sq();
 	if (d < min_dist_sq)
 	{
 		min_dist_sq = d;
@@ -2061,7 +2059,7 @@ fn bool test_capsule_triangle_collision(
 
 	Vec3 c1, c2;
 	closest_points_segments(capsule_p0, capsule_p1, v0, v1, &c1, &c2);
-	d = (c1 - c2).sq_magnitude();
+	d = (c1 - c2).length_sq();
 	if (d < min_dist_sq)
 	{
 		min_dist_sq = d;
@@ -2070,7 +2068,7 @@ fn bool test_capsule_triangle_collision(
 	}
 
 	closest_points_segments(capsule_p0, capsule_p1, v1, v2, &c1, &c2);
-	d = (c1 - c2).sq_magnitude();
+	d = (c1 - c2).length_sq();
 	if (d < min_dist_sq)
 	{
 		min_dist_sq = d;
@@ -2079,7 +2077,7 @@ fn bool test_capsule_triangle_collision(
 	}
 
 	closest_points_segments(capsule_p0, capsule_p1, v2, v0, &c1, &c2);
-	d = (c1 - c2).sq_magnitude();
+	d = (c1 - c2).length_sq();
 	if (d < min_dist_sq)
 	{
 		min_dist_sq = d;
@@ -2090,7 +2088,7 @@ fn bool test_capsule_triangle_collision(
 	if (min_dist_sq >= radius * radius) return false;
 
 	Vec3 diff = closest_on_axis - closest_on_tri;
-	float dist_sq = diff.sq_magnitude();
+	float dist_sq = diff.length_sq();
 
 	if (dist_sq > DEGENERATE_DIST_SQ)
 	{

@@ -712,7 +712,7 @@ fn bool SoftBody.is_moving(&self)
 	const float SLEEP_THRESHOLD = 0.01;
 	foreach (v : self.velocities)
 	{
-		if (v.sq_magnitude() > SLEEP_THRESHOLD) return true;
+		if (v.length_sq() > SLEEP_THRESHOLD) return true;
 	}
 	return false;
 }

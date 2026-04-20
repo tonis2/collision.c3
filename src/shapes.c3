@@ -239,7 +239,7 @@ fn Matrix3f TransformedShape.inertia_tensor(&self, float mass) @dynamic
 	local_inertia.m21 = local_inertia.m12;
 
 	// Apply rotation to transform inertia to world space
-	Matrix4f matrix = self.rotation.normalize().to_matrixf();
+	Matrix4f matrix = self.rotation.normalize().to_matrix();
 
 	Matrix3f r = (Matrix3f) {
 		matrix.m00,
@@ -302,7 +302,7 @@ fn Matrix4f TransformedShape.matrix(self)
 		1.0,
 	};
 
-	return translation_matrix * self.rotation.to_matrixf() * scale_matrix;
+	return translation_matrix * self.rotation.to_matrix() * scale_matrix;
 }
 
 fn Matrix3f Sphere.inertia_tensor(&self, float mass) @dynamic

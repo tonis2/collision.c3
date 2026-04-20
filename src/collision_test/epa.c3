@@ -72,8 +72,8 @@ fn void SupportArray.reconstruct(self, FaceArray* faces, Vec3 new_point)
 	foreach (edge : edges)
 	{
 		Face new_face = self.create_face(edge.a, edge.b, self.len() - 1);
-		float magnitude = new_face.normal.sq_magnitude();
-		if (new_face.normal.sq_magnitude() < 0.001) continue;
+		float magnitude = new_face.normal.length_sq();
+		if (new_face.normal.length_sq() < 0.001) continue;
 		faces.push(new_face);
 	}
 }
@@ -145,9 +145,9 @@ fn void epa(CollisionInfo* info, CollisionShape shape_1, CollisionShape shape_2)
 			SupportPoint b = vertices[closest_face.b];
 			SupportPoint c = vertices[closest_face.c];
 
-			Vec3 bary = p.barycenter(a.point, b.point, c.point);
+			Vec3 bary = p.barycentric(a.point, b.point, c.point);
 
-			// if (bary.sq_magnitude() > 1.0) continue;
+			// if (bary.length_sq() > 1.0) continue;
 
 			Vec3[2] support_a = { a.a, a.b };
 			Vec3[2] support_b = { b.a, b.b };
