@@ -100,15 +100,9 @@ fn Matrix3f QuaternionValue.as_mat3(self)
 {
 	Matrix4f matrix = self.to_matrix();
 	return {
-		matrix.m00,
-		matrix.m01,
-		matrix.m02,
-		matrix.m10,
-		matrix.m11,
-		matrix.m12,
-		matrix.m20,
-		matrix.m21,
-		matrix.m22,
+		matrix.m00, matrix.m10, matrix.m20,  // column 0
+		matrix.m01, matrix.m11, matrix.m21,  // column 1
+		matrix.m02, matrix.m12, matrix.m22,  // column 2
 	};
 }
 
