@@ -281,7 +281,7 @@ fn void PhysicsWorld.free(&self)
 }
 
 const PhysicsWorld DEFAULT_PHYSICS_WORLD = {
-	.gravity = { 0.0f, 0.0f, -9.8f },
+	.gravity = { 0.0f, -9.8f, 0.0f },
 	.spatial_map .cell_size = 2.0,
 	.sleep_timer = 5.0,
 	.linear_dampening = 0.9,
@@ -1117,6 +1117,8 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 1, uint sub_s
 
 fn void PhysicsWorld.run_substep(&self, float time, uint step_count)
 {
+	if (time <= 0.0f) return;
+
 	// Swap warm-start caches: previous frame's results become seeds for this frame
 	self.warm_start_prev.free();
 	self.warm_start_prev = self.warm_start_cache;

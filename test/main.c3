@@ -532,7 +532,7 @@ fn void test_softbody_pin()
 
 	// Pinned particle should not have moved
 	Vec3 diff = sb.positions[0] - pin_pos;
-	assert (diff.sq_magnitude() < 0.001f);
+	assert (diff.length_sq() < 0.001f);
 
 	// Other particles should have moved downward from gravity
 	assert (sb.positions[1].z < 0.0f);
