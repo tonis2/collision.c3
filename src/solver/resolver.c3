@@ -191,6 +191,13 @@ struct Rigidbody
 	// XPBD: previous state for velocity derivation
 	Vec3 prev_position;
 	QuaternionValue prev_rotation;
+
+	// Inverse of the rest-pose world matrix, captured at body creation. The
+	// owner of the body (e.g. a scene/animation system) can compose
+	// `current_world * inv_rest_world` to get a delta against rest without
+	// keeping a separate rest-pose buffer per node. Cached at creation;
+	// rebinding the rest pose requires recomputing this.
+	Matrix4f inv_rest_world;
 }
 
 alias TriggerOverlapSet = HashMap {Pair, bool};
