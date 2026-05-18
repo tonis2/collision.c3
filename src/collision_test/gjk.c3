@@ -1,12 +1,12 @@
 module collision;
 import std::io;
 import std::math;
-import std::collections::elastic_array;
+import std::collections::fixedlist;
 
-const usz GJK_MAX_ITERATION = 30;
+const sz GJK_MAX_ITERATION = 30;
 const float GJK_TOLERANCE = 0.0001f;
 
-alias Simplex = ElasticArray {SupportPoint, 4};
+alias Simplex = FixedList {SupportPoint, 4};
 
 struct SupportPoint
 {
@@ -18,7 +18,7 @@ struct SupportPoint
 <*
  @require array.len > 0 : `Array should not be empty`
 *>
-fn void Simplex.replace_array(&self, SupportPoint[] array, usz start_index = 0)
+fn void Simplex.replace_array(&self, SupportPoint[] array, sz start_index = 0)
 {
 	self.size = array.len;
 	foreach (index, &value : array)
@@ -30,7 +30,7 @@ fn void Simplex.replace_array(&self, SupportPoint[] array, usz start_index = 0)
 fn void Simplex.push_start(&self, SupportPoint point)
 {
 	self.entries = { point, self.entries[0], self.entries[1], self.entries[2] };
-	self.size = math::min((usz)(self.size + 1), (usz)4);
+	self.size = math::min((sz)(self.size + 1), (sz)4);
 }
 
 fn bool same_direction(Vec3 direction, Vec3 ao) => direction.dot(ao) > 0;
@@ -188,7 +188,7 @@ fn CollisionInfo check_convex_collision(CollisionShape shape_1, CollisionShape s
 	}
 
 	// Main GJK loop
-	for (usz i = 0; i < GJK_MAX_ITERATION; ++i)
+	for (sz i = 0; i < GJK_MAX_ITERATION; ++i)
 	{
 		// Get new support point
 		Vec3 a_support = shape_1.furthest_point(direction);

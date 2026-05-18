@@ -3,7 +3,7 @@ module collision;
 import std::math;
 import std::io;
 import std::collections::list;
-import std::collections::elastic_array;
+import std::collections::fixedlist;
 import std::collections::map;
 
 struct Aabb3 (Printable, CollisionShape)
@@ -12,7 +12,7 @@ struct Aabb3 (Printable, CollisionShape)
 	Vec3 max;
 }
 
-const NEW_AABB3 = (Aabb3) { .min = { float.max, float.max, float.max }, .max = { -float.max, -float.max, -float.max } };
+const NEW_AABB3 = (Aabb3) { .min = { float::max, float::max, float::max }, .max = { -float::max, -float::max, -float::max } };
 const EMPTY_AABB3 = (Aabb3) { .min = { 0, 0, 0 }, .max = { 0, 0, 0 } };
 
 fn Aabb3 aabb_from_half(Vec3 size) => { -size * 0.5, size * 0.5 };
@@ -21,7 +21,7 @@ fn Vec3 Aabb3.size(self) => self.max - self.min;
 fn Vec3 Aabb3.extent(self) => (self.max - self.min) * 0.5f;
 fn Vec3 Aabb3.center(self) => (self.min + self.max) * 0.5f;
 
-fn usz? Aabb3.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s\n%s", self.min, self.max)!;
+fn sz? Aabb3.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s\n%s", self.min, self.max)!;
 fn bool Aabb3.equals(self, Aabb3 b) @operator(==) => self.min == b.min && self.max == b.max;
 
 fn Aabb3 Aabb3.add(self, Vec3 value) @operator(+)
@@ -201,7 +201,7 @@ fn Aabb3 Aabb3.child_bounds(self, uint index)
 	return { newMin, newMax };
 }
 
-fn usz Aabb3.longest_axis(self)
+fn sz Aabb3.longest_axis(self)
 {
 	Vec3 size = self.size();
 	if (size.x > size.y && size.x > size.z) return 0;
@@ -214,7 +214,7 @@ fn HitInfo Aabb3.intersect_ray(self, Ray ray)
 	HitInfo response = { .collided = false };
 
 	float tmin = 0.0;
-	float tmax = float.max;
+	float tmax = float::max;
 
 	for (uint i = 0; i < 3; ++i)
 	{

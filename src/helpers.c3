@@ -11,8 +11,8 @@ alias ContactPoints @private = Vec3[2];
 alias QuaternionValue = QuaternionNumber {float};
 alias Vertices = List {Vec3};
 
-fn usz? Vec3.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s,%s,%s", self.x, self.y, self.z)!;
-fn usz? Vec4.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s,%s,%s", self.x, self.y, self.z)!;
+fn sz? Vec3.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s,%s,%s", self.x, self.y, self.z)!;
+fn sz? Vec4.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s,%s,%s", self.x, self.y, self.z)!;
 
 struct CollisionInfo
 {
@@ -33,7 +33,7 @@ struct HitInfo
 
 struct Face @private
 {
-	usz a, b, c;
+	sz a, b, c;
 	Vec3 normal;
 	float distance;
 	bool active;
@@ -42,8 +42,8 @@ struct Face @private
 
 struct Pair (Printable)
 {
-	usz a;
-	usz b;
+	sz a;
+	sz b;
 }
 
 struct MinMax
@@ -91,7 +91,7 @@ fn float MinMax.overlap(&a, MinMax b)
 	return math::min(a.max, b.max) - math::max(a.min, b.min);
 }
 
-fn usz? MinMax.to_format(
+fn sz? MinMax.to_format(
 	&self,
 	Formatter* formatter
 ) @dynamic => formatter.printf("min %s max %s", self.min, self.max)!;
@@ -106,24 +106,24 @@ fn Matrix3f QuaternionValue.as_mat3(self)
 	};
 }
 
-fn void Vec3.set(&self, Vec3 new) => mem::copy(self, &new, Vec3.sizeof, 0);
+fn void Vec3.set(&self, Vec3 new) => mem::copy(self, &new, Vec3::size, 0);
 
-fn usz Vec3.hash(&self)
+fn sz Vec3.hash(&self)
 {
-	usz hash = 17;
-	hash = (usz)(hash * 23f + self.x);
-	hash = (usz)(hash * 23f + self.y);
-	hash = (usz)(hash * 23f + self.z);
+	sz hash = 17;
+	hash = (sz)(hash * 23f + self.x);
+	hash = (sz)(hash * 23f + self.y);
+	hash = (sz)(hash * 23f + self.z);
 	return hash;
 }
 
 fn float Vec3.distance_sq(self, Vec3 v2) => (self - v2).length_sq();
 
-fn usz? ContactPoints.to_format(
+fn sz? ContactPoints.to_format(
 	&self,
 	Formatter* formatter
 ) @dynamic => formatter.printf("%s\n%s", (*self)[0], (*self)[1])!;
-fn usz? Pair.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s, %s", self.a, self.b)!;
+fn sz? Pair.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s, %s", self.a, self.b)!;
 macro bool Pair.equals(a, Pair b) @operator(==) => (a.a == b.a && a.b == b.b) || (a.a == b.b && a.b == b.a);
 
 macro uint Pair.hash(&self)

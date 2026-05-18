@@ -28,13 +28,13 @@ struct Heightmap (CollisionShape)
 
 fn Heightmap create_heightmap(uint width, uint depth, float cell_size, Vec3 origin = { 0, 0, 0 })
 {
-	usz size = (usz)width * (usz)depth;
+	sz size = (sz)width * (sz)depth;
 
 	Heights heights;
 	heights.reserve(size);
 
 	// Initialize to zero
-	for (usz i = 0; i < size; i++)
+	for (sz i = 0; i < size; i++)
 	{
 		heights.push(0);
 	}
@@ -52,7 +52,7 @@ fn Heightmap create_heightmap(uint width, uint depth, float cell_size, Vec3 orig
 
 
 <*
- @require heights.len >= (usz)width * (usz)depth : `Height data too small for dimensions`
+ @require heights.len >= (sz)width * (sz)depth : `Height data too small for dimensions`
 *>
 fn Heightmap create_heightmap_from_data(
 	float[] heights,
@@ -62,7 +62,7 @@ fn Heightmap create_heightmap_from_data(
 	Vec3 origin = { 0, 0, 0 }
 )
 {
-	usz size = (usz)width * (usz)depth;
+	sz size = (sz)width * (sz)depth;
 
 	Heights height_list;
 	height_list.push_all(heights[:size]);
@@ -104,7 +104,7 @@ fn float Heightmap.get_height_at_grid(&self, uint gx, uint gz)
 	{
 		return 0;
 	}
-	return self.heights[(usz)(gz * self.width + gx)];
+	return self.heights[(sz)(gz * self.width + gx)];
 }
 
 // Set height at grid coordinates
@@ -112,7 +112,7 @@ fn void Heightmap.set_height_at_grid(&self, uint gx, uint gz, float height)
 {
 	if (gx >= self.width || gz >= self.depth) return;
 
-	self.heights[(usz)(gz * self.width + gx)] = height;
+	self.heights[(sz)(gz * self.width + gx)] = height;
 
 	// Update bounds
 	if (height < self.min_height) self.min_height = height;
@@ -199,8 +199,8 @@ fn void Heightmap.update_height_bounds(&self)
 {
 	if (self.heights.len() == 0) return;
 
-	self.min_height = float.max;
-	self.max_height = -float.max;
+	self.min_height = float::max;
+	self.max_height = -float::max;
 
 	foreach (h : self.heights)
 	{
@@ -594,7 +594,7 @@ fn void TiledHeightmap.load_tile(&self, int tx, int tz)
 // Unload a tile
 fn void TiledHeightmap.unload_tile(&self, int tx, int tz)
 {
-	for (usz i = 0; i < self.tiles.len(); i++)
+	for (sz i = 0; i < self.tiles.len(); i++)
 	{
 		if (self.tiles[i].tile_x == tx && self.tiles[i].tile_z == tz)
 		{
@@ -615,9 +615,9 @@ fn void TiledHeightmap.update(&self, Vec3 viewer_pos)
 	int tile_radius = (int)math::ceil(self.load_radius / self.tile_world_size) + 1;
 
 	// Unload distant tiles
-	for (isz i = (isz)self.tiles.len() - 1; i >= 0; i--)
+	for (sz i = (sz)self.tiles.len() - 1; i >= 0; i--)
 	{
-		HeightmapTile* tile = &self.tiles[(usz)i];
+		HeightmapTile* tile = &self.tiles[(sz)i];
 
 		float tile_center_x = self.origin.x + (tile.tile_x + 0.5f) * self.tile_world_size;
 		float tile_center_z = self.origin.z + (tile.tile_z + 0.5f) * self.tile_world_size;
@@ -629,7 +629,7 @@ fn void TiledHeightmap.update(&self, Vec3 viewer_pos)
 		if (dist > self.unload_radius)
 		{
 			tile.heightmap.free();
-			self.tiles.remove_at((usz)i);
+			self.tiles.remove_at((sz)i);
 		}
 	}
 
@@ -684,7 +684,7 @@ fn Vec3 TiledHeightmap.get_normal(&self, float wx, float wz)
 // Ray intersection across all loaded tiles
 fn HeightmapHit TiledHeightmap.ray_intersect(&self, Ray ray, float max_distance = 1000.0f)
 {
-	HeightmapHit best = { .hit = false, .distance = float.max };
+	HeightmapHit best = { .hit = false, .distance = float::max };
 
 	foreach (&tile : self.tiles)
 	{
@@ -880,9 +880,9 @@ fn void TiledHeightmap.update_multi(&self, Vec3[] positions)
 	if (positions.len == 0) return;
 
 	// Unload tiles that are far from ALL positions
-	for (isz i = (isz)self.tiles.len() - 1; i >= 0; i--)
+	for (sz i = (sz)self.tiles.len() - 1; i >= 0; i--)
 	{
-		HeightmapTile* tile = &self.tiles[(usz)i];
+		HeightmapTile* tile = &self.tiles[(sz)i];
 
 		float tile_center_x = self.origin.x + (tile.tile_x + 0.5f) * self.tile_world_size;
 		float tile_center_z = self.origin.z + (tile.tile_z + 0.5f) * self.tile_world_size;
@@ -905,7 +905,7 @@ fn void TiledHeightmap.update_multi(&self, Vec3[] positions)
 		if (!keep_loaded)
 		{
 			tile.heightmap.free();
-			self.tiles.remove_at((usz)i);
+			self.tiles.remove_at((sz)i);
 		}
 	}
 

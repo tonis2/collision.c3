@@ -2,15 +2,15 @@ module collision;
 
 import std::math;
 import std::collections::list;
-import std::collections::elastic_array;
+import std::collections::fixedlist;
 import std::collections::map;
 import std::io;
 import std::os;
 
 
-alias EdgeArray @private = ElasticArray {Pair, 40};
-alias FaceArray @private = ElasticArray {Face, 40};
-alias SupportArray @private = ElasticArray {SupportPoint, 40};
+alias EdgeArray @private = FixedList {Pair, 40};
+alias FaceArray @private = FixedList {Face, 40};
+alias SupportArray @private = FixedList {SupportPoint, 40};
 
 const uint EPA_MAX_ITER = 16;
 const float EPA_TOLERANCE = 0.0001f;
@@ -31,7 +31,7 @@ fn void EdgeArray.add_if_new(&self, Pair pair)
 	self.push(pair);
 }
 
-fn Face SupportArray.create_face(self, usz a_index, usz b_index, usz c_index)
+fn Face SupportArray.create_face(self, sz a_index, sz b_index, sz c_index)
 {
 	Vec3 a = self.get(a_index).point;
 	Vec3 b = self.get(b_index).point;
@@ -78,7 +78,7 @@ fn void SupportArray.reconstruct(self, FaceArray* faces, Vec3 new_point)
 	}
 }
 
-fn uint Face[].get_closest(self, float min_distance = float.max)
+fn uint Face[].get_closest(self, float min_distance = float::max)
 {
 	uint closest = 0;
 
@@ -121,7 +121,7 @@ fn void epa(CollisionInfo* info, CollisionShape shape_1, CollisionShape shape_2)
 
 	Face closest_face;
 
-	for (int i = 0; i < EPA_MAX_ITER; ++i)
+	for (uint i = 0; i < EPA_MAX_ITER; ++i)
 	{
 		closest_face = faces[closest_face_index];
 

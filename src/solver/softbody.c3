@@ -9,8 +9,8 @@ import std::core::mem;
 // XPBD constraint types for soft bodies
 struct DistanceConstraint
 {
-	usz p0; // Particle index 0
-	usz p1; // Particle index 1
+	sz p0; // Particle index 0
+	sz p1; // Particle index 1
 	float rest_length;
 	float compliance; // Inverse stiffness (0 = infinitely stiff)
 	float lambda; // Lagrange multiplier (warm-starting)
@@ -25,10 +25,10 @@ struct VolumeConstraint
 
 struct BendingConstraint
 {
-	usz p0; // Shared edge vertex 0
-	usz p1; // Shared edge vertex 1
-	usz p2; // Triangle 1 opposite vertex
-	usz p3; // Triangle 2 opposite vertex
+	sz p0; // Shared edge vertex 0
+	sz p1; // Shared edge vertex 1
+	sz p2; // Triangle 1 opposite vertex
+	sz p3; // Triangle 2 opposite vertex
 	float rest_angle; // Rest dihedral angle
 	float compliance;
 	float lambda;
@@ -37,27 +37,27 @@ struct BendingConstraint
 // Collision constraint generated per-frame during soft-rigid narrow phase
 struct SoftCollisionConstraint
 {
-	usz particle; // Particle index
+	sz particle; // Particle index
 	Vec3 normal; // Contact normal (pointing away from rigidbody)
 	float depth; // Penetration depth
 	Vec3 contact_point; // Contact point on rigidbody surface
-	usz rigidbody_id; // Rigidbody involved (0 = ground plane)
+	sz rigidbody_id; // Rigidbody involved (0 = ground plane)
 	float friction; // Combined friction coefficient
 }
 
 // Particle pinning: fix a particle to a world position or rigidbody
 struct ParticlePin
 {
-	usz particle; // Particle index
+	sz particle; // Particle index
 	Vec3 local_offset; // Offset in rigidbody local space (or world pos if body_id == 0)
-	usz body_id; // 0 = world-space pin, otherwise rigidbody id
+	sz body_id; // 0 = world-space pin, otherwise rigidbody id
 }
 
 alias SoftBodyList = List {SoftBody};
 
 struct SoftBody
 {
-	usz id;
+	sz id;
 
 	// Per-particle data
 	List {Vec3} positions;
@@ -108,7 +108,7 @@ fn void SoftBody.free(&self)
 }
 
 // Create a soft body from a mesh with the given particle mass
-fn SoftBody create_softbody_from_mesh(Mesh* mesh, float total_mass, usz id)
+fn SoftBody create_softbody_from_mesh(Mesh* mesh, float total_mass, sz id)
 {
 	SoftBody sb;
 	sb.id = id;
@@ -119,7 +119,7 @@ fn SoftBody create_softbody_from_mesh(Mesh* mesh, float total_mass, usz id)
 	sb.can_sleep = true;
 	sb.material = { .static_friction = 0.5, .dynamic_friction = 0.3, .restitution = 0.2, };
 
-	usz num_particles = mesh.vertices.len();
+	sz num_particles = mesh.vertices.len();
 	float particle_mass = total_mass / (float)num_particles;
 	float inv_mass = particle_mass > 0 ? 1.0 / particle_mass : 0;
 
@@ -157,10 +157,10 @@ fn void SoftBody.extract_distance_constraints(&self)
 		// Three edges per triangle
 		uint[<3>][3] edges = { { tri.x, tri.y, 0 }, { tri.y, tri.z, 0 }, { tri.z, tri.x, 0 }, };
 
-		for (usz e = 0; e < 3; e++)
+		for (sz e = 0; e < 3; e++)
 		{
-			usz a = edges[e][0];
-			usz b = edges[e][1];
+			sz a = edges[e][0];
+			sz b = edges[e][1];
 			Pair key = { math::min(a, b), math::max(a, b) };
 
 			if (!seen_edges.has_key(key))
@@ -184,23 +184,23 @@ fn void SoftBody.extract_distance_constraints(&self)
 fn void SoftBody.extract_bending_constraints(&self)
 {
 	// Map each edge to the triangles that share it
-	HashMap {Pair, usz[2]} edge_triangles;
-	HashMap {Pair, usz} edge_tri_count;
+	HashMap {Pair, sz[2]} edge_triangles;
+	HashMap {Pair, sz} edge_tri_count;
 	defer edge_triangles.free();
 	defer edge_tri_count.free();
 
-	for (usz ti = 0; ti < self.triangles.len(); ti++)
+	for (sz ti = 0; ti < self.triangles.len(); ti++)
 	{
 		Triangle tri = self.triangles[ti];
 		uint[2][3] edges = { { tri.x, tri.y }, { tri.y, tri.z }, { tri.z, tri.x }, };
 
-		for (usz e = 0; e < 3; e++)
+		for (sz e = 0; e < 3; e++)
 		{
-			usz a = edges[e][0];
-			usz b = edges[e][1];
+			sz a = edges[e][0];
+			sz b = edges[e][1];
 			Pair key = { math::min(a, b), math::max(a, b) };
 
-			usz count = 0;
+			sz count = 0;
 			if (try c = edge_tri_count.get(key))
 			{
 				count = c;
@@ -208,7 +208,7 @@ fn void SoftBody.extract_bending_constraints(&self)
 
 			if (count < 2)
 			{
-				usz[2] tris;
+				sz[2] tris;
 				if (try existing = edge_triangles.get(key))
 				{
 					tris = existing;
@@ -221,17 +221,17 @@ fn void SoftBody.extract_bending_constraints(&self)
 	}
 
 	// For each edge shared by exactly 2 triangles, create a bending constraint
-	edge_tri_count.@each(; Pair key, usz count)
+	edge_tri_count.@each(; Pair key, sz count)
 	{
 		if (count != 2) return;
 
-		usz[2] tris = edge_triangles.get(key)!!;
+		sz[2] tris = edge_triangles.get(key)!!;
 		Triangle t0 = self.triangles[tris[0]];
 		Triangle t1 = self.triangles[tris[1]];
 
 		// Find the opposite vertices (not on the shared edge)
-		usz opposite0 = find_opposite_vertex(t0, key.a, key.b);
-		usz opposite1 = find_opposite_vertex(t1, key.a, key.b);
+		sz opposite0 = find_opposite_vertex(t0, key.a, key.b);
+		sz opposite1 = find_opposite_vertex(t1, key.a, key.b);
 
 		// Compute rest dihedral angle
 		float rest_angle = self.compute_dihedral_angle(key.a, key.b, opposite0, opposite1);
@@ -250,14 +250,14 @@ fn void SoftBody.extract_bending_constraints(&self)
 	};
 }
 
-fn usz find_opposite_vertex(Triangle tri, usz edge_a, usz edge_b) @local
+fn sz find_opposite_vertex(Triangle tri, sz edge_a, sz edge_b) @local
 {
 	if (tri.x != edge_a && tri.x != edge_b) return tri.x;
 	if (tri.y != edge_a && tri.y != edge_b) return tri.y;
 	return tri.z;
 }
 
-fn float SoftBody.compute_dihedral_angle(&self, usz e0, usz e1, usz opp0, usz opp1)
+fn float SoftBody.compute_dihedral_angle(&self, sz e0, sz e1, sz opp0, sz opp1)
 {
 	Vec3 p0 = self.positions[e0];
 	Vec3 p1 = self.positions[e1];
@@ -282,7 +282,7 @@ fn Aabb3 SoftBody.compute_aabb(&self)
 	Vec3 min_v = self.positions[0];
 	Vec3 max_v = self.positions[0];
 
-	for (usz i = 1; i < self.positions.len(); i++)
+	for (sz i = 1; i < self.positions.len(); i++)
 	{
 		Vec3 p = self.positions[i];
 		min_v = math::min(min_v, p);
@@ -314,7 +314,7 @@ fn void SoftBody.xpbd_solve(&self, Vec3 gravity, float dt, PhysicsWorld* world =
 {
 	if (self.sleeping) return;
 
-	usz num_particles = self.positions.len();
+	sz num_particles = self.positions.len();
 	if (num_particles == 0) return;
 
 	float sub_dt = dt / (float)self.substeps;
@@ -322,7 +322,7 @@ fn void SoftBody.xpbd_solve(&self, Vec3 gravity, float dt, PhysicsWorld* world =
 	for (uint sub = 0; sub < self.substeps; sub++)
 	{
 		// === Step 1: Predict positions ===
-		for (usz i = 0; i < num_particles; i++)
+		for (sz i = 0; i < num_particles; i++)
 		{
 			if (self.inverse_masses[i] == 0) continue; // Fixed particle
 
@@ -371,7 +371,7 @@ fn void SoftBody.xpbd_solve(&self, Vec3 gravity, float dt, PhysicsWorld* world =
 		}
 
 		// === Step 4: Derive velocities from position changes ===
-		for (usz i = 0; i < num_particles; i++)
+		for (sz i = 0; i < num_particles; i++)
 		{
 			if (self.inverse_masses[i] == 0) continue;
 
@@ -433,14 +433,14 @@ fn void SoftBody.solve_volume_constraint(&self, VolumeConstraint* c, float dt)
 	// Compute gradients: dV/dp_i for each particle
 	// For signed volume, gradient w.r.t vertex i involves adjacent triangles
 	// Simplified approach: uniform pressure on all surface vertices
-	usz n = self.positions.len();
+	sz n = self.positions.len();
 	float total_grad_sq = 0;
 
 	// For each triangle, compute area-weighted normal contribution
 	List {Vec3} gradients;
 	defer gradients.free();
 
-	for (usz i = 0; i < n; i++)
+	for (sz i = 0; i < n; i++)
 	{
 		gradients.push({ 0, 0, 0 });
 	}
@@ -461,7 +461,7 @@ fn void SoftBody.solve_volume_constraint(&self, VolumeConstraint* c, float dt)
 		gradients[tri.z] += g2;
 	}
 
-	for (usz i = 0; i < n; i++)
+	for (sz i = 0; i < n; i++)
 	{
 		float w = self.inverse_masses[i];
 		total_grad_sq += w * gradients[i].dot(gradients[i]);
@@ -473,7 +473,7 @@ fn void SoftBody.solve_volume_constraint(&self, VolumeConstraint* c, float dt)
 	float delta_lambda = -(constraint_value + alpha * c.lambda) / (total_grad_sq + alpha);
 	c.lambda += delta_lambda;
 
-	for (usz i = 0; i < n; i++)
+	for (sz i = 0; i < n; i++)
 	{
 		float w = self.inverse_masses[i];
 		if (w > 0)
@@ -548,7 +548,7 @@ fn void SoftBody.solve_bending_constraint(&self, BendingConstraint* c, float dt)
 // Apply Coulomb friction to a particle's tangential velocity
 fn void SoftBody.apply_particle_friction(
 	&self,
-	usz particle,
+	sz particle,
 	Vec3 normal,
 	float correction,
 	float friction,
@@ -633,24 +633,24 @@ fn void SoftBody.apply_pin(&self, ParticlePin* pin, PhysicsWorld* world = null)
 }
 
 // Pin a particle to a world position
-fn void SoftBody.pin_particle(&self, usz particle, Vec3 world_pos)
+fn void SoftBody.pin_particle(&self, sz particle, Vec3 world_pos)
 {
 	self.pins.push({ .particle = particle, .local_offset = world_pos, .body_id = 0, });
 	self.inverse_masses[particle] = 0; // Make it immovable during solving
 }
 
 // Pin a particle to a rigidbody (follows body as it moves/rotates)
-fn void SoftBody.pin_to_rigidbody(&self, usz particle, usz body_id, Vec3 local_offset)
+fn void SoftBody.pin_to_rigidbody(&self, sz particle, sz body_id, Vec3 local_offset)
 {
 	self.pins.push({ .particle = particle, .local_offset = local_offset, .body_id = body_id, });
 	self.inverse_masses[particle] = 0;
 }
 
 // Unpin a particle and restore its mass
-fn void SoftBody.unpin_particle(&self, usz particle, float mass)
+fn void SoftBody.unpin_particle(&self, sz particle, float mass)
 {
 	// Remove pin
-	self.pins.remove_using_test(fn (pin, ctx) => pin.particle == *(usz*)ctx, &particle);
+	self.pins.remove_using_test(fn (pin, ctx) => pin.particle == *(sz*)ctx, &particle);
 	// Restore inverse mass
 	if (mass > 0)
 	{
@@ -720,7 +720,7 @@ fn bool SoftBody.is_moving(&self)
 // Generate ground plane collision constraints (z=0 default ground)
 fn void SoftBody.generate_ground_collisions(&self, float ground_z = 0, float friction = 0.5)
 {
-	for (usz i = 0; i < self.positions.len(); i++)
+	for (sz i = 0; i < self.positions.len(); i++)
 	{
 		if (self.inverse_masses[i] == 0) continue;
 
@@ -789,10 +789,10 @@ fn void SoftBody.generate_rigidbody_collisions(&self, Rigidbody* body)
 		if (info.collided && info.depth > 0)
 		{
 			// Create collision constraints for each vertex of the penetrating triangle
-			usz[3] indices = { tri.x, tri.y, tri.z };
-			for (usz v = 0; v < 3; v++)
+			sz[3] indices = { tri.x, tri.y, tri.z };
+			for (sz v = 0; v < 3; v++)
 			{
-				usz idx = indices[v];
+				sz idx = indices[v];
 				Vec3 p = self.positions[idx];
 
 				// Check if this vertex is on the penetrating side

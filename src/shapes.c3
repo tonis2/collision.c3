@@ -33,7 +33,7 @@ interface CollisionShape
 	fn Matrix3f inertia_tensor(float mass) @optional;
 
 
-	fn usz vertex_count() @optional;
+	fn sz vertex_count() @optional;
 
 
 	fn void free() @optional;
@@ -106,7 +106,7 @@ fn void CompoundShape.add_piece(&self, CollisionShape shape, Vec3 offset = { 0, 
 fn Vec3 CompoundShape.furthest_point(&self, Vec3 direction) @dynamic
 {
 	Vec3 furthest = { 0, 0, 0 };
-	float max_dot = -float.max;
+	float max_dot = -float::max;
 	foreach (&piece : self.shapes)
 	{
 		Vec3 point = piece.shape.furthest_point(direction) + piece.offset;
@@ -157,7 +157,7 @@ struct TransformedShape (CollisionShape)
 	CollisionShape shape;
 }
 
-fn usz? Ray.to_format(
+fn sz? Ray.to_format(
 	&self,
 	Formatter* formatter
 ) @dynamic => formatter.printf("origin %s, direction %s", self.origin, self.direction)!;

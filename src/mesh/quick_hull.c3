@@ -8,13 +8,13 @@ import std::collections::list;
 // Used for computing collision meshes from complex GLTF geometry
 
 // Use type-appropriate epsilon - float has ~7 digits, double has ~15
-// Vec3.sizeof is 12 for float[<3>] (3*4) or 24 for double[<3>] (3*8)
-const double HULL_EPSILON = Vec3.sizeof == 12 ? 1e-5 : 1e-10;
+// Vec3::size is 12 for float[<3>] (3*4) or 24 for double[<3>] (3*8)
+const double HULL_EPSILON = Vec3::size == 12 ? 1e-5 : 1e-10;
 
 // Face of the convex hull during construction
 struct HullFace @local
 {
-	usz[3] vertices; // Indices into point array
+	sz[3] vertices; // Indices into point array
 	Vec3 normal;
 	double distance; // Distance from origin along normal
 	bool alive; // False if face has been removed
@@ -51,7 +51,7 @@ fn int find_farthest_point(Vec3[] points, Vec3 direction) @local
 	int best = 0;
 	double best_dist = direction.dot(points[0]);
 
-	for (usz i = 1; i < points.len; i++)
+	for (sz i = 1; i < points.len; i++)
 	{
 		double dist = direction.dot(points[i]);
 		if (dist > best_dist)
@@ -68,7 +68,7 @@ fn int[6] find_extreme_points_hull(Vec3[] points) @local
 {
 	int[6] extreme = { 0, 0, 0, 0, 0, 0 };
 
-	for (usz i = 1; i < points.len; i++)
+	for (sz i = 1; i < points.len; i++)
 	{
 		if (points[i].x < points[extreme[0]].x) extreme[0] = (int)i;
 		if (points[i].x > points[extreme[1]].x) extreme[1] = (int)i;
@@ -114,7 +114,7 @@ fn int find_farthest_from_line(Vec3[] points, int p0, int p1) @local
 	double max_dist = 0;
 	int result = -1;
 
-	for (usz i = 0; i < points.len; i++)
+	for (sz i = 0; i < points.len; i++)
 	{
 		if ((int)i == p0 || (int)i == p1) continue;
 
@@ -146,7 +146,7 @@ fn int find_farthest_from_plane(Vec3[] points, int p0, int p1, int p2) @local
 	double max_dist = 0;
 	int result = -1;
 
-	for (usz i = 0; i < points.len; i++)
+	for (sz i = 0; i < points.len; i++)
 	{
 		if ((int)i == p0 || (int)i == p1 || (int)i == p2) continue;
 
@@ -215,9 +215,9 @@ fn bool build_initial_tetrahedron(Vec3[] points, List {HullFace}* faces) @local
 }
 
 // Assign each point to the face it's farthest outside of
-fn void assign_points_to_faces(Vec3[] points, List {HullFace}* faces, usz[4] tetra_verts) @local
+fn void assign_points_to_faces(Vec3[] points, List {HullFace}* faces, sz[4] tetra_verts) @local
 {
-	for (usz i = 0; i < points.len; i++)
+	for (sz i = 0; i < points.len; i++)
 	{
 		// Skip tetrahedron vertices
 		bool is_tetra = false;
@@ -235,7 +235,7 @@ fn void assign_points_to_faces(Vec3[] points, List {HullFace}* faces, usz[4] tet
 		double max_dist = HULL_EPSILON;
 		int best_face = -1;
 
-		for (usz f = 0; f < faces.len(); f++)
+		for (sz f = 0; f < faces.len(); f++)
 		{
 			if (!faces.get(f).alive) continue;
 			double dist = faces.get_ref(f).point_distance(points[i]);
@@ -263,7 +263,7 @@ fn void find_horizon(
 ) @local
 {
 	// Mark all faces as visible or not from eye point
-	for (usz i = 0; i < faces.len(); i++)
+	for (sz i = 0; i < faces.len(); i++)
 	{
 		if (!faces.get(i).alive) continue;
 
@@ -282,12 +282,12 @@ fn void find_horizon(
 		// Check each edge of visible face
 		for (int e = 0; e < 3; e++)
 		{
-			usz v0 = vf.vertices[e];
-			usz v1 = vf.vertices[(e + 1) % 3];
+			sz v0 = vf.vertices[e];
+			sz v1 = vf.vertices[(e + 1) % 3];
 
 			// Check if this edge is shared with a non-visible face
 			bool is_horizon = true;
-			for (usz j = 0; j < faces.len(); j++)
+			for (sz j = 0; j < faces.len(); j++)
 			{
 				if (!faces.get(j).alive) continue;
 				if ((int)j == vi) continue;
@@ -309,8 +309,8 @@ fn void find_horizon(
 				HullFace* f = faces.get_ref(j);
 				for (int fe = 0; fe < 3; fe++)
 				{
-					usz fv0 = f.vertices[fe];
-					usz fv1 = f.vertices[(fe + 1) % 3];
+					sz fv0 = f.vertices[fe];
+					sz fv1 = f.vertices[(fe + 1) % 3];
 					if ((fv0 == v0 && fv1 == v1) || (fv0 == v1 && fv1 == v0))
 					{
 						// Shared edge with non-visible face = horizon edge
@@ -361,13 +361,13 @@ fn bool expand_hull(List {HullFace}* faces, Vec3[] points, int point_idx) @local
 }
 
 // Redistribute points from removed faces to new faces
-fn void redistribute_points(List {HullFace}* faces, Vec3[] points, usz first_new_face, bool[] hull_vertices) @local
+fn void redistribute_points(List {HullFace}* faces, Vec3[] points, sz first_new_face, bool[] hull_vertices) @local
 {
 	// Collect orphaned points from dead faces
 	List {int} orphans;
 	defer orphans.free();
 
-	for (usz i = 0; i < first_new_face; i++)
+	for (sz i = 0; i < first_new_face; i++)
 	{
 		if (!faces.get(i).alive)
 		{
@@ -389,7 +389,7 @@ fn void redistribute_points(List {HullFace}* faces, Vec3[] points, usz first_new
 		double max_dist = HULL_EPSILON;
 		int best_face = -1;
 
-		for (usz f = first_new_face; f < faces.len(); f++)
+		for (sz f = first_new_face; f < faces.len(); f++)
 		{
 			if (!faces.get(f).alive) continue;
 			double dist = faces.get_ref(f).point_distance(points[pi]);
@@ -435,7 +435,7 @@ fn Mesh quickhull(Vec3[] points)
 	}
 
 	// Get tetrahedron vertices for initial point assignment
-	usz[4] tetra = { faces[0].vertices[0], faces[0].vertices[1], faces[0].vertices[2], faces[1].vertices[2] };
+	sz[4] tetra = { faces[0].vertices[0], faces[0].vertices[1], faces[0].vertices[2], faces[1].vertices[2] };
 
 	// Track which points are already hull vertices (prevents infinite loops with float precision)
 	bool[] hull_vertices = mem::new_array(bool, points.len);
@@ -458,7 +458,7 @@ fn Mesh quickhull(Vec3[] points)
 		changed = false;
 		iterations++;
 
-		for (usz i = 0; i < faces.len(); i++)
+		for (sz i = 0; i < faces.len(); i++)
 		{
 			if (!faces[i].alive) continue;
 			if (faces[i].outside.len() == 0) continue;
@@ -466,9 +466,9 @@ fn Mesh quickhull(Vec3[] points)
 			// Find farthest outside point and its index in the list
 			double max_dist = 0;
 			int farthest = -1;
-			usz farthest_idx = 0;
+			sz farthest_idx = 0;
 
-			for (usz j = 0; j < faces[i].outside.len(); j++)
+			for (sz j = 0; j < faces[i].outside.len(); j++)
 			{
 				int pi = faces[i].outside[j];
 				// Skip points already in hull (shouldn't happen, but safety check)
@@ -492,7 +492,7 @@ fn Mesh quickhull(Vec3[] points)
 			faces[i].outside.remove_at(farthest_idx);
 
 			// Remember where new faces start
-			usz first_new = faces.len();
+			sz first_new = faces.len();
 
 			// Expand hull to include this point
 			bool expanded = expand_hull(&faces, points, farthest);
@@ -514,7 +514,7 @@ fn Mesh quickhull(Vec3[] points)
 	defer vertex_map.free();
 
 	// Initialize with -1
-	for (usz i = 0; i < points.len; i++)
+	for (sz i = 0; i < points.len; i++)
 	{
 		vertex_map.push(-1);
 	}
@@ -525,7 +525,7 @@ fn Mesh quickhull(Vec3[] points)
 		if (!f.alive) continue;
 		for (int j = 0; j < 3; j++)
 		{
-			usz vi = f.vertices[j];
+			sz vi = f.vertices[j];
 			if (vertex_map[vi] < 0)
 			{
 				vertex_map[vi] = (int)result.vertices.len();
@@ -538,7 +538,7 @@ fn Mesh quickhull(Vec3[] points)
 	foreach (&f : faces)
 	{
 		if (!f.alive) continue;
-		Triangle tri = { vertex_map[f.vertices[0]], vertex_map[f.vertices[1]], vertex_map[f.vertices[2]] };
+		Triangle tri = { (uint)vertex_map[f.vertices[0]], (uint)vertex_map[f.vertices[1]], (uint)vertex_map[f.vertices[2]] };
 		result.triangles.push(tri);
 	}
 

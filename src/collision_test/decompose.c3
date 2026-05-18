@@ -12,23 +12,23 @@ struct BorderEdge @local
 }
 
 // Find index of point in list, or -1 if not found
-fn isz find_point_index(List {Vec3}* points, Vec3 p, float eps) @local
+fn sz find_point_index(List {Vec3}* points, Vec3 p, float eps) @local
 {
 	foreach (i, existing : *points)
 	{
 		Vec3 diff = existing - p;
 		if (diff.dot(diff) < eps * eps)
 		{
-			return (isz)i;
+			return (sz)i;
 		}
 	}
 	return -1;
 }
 
 // Find root with path compression (iterative)
-fn isz find_root_iterative(isz[] parent, isz x) @local
+fn sz find_root_iterative(sz[] parent, sz x) @local
 {
-	isz root = x;
+	sz root = x;
 	// Find root
 	while (parent[root] != root)
 	{
@@ -37,7 +37,7 @@ fn isz find_root_iterative(isz[] parent, isz x) @local
 	// Path compression
 	while (parent[x] != root)
 	{
-		isz next = parent[x];
+		sz next = parent[x];
 		parent[x] = root;
 		x = next;
 	}
@@ -45,29 +45,29 @@ fn isz find_root_iterative(isz[] parent, isz x) @local
 }
 
 // Count connected loops in border edge graph using union-find
-fn usz count_border_loops(List {BorderEdge}* border, List {Vec3}* points) @local
+fn sz count_border_loops(List {BorderEdge}* border, List {Vec3}* points) @local
 {
 	if (points.len() == 0) return 0;
 
 	// Union-find parent array
-	isz[] parent = mem::new_array(isz, points.len());
+	sz[] parent = mem::new_array(sz, points.len());
 	defer mem::free(parent);
 
-	for (usz i = 0; i < points.len(); i++)
+	for (sz i = 0; i < points.len(); i++)
 	{
-		parent[i] = (isz)i;
+		parent[i] = (sz)i;
 	}
 
 	// Union edges
 	const float EPS = 0.0001f;
 	foreach (edge : *border)
 	{
-		isz i0 = find_point_index(points, edge.p0, EPS);
-		isz i1 = find_point_index(points, edge.p1, EPS);
+		sz i0 = find_point_index(points, edge.p0, EPS);
+		sz i1 = find_point_index(points, edge.p1, EPS);
 		if (i0 >= 0 && i1 >= 0)
 		{
-			isz r0 = find_root_iterative(parent, i0);
-			isz r1 = find_root_iterative(parent, i1);
+			sz r0 = find_root_iterative(parent, i0);
+			sz r1 = find_root_iterative(parent, i1);
 			if (r0 != r1)
 			{
 				parent[r0] = r1;
@@ -76,10 +76,10 @@ fn usz count_border_loops(List {BorderEdge}* border, List {Vec3}* points) @local
 	}
 
 	// Count unique roots
-	usz num_loops = 0;
-	for (usz i = 0; i < points.len(); i++)
+	sz num_loops = 0;
+	for (sz i = 0; i < points.len(); i++)
 	{
-		if (find_root_iterative(parent, (isz)i) == (isz)i)
+		if (find_root_iterative(parent, (sz)i) == (sz)i)
 		{
 			num_loops++;
 		}
@@ -126,7 +126,7 @@ fn void add_cap_surface(List {BorderEdge}* border, Plane plane, Mesh* mesh, bool
 
 	// Check for multiple disconnected loops (indicates hole in cut surface)
 	// If we have multiple loops, skip cap generation to avoid filling holes
-	usz num_loops = count_border_loops(border, &border_points);
+	sz num_loops = count_border_loops(border, &border_points);
 	if (num_loops > 1)
 	{
 		// Multiple loops detected - this is a polygon with holes
@@ -157,16 +157,16 @@ fn void add_cap_surface(List {BorderEdge}* border, Plane plane, Mesh* mesh, bool
 	float[] angles = mem::new_array(float, border_points.len());
 	defer mem::free(angles);
 
-	for (usz i = 0; i < border_points.len(); i++)
+	for (sz i = 0; i < border_points.len(); i++)
 	{
 		Vec3 d = border_points[i] - centroid;
 		angles[i] = (float)math::atan2(d.dot(v), d.dot(u));
 	}
 
 	// Simple bubble sort by angle (border usually has few points)
-	for (usz i = 0; i < border_points.len() - 1; i++)
+	for (sz i = 0; i < border_points.len() - 1; i++)
 	{
-		for (usz j = 0; j < border_points.len() - 1 - i; j++)
+		for (sz j = 0; j < border_points.len() - 1 - i; j++)
 		{
 			if (angles[j] > angles[j + 1])
 			{
@@ -182,9 +182,9 @@ fn void add_cap_surface(List {BorderEdge}* border, Plane plane, Mesh* mesh, bool
 	}
 
 	// Create fan triangles from centroid
-	for (usz i = 0; i < border_points.len(); i++)
+	for (sz i = 0; i < border_points.len(); i++)
 	{
-		usz j = (i + 1) % border_points.len();
+		sz j = (i + 1) % border_points.len();
 		Vec3 p0 = border_points[i];
 		Vec3 p1 = border_points[j];
 
@@ -470,7 +470,7 @@ fn float score_cut(Mesh* mesh, CutPlane cut) @local
 	int pos_count, neg_count;
 	if (!count_vertices_on_sides(mesh, cut, &pos_count, &neg_count))
 	{
-		return float.max;
+		return float::max;
 	}
 	return (float)math::max(pos_count, neg_count) / (float)math::min(pos_count, neg_count);
 }
@@ -496,7 +496,7 @@ fn CutPlane find_best_cut(Mesh* mesh, Aabb3 bounds, CoacdParameters* params, flo
 	// Collect candidate planes from triangles with significant area
 	// We sample triangles to get diverse cutting directions
 	CutPlane best_cut = { .normal = { 1, 0, 0 }, .d = 0 };
-	float best_score = float.max;
+	float best_score = float::max;
 
 	// Calculate total mesh area for threshold
 	double total_area = 0;
@@ -507,11 +507,11 @@ fn CutPlane find_best_cut(Mesh* mesh, Aabb3 bounds, CoacdParameters* params, flo
 	double min_area = total_area / (double)mesh.triangles.len() * 0.5; // At least half of average
 
 	// Sample stride - don't check every triangle for large meshes
-	usz stride = math::max((usz)1, mesh.triangles.len() / (usz)50);
+	sz stride = math::max((sz)1, mesh.triangles.len() / (sz)50);
 	int candidates_checked = 0;
 	int max_candidates = params.plane_candidates * 3;
 
-	for (usz i = 0; i < mesh.triangles.len() && candidates_checked < max_candidates; i += stride)
+	for (sz i = 0; i < mesh.triangles.len() && candidates_checked < max_candidates; i += stride)
 	{
 		Triangle tri = mesh.triangles[i];
 		double area = tri.get_area(verts);
@@ -548,7 +548,7 @@ fn CutPlane find_best_cut(Mesh* mesh, Aabb3 bounds, CoacdParameters* params, flo
 	}
 
 	// If no good triangle-based cut found, fallback to axis-aligned
-	if (best_score >= float.max)
+	if (best_score >= float::max)
 	{
 		Vec3 size = bounds.size();
 		// Choose longest axis

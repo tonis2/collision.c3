@@ -1,6 +1,6 @@
 module collision;
 
-import std::collections::elastic_array;
+import std::collections::fixedlist;
 import std::io;
 import std::math;
 import std::collections::list;
@@ -14,7 +14,7 @@ constdef Axis
 	EMPTY = -1,
 }
 
-alias Limits = ElasticArray {Limit, 3};
+alias Limits = FixedList {Limit, 3};
 
 struct Limit
 {
@@ -36,8 +36,8 @@ struct GenericJoint3D
 	Vec3 anchor_b;
 	QuaternionValue relative_orientation;
 
-	usz body_a;
-	usz body_b;
+	sz body_a;
+	sz body_b;
 
 	float dampening;
 	float stifness;

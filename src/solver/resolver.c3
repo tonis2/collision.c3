@@ -1,6 +1,6 @@
 module collision;
 
-import std::collections::elastic_array;
+import std::collections::fixedlist;
 import std::io;
 import std::math;
 import std::collections::list;
@@ -22,9 +22,9 @@ const float DEGENERATE_DIST_SQ @local = 0.00001f * 0.00001f;
 const float CLAMPED_DEPTH_MAX @local = 1.0f;
 
 alias CollisionFilter = HashMap {Pair, bool};
-alias RigidBodyMap = LinkedHashMap {usz, Rigidbody};
-alias RigidBodyIterator = LinkedHashMapValueIterator {usz, Rigidbody};
-alias UnionFindMap = HashMap {usz, usz};
+alias RigidBodyMap = LinkedHashMap {sz, Rigidbody};
+alias RigidBodyIterator = LinkedHashMapValueIterator {sz, Rigidbody};
+alias UnionFindMap = HashMap {sz, sz};
 alias ConstraintList = List {XpbdConstraint*};
 alias WarmStartCache = HashMap {Pair, float};
 
@@ -43,7 +43,7 @@ struct XpbdPhaseTask
 {
 	PhysicsWorld* world;
 	Rigidbody** bodies; // Array of body pointers to process
-	usz count; // Number of bodies in this batch
+	sz count; // Number of bodies in this batch
 	float time;
 }
 
@@ -64,7 +64,7 @@ struct IslandSolveTask
 {
 	PhysicsWorld* world;
 	XpbdConstraint** constraints; // Constraints for this island
-	usz count; // Number of constraints
+	sz count; // Number of constraints
 	uint iterations; // Solver iterations
 }
 
@@ -104,8 +104,8 @@ struct XpbdConstraint
 
 struct Collision
 {
-	usz a;
-	usz b;
+	sz a;
+	sz b;
 	Vec3 normal;
 	Vec3[2] contact;
 	float depth;
@@ -119,8 +119,8 @@ enum TriggerEventType : char
 
 struct TriggerEvent
 {
-	usz trigger_id;
-	usz other_id;
+	sz trigger_id;
+	sz other_id;
 	TriggerEventType type;
 }
 
@@ -132,14 +132,14 @@ enum ContactEventType : char
 
 struct ContactEvent
 {
-	usz body_a;
-	usz body_b;
+	sz body_a;
+	sz body_b;
 	ContactEventType type;
 	Vec3 normal; // Collision normal (only valid for START)
 	Vec3 contact_point; // Contact point (only valid for START)
 }
 
-enum PhysicsCombine : inline uint
+enum PhysicsCombine : uint
 {
 	AVERAGE,
 	MINIMUM,
@@ -159,8 +159,8 @@ struct Material
 struct Rigidbody
 {
 	inline TransformedShape collider;
-	usz id;
-	usz island_id;
+	sz id;
+	sz island_id;
 
 	float sleep_timer;
 
@@ -247,7 +247,7 @@ struct PhysicsWorld
 
 	// Contact sorting cache (keep deepest N contacts per pair)
 	Collision[MAX_CONTACTS_PER_PAIR] contact_cache;
-	usz contact_cache_count;
+	sz contact_cache_count;
 
 	// Warm-start: cache contact lambdas from previous frame
 	WarmStartCache warm_start_cache;
@@ -258,7 +258,7 @@ fn void PhysicsWorld.free(&self)
 {
 	if (self.thread_pool_initialized)
 	{
-		self.thread_pool.stop_and_destroy()!!;
+		self.thread_pool.stop_and_destroy();
 	}
 	self.bodies.free();
 	self.collisions.free();
@@ -299,7 +299,7 @@ const PhysicsWorld DEFAULT_PHYSICS_WORLD = {
 <*
  @require self.bodies.len() > 0 : `Must have rigid bodies`
 *>
-fn Rigidbody*? PhysicsWorld.find_body(self, usz id) => self.bodies.get_ref(id);
+fn Rigidbody*? PhysicsWorld.find_body(self, sz id) => self.bodies.get_ref(id);
 
 fn void? PhysicsWorld.add_constraint(&self, GenericJoint3D joint)
 {
@@ -383,7 +383,7 @@ fn void? PhysicsWorld.add_trigger(&self, Rigidbody body)
  before run_step(). Computes velocity from the delta so dynamic bodies that collide
  with this kinematic get correct restitution/friction responses.
 *>
-fn void PhysicsWorld.set_kinematic_target(&self, usz id, Vec3 position, QuaternionValue rotation)
+fn void PhysicsWorld.set_kinematic_target(&self, sz id, Vec3 position, QuaternionValue rotation)
 {
 	Rigidbody* body = self.find_body(id)!!;
 	if (!body.is_kinematic) return;
@@ -423,9 +423,9 @@ fn void PhysicsWorld.add_softbody(&self, SoftBody sb)
 <*
  Remove a soft body by ID.
 *>
-fn void PhysicsWorld.remove_softbody(&self, usz id)
+fn void PhysicsWorld.remove_softbody(&self, sz id)
 {
-	for (usz i = 0; i < self.soft_bodies.len(); i++)
+	for (sz i = 0; i < self.soft_bodies.len(); i++)
 	{
 		if (self.soft_bodies[i].id == id)
 		{
@@ -439,7 +439,7 @@ fn void PhysicsWorld.remove_softbody(&self, usz id)
 <*
  Find a soft body by ID.
 *>
-fn SoftBody*? PhysicsWorld.find_softbody(&self, usz id)
+fn SoftBody*? PhysicsWorld.find_softbody(&self, sz id)
 {
 	foreach (&sb : self.soft_bodies)
 	{
@@ -573,7 +573,7 @@ fn void solve_tangent_friction(
 }
 
 // Union-Find: find root with path compression
-fn usz PhysicsWorld.island_find(&self, usz id)
+fn sz PhysicsWorld.island_find(&self, sz id)
 {
 	if (!self.island_parent.has_key(id))
 	{
@@ -581,11 +581,11 @@ fn usz PhysicsWorld.island_find(&self, usz id)
 		return id;
 	}
 
-	usz parent = self.island_parent.get(id)!!;
+	sz parent = self.island_parent.get(id)!!;
 	if (parent != id)
 	{
 		// Path compression: point directly to root
-		usz root = self.island_find(parent);
+		sz root = self.island_find(parent);
 		self.island_parent.set(id, root);
 		return root;
 	}
@@ -593,10 +593,10 @@ fn usz PhysicsWorld.island_find(&self, usz id)
 }
 
 // Union-Find: merge two bodies into same island
-fn void PhysicsWorld.island_union(&self, usz a, usz b)
+fn void PhysicsWorld.island_union(&self, sz a, sz b)
 {
-	usz root_a = self.island_find(a);
-	usz root_b = self.island_find(b);
+	sz root_a = self.island_find(a);
+	sz root_b = self.island_find(b);
 
 	if (root_a != root_b)
 	{
@@ -663,7 +663,7 @@ fn void PhysicsWorld.wake_island(&self, Rigidbody* body)
 {
 	if (!body.sleeping) return;
 
-	usz target_island = body.island_id;
+	sz target_island = body.island_id;
 
 	RigidBodyIterator iter = self.bodies.value_iter();
 	while (iter.next())
@@ -742,7 +742,7 @@ fn int predict_worker(void* arg) @local
 	PhysicsWorld* world = task.world;
 	float dt = task.time;
 
-	for (usz i = 0; i < task.count; i++)
+	for (sz i = 0; i < task.count; i++)
 	{
 		Rigidbody* body = task.bodies[i];
 
@@ -775,7 +775,7 @@ fn int derive_worker(void* arg) @local
 	float dt = task.time;
 	float inv_dt = 1.0f / dt;
 
-	for (usz i = 0; i < task.count; i++)
+	for (sz i = 0; i < task.count; i++)
 	{
 		Rigidbody* body = task.bodies[i];
 
@@ -802,7 +802,7 @@ fn int island_solve_worker(void* arg) @local
 
 	for (uint iter = 0; iter < task.iterations; iter++)
 	{
-		for (usz i = 0; i < task.count; i++)
+		for (sz i = 0; i < task.count; i++)
 		{
 			solve_xpbd_constraint(task.constraints[i], task.world, iter, task.iterations);
 		}
@@ -1066,32 +1066,32 @@ fn void PhysicsWorld.generate_manifold(&self, Collision* collision)
 
 fn void PhysicsWorld.dispatch_collision_tasks(&self, Pair[] pairs, ThreadFn worker_fn)
 {
-	usz count = pairs.len;
+	sz count = pairs.len;
 	if (count == 0) return;
 
 	self.collision_tasks.clear();
 	self.collision_results.clear();
 
-	for (usz i = 0; i < count; i++)
+	for (sz i = 0; i < count; i++)
 	{
 		self.collision_results.push({ });
 	}
 
-	for (usz i = 0; i < count; i++)
+	for (sz i = 0; i < count; i++)
 	{
 		self.collision_tasks.push(
 			{ .world = self, .pair = pairs[i], .result = &self.collision_results[i], .has_collision = false, }
 		);
 	}
 
-	for (usz i = 0; i < count; i++)
+	for (sz i = 0; i < count; i++)
 	{
-		self.thread_pool.push(worker_fn, &self.collision_tasks[i])!!;
+		self.thread_pool.push(worker_fn, &self.collision_tasks[i]);
 	}
 
-	self.thread_pool.join()!!;
+	self.thread_pool.join();
 
-	for (usz i = 0; i < count; i++)
+	for (sz i = 0; i < count; i++)
 	{
 		if (self.collision_tasks[i].has_collision)
 		{
@@ -1204,7 +1204,7 @@ fn void PhysicsWorld.run_substep(&self, float time, uint step_count)
 
 	// === Phase 3: Narrow-phase collision testing ===
 	// Convex and BVH collisions run in parallel via thread pool
-	usz num_pairs = candidate_pairs.len();
+	sz num_pairs = candidate_pairs.len();
 
 	if (num_pairs > 0)
 	{
@@ -1216,7 +1216,7 @@ fn void PhysicsWorld.run_substep(&self, float time, uint step_count)
 		defer bvh_pairs.free();
 		defer compound_pairs.free();
 
-		for (usz i = 0; i < num_pairs; i++)
+		for (sz i = 0; i < num_pairs; i++)
 		{
 			Pair pair = candidate_pairs[i];
 			Rigidbody* body_a = self.find_body(pair.a)!!;
@@ -1301,16 +1301,16 @@ fn void PhysicsWorld.run_substep(&self, float time, uint step_count)
 	// EPA gives one contact per pair. For box-on-box or box-on-floor contacts,
 	// expand into multiple contacts by projecting vertices near the contact plane.
 	{
-		usz raw_count = self.collisions.len();
-		for (usz i = 0; i < raw_count; i++)
+		sz raw_count = self.collisions.len();
+		for (sz i = 0; i < raw_count; i++)
 		{
 			Collision c = self.collisions[i];
 			self.generate_manifold(&c);
 		}
 		if (raw_count > 0)
 		{
-			usz expanded_count = self.collisions.len() - raw_count;
-			for (usz i = 0; i < expanded_count; i++)
+			sz expanded_count = self.collisions.len() - raw_count;
+			for (sz i = 0; i < expanded_count; i++)
 			{
 				self.collisions[i] = self.collisions[raw_count + i];
 			}
@@ -1383,30 +1383,30 @@ fn void PhysicsWorld.xpbd_predict(&self, float dt)
 		}
 	}
 
-	usz num_active = self.active_bodies.len();
+	sz num_active = self.active_bodies.len();
 	if (num_active == 0) return;
 
-	usz batch_size = (num_active + NUM_WORKER_THREADS - 1) / NUM_WORKER_THREADS;
+	sz batch_size = (num_active + NUM_WORKER_THREADS - 1) / NUM_WORKER_THREADS;
 
 	if (num_active >= NUM_WORKER_THREADS * 2)
 	{
-		usz num_tasks = (num_active + batch_size - 1) / batch_size;
+		sz num_tasks = (num_active + batch_size - 1) / batch_size;
 		self.phase_tasks.clear();
 
 		Rigidbody** all_bodies_ptr = self.active_bodies.array_view().ptr;
 
-		for (usz i = 0; i < num_tasks; i++)
+		for (sz i = 0; i < num_tasks; i++)
 		{
-			usz start = i * batch_size;
-			usz count = math::min(batch_size, num_active - start);
+			sz start = i * batch_size;
+			sz count = math::min(batch_size, num_active - start);
 			self.phase_tasks.push({ .world = self, .bodies = all_bodies_ptr + start, .count = count, .time = dt, });
 		}
 
-		for (usz i = 0; i < num_tasks; i++)
+		for (sz i = 0; i < num_tasks; i++)
 		{
-			self.thread_pool.push(&predict_worker, &self.phase_tasks[i])!!;
+			self.thread_pool.push(&predict_worker, &self.phase_tasks[i]);
 		}
-		self.thread_pool.join()!!;
+		self.thread_pool.join();
 	}
 	else
 	{
@@ -1438,33 +1438,33 @@ fn void PhysicsWorld.xpbd_predict(&self, float dt)
 // XPBD derive phase: compute velocities from position deltas, restitution, update spatial map
 fn void PhysicsWorld.xpbd_derive_and_update(&self, float dt)
 {
-	usz num_active = self.active_bodies.len();
+	sz num_active = self.active_bodies.len();
 	if (num_active == 0) return;
 
 	float inv_dt = 1.0f / dt;
 
 	// Derive velocities (parallelizable)
-	usz batch_size = (num_active + NUM_WORKER_THREADS - 1) / NUM_WORKER_THREADS;
+	sz batch_size = (num_active + NUM_WORKER_THREADS - 1) / NUM_WORKER_THREADS;
 
 	if (num_active >= NUM_WORKER_THREADS * 2)
 	{
-		usz num_tasks = (num_active + batch_size - 1) / batch_size;
+		sz num_tasks = (num_active + batch_size - 1) / batch_size;
 		self.phase_tasks.clear();
 
 		Rigidbody** all_bodies_ptr = self.active_bodies.array_view().ptr;
 
-		for (usz i = 0; i < num_tasks; i++)
+		for (sz i = 0; i < num_tasks; i++)
 		{
-			usz start = i * batch_size;
-			usz count = math::min(batch_size, num_active - start);
+			sz start = i * batch_size;
+			sz count = math::min(batch_size, num_active - start);
 			self.phase_tasks.push({ .world = self, .bodies = all_bodies_ptr + start, .count = count, .time = dt, });
 		}
 
-		for (usz i = 0; i < num_tasks; i++)
+		for (sz i = 0; i < num_tasks; i++)
 		{
-			self.thread_pool.push(&derive_worker, &self.phase_tasks[i])!!;
+			self.thread_pool.push(&derive_worker, &self.phase_tasks[i]);
 		}
-		self.thread_pool.join()!!;
+		self.thread_pool.join();
 	}
 	else
 	{
@@ -1561,20 +1561,20 @@ fn void PhysicsWorld.xpbd_solve_constraints(&self, uint step_count)
 	if (self.constraints.len() == 0) return;
 
 	// Group constraints by island
-	HashMap {usz, ConstraintList} island_constraints;
+	HashMap {sz, ConstraintList} island_constraints;
 	defer
 	{
-		island_constraints.@each(; usz id, ConstraintList list)
+		island_constraints.@each(; sz id, ConstraintList list)
 		{
 			list.free();
 		};
 		island_constraints.free();
 	}
 
-	for (usz i = 0; i < self.constraints.len(); i++)
+	for (sz i = 0; i < self.constraints.len(); i++)
 	{
 		XpbdConstraint* constraint = &self.constraints[i];
-		usz island_id = constraint.body_a.island_id;
+		sz island_id = constraint.body_a.island_id;
 
 		if (!island_constraints.has_key(island_id))
 		{
@@ -1583,13 +1583,13 @@ fn void PhysicsWorld.xpbd_solve_constraints(&self, uint step_count)
 		island_constraints.get_ref(island_id)!!.push(constraint);
 	}
 
-	usz num_islands = island_constraints.len();
+	sz num_islands = island_constraints.len();
 
 	if (num_islands <= 1)
 	{
 		for (uint i = 0; i < step_count; i++)
 		{
-			for (usz j = 0; j < self.constraints.len(); j++)
+			for (sz j = 0; j < self.constraints.len(); j++)
 			{
 				solve_xpbd_constraint(&self.constraints[j], self, i, step_count);
 			}
@@ -1599,19 +1599,19 @@ fn void PhysicsWorld.xpbd_solve_constraints(&self, uint step_count)
 
 	self.island_tasks.clear();
 
-	island_constraints.@each(; usz id, ConstraintList list)
+	island_constraints.@each(; sz id, ConstraintList list)
 	{
 		XpbdConstraint*[] arr = list.array_view();
 
 		self.island_tasks.push({ .world = self, .constraints = arr.ptr, .count = arr.len, .iterations = step_count, });
 	};
 
-	for (usz i = 0; i < num_islands; i++)
+	for (sz i = 0; i < num_islands; i++)
 	{
-		self.thread_pool.push(&island_solve_worker, &self.island_tasks[i])!!;
+		self.thread_pool.push(&island_solve_worker, &self.island_tasks[i]);
 	}
 
-	self.thread_pool.join()!!;
+	self.thread_pool.join();
 }
 
 // Worker function for parallel soft body XPBD solving
@@ -1651,7 +1651,7 @@ fn void PhysicsWorld.solve_soft_bodies(&self, float time)
 	}
 
 	// Count active soft bodies
-	usz active_count = 0;
+	sz active_count = 0;
 	foreach (&sb : self.soft_bodies)
 	{
 		if (!sb.sleeping) active_count++;
@@ -1681,11 +1681,11 @@ fn void PhysicsWorld.solve_soft_bodies(&self, float time)
 			);
 		}
 
-		for (usz i = 0; i < sb_tasks.len(); i++)
+		for (sz i = 0; i < sb_tasks.len(); i++)
 		{
-			self.thread_pool.push(&softbody_solve_worker, &sb_tasks[i])!!;
+			self.thread_pool.push(&softbody_solve_worker, &sb_tasks[i]);
 		}
-		self.thread_pool.join()!!;
+		self.thread_pool.join();
 	}
 	else
 	{
@@ -1731,8 +1731,8 @@ fn void PhysicsWorld.solve_soft_bodies(&self, float time)
 // Shared sleep state update logic
 fn void PhysicsWorld.update_sleep_state(&self)
 {
-	HashMap {usz, bool} island_can_sleep;
-	HashMap {usz, bool} island_checked;
+	HashMap {sz, bool} island_can_sleep;
+	HashMap {sz, bool} island_checked;
 	defer island_can_sleep.free();
 	defer island_checked.free();
 
@@ -1744,7 +1744,7 @@ fn void PhysicsWorld.update_sleep_state(&self)
 
 		if (body.is_static) continue;
 
-		usz island = body.island_id;
+		sz island = body.island_id;
 
 		if (!island_checked.has_key(island))
 		{
@@ -1857,8 +1857,8 @@ fn void Collision.create_xpbd_constraint(&collision, PhysicsWorld* world, float 
 // Insert a contact into the sorted cache (deepest contacts first, up to MAX_CONTACTS_PER_PAIR)
 fn void PhysicsWorld.insert_contact_sorted(&self, Collision contact)
 {
-	usz insert_pos = self.contact_cache_count;
-	for (usz i = 0; i < self.contact_cache_count; i++)
+	sz insert_pos = self.contact_cache_count;
+	for (sz i = 0; i < self.contact_cache_count; i++)
 	{
 		if (contact.depth > self.contact_cache[i].depth)
 		{
@@ -1869,7 +1869,7 @@ fn void PhysicsWorld.insert_contact_sorted(&self, Collision contact)
 
 	if (self.contact_cache_count < MAX_CONTACTS_PER_PAIR)
 	{
-		for (usz i = self.contact_cache_count; i > insert_pos; i--)
+		for (sz i = self.contact_cache_count; i > insert_pos; i--)
 		{
 			self.contact_cache[i] = self.contact_cache[i - 1];
 		}
@@ -1878,7 +1878,7 @@ fn void PhysicsWorld.insert_contact_sorted(&self, Collision contact)
 	}
 	else if (insert_pos < MAX_CONTACTS_PER_PAIR)
 	{
-		for (usz i = MAX_CONTACTS_PER_PAIR - 1; i > insert_pos; i--)
+		for (sz i = MAX_CONTACTS_PER_PAIR - 1; i > insert_pos; i--)
 		{
 			self.contact_cache[i] = self.contact_cache[i - 1];
 		}
@@ -1960,7 +1960,7 @@ fn void PhysicsWorld.check_coacd_collision(&self, Rigidbody* body_a, Rigidbody* 
 	}
 
 	// Push the best contacts to collision list
-	for (usz i = 0; i < self.contact_cache_count; i++)
+	for (sz i = 0; i < self.contact_cache_count; i++)
 	{
 		self.collisions.push(self.contact_cache[i]);
 	}
@@ -2017,7 +2017,7 @@ fn bool test_capsule_triangle_collision(
 	float* out_depth
 ) @local
 {
-	float min_dist_sq = float.max;
+	float min_dist_sq = float::max;
 	Vec3 closest_on_axis = { 0, 0, 0 };
 	Vec3 closest_on_tri = { 0, 0, 0 };
 

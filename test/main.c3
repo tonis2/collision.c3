@@ -27,7 +27,7 @@ fn void test_physics()
 
 	Aabb3[] boxes = { { { 0, 0, 0 }, { 1, 1, 1 } }, { { 1, 1, 1 }, { 2.5, 2.5, 2.5 } }, { { 5, 5, 5 }, { 6, 6, 6 } }, };
 
-	foreach (usz i, item : boxes) spatial_map.insert(item, i)!!;
+	foreach (sz i, item : boxes) spatial_map.insert(item, i)!!;
 
 	spatial_map.@get_pairs(; Pair pair)
 	{
@@ -254,7 +254,7 @@ fn void test_spatial_hash_update()
 	spatial_map.insert(box2, 1)!!;
 
 	// Verify they form a pair (both in cell 0,0,0)
-	usz pair_count = 0;
+	sz pair_count = 0;
 	spatial_map.@get_pairs(; Pair pair)
 	{
 		pair_count++;
@@ -289,8 +289,8 @@ fn void test_spatial_hash_update_same_cell()
 	spatial_map.update(box_old, box_new, 0)!!;
 
 	// Should still be in the map
-	usz count = 0;
-	spatial_map.@get_nearby_objects({ 0.3, 0.3, 0.3 } ; usz id)
+	sz count = 0;
+	spatial_map.@get_nearby_objects({ 0.3, 0.3, 0.3 } ; sz id)
 	{
 		if (id == 0) count++;
 	};
@@ -311,7 +311,7 @@ fn void test_spatial_hash_update_cross_cells()
 	spatial_map.insert(box_stationary, 1)!!;
 
 	// Initially no collision (boxes don't share cells)
-	usz pair_count = 0;
+	sz pair_count = 0;
 	spatial_map.@get_pairs(; Pair pair)
 	{
 		pair_count++;
@@ -348,8 +348,8 @@ fn void test_spatial_hash_multiple_updates()
 	}
 
 	// Verify the box is now at position (5,0,0)
-	usz count = 0;
-	spatial_map.@get_nearby_objects({ 5.5, 0.5, 0.5 } ; usz id)
+	sz count = 0;
+	spatial_map.@get_nearby_objects({ 5.5, 0.5, 0.5 } ; sz id)
 	{
 		if (id == 0) count++;
 	};
@@ -357,7 +357,7 @@ fn void test_spatial_hash_multiple_updates()
 
 	// Verify it's NOT at the old position
 	count = 0;
-	spatial_map.@get_nearby_objects({ 0.5, 0.5, 0.5 } ; usz id)
+	spatial_map.@get_nearby_objects({ 0.5, 0.5, 0.5 } ; sz id)
 	{
 		if (id == 0) count++;
 	};
@@ -627,7 +627,7 @@ fn void test_softbody_in_physics_world()
 	defer mesh.free();
 
 	// Translate vertices up
-	for (usz i = 0; i < mesh.vertices.len(); i++)
+	for (sz i = 0; i < mesh.vertices.len(); i++)
 	{
 		mesh.vertices[i].z += 5.0f;
 	}

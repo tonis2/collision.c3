@@ -2,7 +2,7 @@ module collision;
 import std::math, std::collections::list, std::io;
 
 // // 3D Vector structure
-const double VEC_EPSILON = Vec3.sizeof == 12 ? 1e-5 : 1e-9;
+const double VEC_EPSILON = Vec3::size == 12 ? 1e-5 : 1e-9;
 
 fn bool Vec3.equals(Vec3* self, Vec3 v)
 {
@@ -61,9 +61,9 @@ struct Mesh (CollisionShape)
 	Aabb3 aabb;
 }
 
-fn usz? Mesh.to_format(&self, Formatter* formatter) @dynamic
+fn sz? Mesh.to_format(&self, Formatter* formatter) @dynamic
 {
-	usz lenght = 0;
+	sz lenght = 0;
 	foreach (vert : self.vertices)
 	{
 		lenght += formatter.printf("%s,%s,%s\n", vert.x, vert.y, vert.z)!;
@@ -107,7 +107,7 @@ fn void Mesh.free(&self) @dynamic
 
 fn void Mesh.add_triangle(&self, Vec3 v0, Vec3 v1, Vec3 v2)
 {
-	int idx0 = (int)self.vertices.len();
+	uint idx0 = (uint)self.vertices.len();
 	self.vertices.push(v0);
 	self.vertices.push(v1);
 	self.vertices.push(v2);
@@ -118,7 +118,7 @@ fn void Mesh.add_triangle(&self, Vec3 v0, Vec3 v1, Vec3 v2)
 fn void Mesh.set_indices(&self, uint[] indices)
 {
 	self.triangles.clear();
-	for (usz i = 0; i + 2 < indices.len; i += 3)
+	for (sz i = 0; i + 2 < indices.len; i += 3)
 	{
 		self.triangles.push({ indices[i], indices[i + 1], indices[i + 2] });
 	}
@@ -134,7 +134,7 @@ fn Vec3 Mesh.get_center(&self)
 // Validate mesh triangles, removing any with out-of-bounds indices
 fn void Mesh.validate(&self)
 {
-	usz vert_count = self.vertices.len();
+	sz vert_count = self.vertices.len();
 	if (vert_count == 0) return;
 
 	// Filter out invalid triangles
@@ -174,7 +174,7 @@ fn List {Mesh} Mesh.decompose(&self, CoacdParameters params = COACD_MEDIUM)
 fn double Mesh.get_volume(&self)
 {
 	double volume = 0.0;
-	usz vert_count = self.vertices.len();
+	sz vert_count = self.vertices.len();
 
 	foreach (tri : self.triangles)
 	{
@@ -197,7 +197,7 @@ fn bool Mesh.is_convex(&self)
 
 	// Tighter epsilon to ensure proper decomposition of hollow shapes
 	const double EPSILON = 0.01;
-	usz vert_count = self.vertices.len();
+	sz vert_count = self.vertices.len();
 
 	foreach (tri : self.triangles)
 	{
@@ -230,8 +230,8 @@ fn bool Mesh.is_convex(&self)
 *>
 fn Aabb3 Mesh.get_aabb(&self) @dynamic
 {
-	Vec3 min = { float.max, float.max, float.max };
-	Vec3 max = { -float.max, -float.max, -float.max };
+	Vec3 min = { float::max, float::max, float::max };
+	Vec3 max = { -float::max, -float::max, -float::max };
 
 	foreach (point : self.vertices)
 	{
@@ -350,7 +350,7 @@ fn Matrix3f Mesh.inertia_tensor(&self, float mass) @dynamic
 }
 
 fn ShapeType Mesh.get_type(&self) @dynamic => ShapeType.CONVEX;
-fn usz Mesh.vertex_count(&self) @dynamic => self.vertices.len();
+fn sz Mesh.vertex_count(&self) @dynamic => self.vertices.len();
 
 
 // Plane structure for clipping

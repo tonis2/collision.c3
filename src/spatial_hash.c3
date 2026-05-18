@@ -3,22 +3,22 @@ module collision;
 import std::io;
 import std::math;
 import std::collections::list;
-import std::collections::elastic_array;
+import std::collections::fixedlist;
 import std::collections::map;
 
-alias CellList = List {usz};
-alias SpatialMap = HashMap {usz, CellList};
+alias CellList = List {sz};
+alias SpatialMap = HashMap {sz, CellList};
 
 struct SpatialHash3D
 {
 	float cell_size;
 	SpatialMap table;
-	HashMap {usz, bool} unique_map;
+	HashMap {sz, bool} unique_map;
 }
 
 fn void SpatialHash3D.free(&self)
 {
-	self.table.@each(; usz id, CellList cells)
+	self.table.@each(; sz id, CellList cells)
 	{
 		cells.free();
 	};
@@ -42,7 +42,7 @@ fn Vec3 SpatialHash3D.world_to_grid(&self, Vec3 pos)
  @require box.size().length_sq() < 100000 : `Aabb box is too big, could be because memory errors`
  @require box.size().length_sq() > 0.1 : `Aabb box is too small, could be because memory errors`
 *>
-fn void? SpatialHash3D.insert(&self, Aabb3 box, usz id)
+fn void? SpatialHash3D.insert(&self, Aabb3 box, sz id)
 {
 	Vec3 min_cell = self.world_to_grid(box.min);
 	Vec3 max_cell = self.world_to_grid(box.max);
@@ -53,7 +53,7 @@ fn void? SpatialHash3D.insert(&self, Aabb3 box, usz id)
 		{
 			for (int z = (int)min_cell.z; z <= (int)max_cell.z; ++z)
 			{
-				usz cell_id = (Vec3) { (float)x, (float)y, (float)z }.hash();
+				sz cell_id = (Vec3) { (float)x, (float)y, (float)z }.hash();
 				if (!self.table.has_key(cell_id))
 				{
 					self.table.set(cell_id, { });
@@ -72,7 +72,7 @@ fn void? SpatialHash3D.insert(&self, Aabb3 box, usz id)
  @require old_box.size().length_sq() < 10000 && old_box.size().length_sq() > 0.1 : `Aabb box size invalid, could be because memory errors`
  @require new_box.size().length_sq() < 10000 && new_box.size().length_sq() > 0.1 : `Aabb box size invalid, could be because memory errors`
 *>
-fn void? SpatialHash3D.update(&self, Aabb3 old_box, Aabb3 new_box, usz id)
+fn void? SpatialHash3D.update(&self, Aabb3 old_box, Aabb3 new_box, sz id)
 {
 	Vec3 old_min_cell = self.world_to_grid(old_box.min);
 	Vec3 old_max_cell = self.world_to_grid(old_box.max);
@@ -108,11 +108,11 @@ fn void? SpatialHash3D.update(&self, Aabb3 old_box, Aabb3 new_box, usz id)
 					&& z <= new_max_z;
 				if (!in_new)
 				{
-					usz cell_id = (Vec3) { (float)x, (float)y, (float)z }.hash();
+					sz cell_id = (Vec3) { (float)x, (float)y, (float)z }.hash();
 					CellList*? cells = self.table.get_ref(cell_id);
 					if (try cells)
 					{
-						cells.remove_using_test(fn (id, ctx) => *id == *(usz*)ctx, &&id);
+						cells.remove_using_test(fn (id, ctx) => *id == *(sz*)ctx, &&id);
 						if (cells.is_empty()) self.table.remove(cell_id);
 					}
 				}
@@ -131,7 +131,7 @@ fn void? SpatialHash3D.update(&self, Aabb3 old_box, Aabb3 new_box, usz id)
 					&& z <= old_max_z;
 				if (!in_old)
 				{
-					usz cell_id = (Vec3) { (float)x, (float)y, (float)z }.hash();
+					sz cell_id = (Vec3) { (float)x, (float)y, (float)z }.hash();
 					if (!self.table.has_key(cell_id))
 					{
 						self.table.set(cell_id, { });
@@ -145,19 +145,19 @@ fn void? SpatialHash3D.update(&self, Aabb3 old_box, Aabb3 new_box, usz id)
 
 macro void SpatialHash3D.@get_pairs(&self; @callback(Pair pair))
 {
-	self.table.@each(; usz id, CellList cells)
+	self.table.@each(; sz id, CellList cells)
 	{
-		for (usz i = 0; i < cells.len(); ++i)
+		for (sz i = 0; i < cells.len(); ++i)
 		{
-			for (usz j = i + 1; j < cells.len(); ++j)
+			for (sz j = i + 1; j < cells.len(); ++j)
 			{
-				usz a = cells[i];
-				usz b = cells[j];
+				sz a = cells[i];
+				sz b = cells[j];
 
 				if (a == b) continue;
 
 				Pair pair = { math::min(a, b), math::max(a, b) };
-				usz pair_hash = pair.hash();
+				sz pair_hash = pair.hash();
 
 				if (!self.unique_map.has_key(pair_hash))
 				{
@@ -185,15 +185,15 @@ macro void SpatialHash3D.@get_pairs_in_region(&self, Vec3 min, Vec3 max; @callba
 				int cell_id = self.world_to_grid({ x, y, z }).hash();
 				CellList cells = self.table.get(cell_id);
 
-				for (usz i = 0; i < cells.len(); ++i)
+				for (sz i = 0; i < cells.len(); ++i)
 				{
-					for (usz j = i + 1; j < cells.len(); ++j)
+					for (sz j = i + 1; j < cells.len(); ++j)
 					{
-						usz a = cells[i];
-						usz b = cells[j];
+						sz a = cells[i];
+						sz b = cells[j];
 						Pair pair = { math::min(a, b), math::max(a, b) };
 
-						usz pair_hash = pair.hash();
+						sz pair_hash = pair.hash();
 						if (!self.unique_map.has_key(pair_hash))
 						{
 							@callback(pair);
@@ -222,13 +222,13 @@ macro void SpatialHash3D.@get_neighbor_cells(&self, Vec3 cell; @callback(Vec3 po
 	}
 }
 
-macro void SpatialHash3D.@get_nearby_objects(&self, Vec3 pos; @callback(usz id))
+macro void SpatialHash3D.@get_nearby_objects(&self, Vec3 pos; @callback(sz id))
 {
 	Vec3 cell = self.world_to_grid(pos);
 
 	self.@get_neighbor_cells(cell ; Vec3 position)
 	{
-		usz cell_id = self.world_to_grid({ position.x, position.y, position.z }).hash();
+		sz cell_id = self.world_to_grid({ position.x, position.y, position.z }).hash();
 		if (try cells = self.table.get(cell_id))
 		{
 			foreach (item : cells) @callback(item);
