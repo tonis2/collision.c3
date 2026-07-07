@@ -254,10 +254,11 @@ fn Vec3 Mesh.furthest_point(&self, Vec3 direction) @dynamic
 		return { 0, 0, 0 }; // Safeguard for empty mesh
 	}
 
-	Vec3 furthest_point = self.vertices[0];
+	Vec3[] verts = self.vertices.array_view();
+	Vec3 furthest_point = verts[0];
 	float max_distance = furthest_point.dot(direction);
 
-	foreach (point : self.vertices)
+	foreach (point : verts[1..])
 	{
 		float distance = point.dot(direction);
 		if (distance > max_distance)

@@ -148,6 +148,33 @@ fn Matrix3f CompoundShape.inertia_tensor(&self, float mass) @dynamic
 	return self.aabb.inertia_tensor(mass);
 }
 
+// A single triangle used as a temporary narrow-phase shape (BVH mesh triangles,
+// soft body surface triangles). Lives on the stack — no allocation per test.
+// Vertices are expected in the space the collision test runs in (usually world).
+struct TriangleShape (CollisionShape)
+{
+	Vec3[3] v;
+}
+
+fn Vec3 TriangleShape.furthest_point(&self, Vec3 direction) @dynamic
+{
+	float d0 = self.v[0].dot(direction);
+	float d1 = self.v[1].dot(direction);
+	float d2 = self.v[2].dot(direction);
+	if (d0 >= d1) return d0 >= d2 ? self.v[0] : self.v[2];
+	return d1 >= d2 ? self.v[1] : self.v[2];
+}
+
+fn Aabb3 TriangleShape.get_aabb(&self) @dynamic
+{
+	return {
+		.min = math::min(self.v[0], math::min(self.v[1], self.v[2])),
+		.max = math::max(self.v[0], math::max(self.v[1], self.v[2])),
+	};
+}
+
+fn ShapeType TriangleShape.get_type(&self) @dynamic => ShapeType.TRIANGLE;
+
 // Shapes
 struct TransformedShape (CollisionShape)
 {

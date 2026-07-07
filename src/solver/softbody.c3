@@ -750,23 +750,6 @@ fn void SoftBody.generate_rigidbody_collisions(&self, Rigidbody* body)
 	// Combined friction
 	float friction = (self.material.static_friction + body.material.static_friction) * 0.5f;
 
-	// Create a temporary triangle mesh for per-triangle testing
-	Mesh tri_mesh;
-	tri_mesh.vertices.init(allocator: mem);
-	tri_mesh.triangles.init(allocator: mem);
-	tri_mesh.vertices.push({ 0, 0, 0 });
-	tri_mesh.vertices.push({ 0, 0, 0 });
-	tri_mesh.vertices.push({ 0, 0, 0 });
-	tri_mesh.triangles.push({ 0, 1, 2 });
-	defer tri_mesh.free();
-
-	TransformedShape tri_shape = {
-		.translation = { 0, 0, 0 },
-		.scale = { 1, 1, 1 },
-		.rotation = { 0, 0, 0, 1 },
-		.shape = &tri_mesh,
-	};
-
 	// Test each surface triangle against the rigidbody
 	foreach (tri : self.triangles)
 	{
@@ -779,10 +762,8 @@ fn void SoftBody.generate_rigidbody_collisions(&self, Rigidbody* body)
 
 		if (!tri_aabb.collides(body.transformed_aabb)) continue;
 
-		// Set triangle vertices (world space, identity transform)
-		tri_mesh.vertices[0] = v0;
-		tri_mesh.vertices[1] = v1;
-		tri_mesh.vertices[2] = v2;
+		// Triangle vertices are already in world space
+		TriangleShape tri_shape = { .v = { v0, v1, v2 } };
 
 		CollisionInfo info = collision::check_convex_collision(&tri_shape, &body.collider, epa: true);
 

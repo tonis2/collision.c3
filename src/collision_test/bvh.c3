@@ -144,48 +144,48 @@ fn HitInfo TriBVHNode.box_intersects(&self, Aabb3 aabb)
 	return hit;
 }
 
+// Visit every triangle overlapping the query AABB without allocating.
+// Iterative traversal with an explicit stack; @body receives each TriangleVerts.
+macro void TriBVHNode.@foreach_triangle(&self, Aabb3 aabb; @body(tri))
+{
+	TriBVHNode*[64] node_stack;
+	sz stack_size = 1;
+	node_stack[0] = self;
+
+	while (stack_size > 0)
+	{
+		TriBVHNode* node = node_stack[--stack_size];
+		if (!node.aabb.collides(aabb)) continue;
+
+		if (node.is_leaf())
+		{
+			for (sz i = 0; i < node.count; i++)
+			{
+				sz tri_idx = node.sorted_indices[node.start + i];
+				Triangle tri = node.triangles[tri_idx];
+				TriangleVerts triangle = { node.vertices[tri.x], node.vertices[tri.y], node.vertices[tri.z] };
+
+				if (triangle.collides_aabb(aabb) > 0)
+				{
+					@body(triangle);
+				}
+			}
+			continue;
+		}
+
+		assert (stack_size + 2 <= node_stack.len);
+		if (node.left != null) node_stack[stack_size++] = node.left;
+		if (node.right != null) node_stack[stack_size++] = node.right;
+	}
+}
+
 // Query all overlapping triangles (for multiple contact points)
 fn void TriBVHNode.query_all_triangles(&self, Aabb3 aabb, List {TriangleVerts}* results)
 {
-	if (!self.aabb.collides(aabb))
+	self.@foreach_triangle(aabb; TriangleVerts tri)
 	{
-		return;
-	}
-
-	if (self.is_leaf())
-	{
-		for (sz i = 0; i < self.count; i++)
-		{
-			Vec3 v0, v1, v2;
-
-			if (self.indexed)
-			{
-				// Indexed mode: look up triangle indices, then vertex positions
-				sz tri_idx = self.sorted_indices[self.start + i];
-				Triangle tri = self.triangles[tri_idx];
-				v0 = self.vertices[tri.x];
-				v1 = self.vertices[tri.y];
-				v2 = self.vertices[tri.z];
-			}
-
-			TriangleVerts triangle = { v0, v1, v2 };
-
-			if (triangle.collides_aabb(aabb) > 0)
-			{
-				results.push(triangle);
-			}
-		}
-		return;
-	}
-
-	if (self.left != null)
-	{
-		self.left.query_all_triangles(aabb, results);
-	}
-	if (self.right != null)
-	{
-		self.right.query_all_triangles(aabb, results);
-	}
+		results.push(tri);
+	};
 }
 
 // ============================================================================

@@ -31,7 +31,7 @@ fn void EdgeArray.add_if_new(&self, Pair pair)
 	self.push(pair);
 }
 
-fn Face SupportArray.create_face(self, sz a_index, sz b_index, sz c_index)
+fn Face SupportArray.create_face(&self, sz a_index, sz b_index, sz c_index)
 {
 	Vec3 a = self.get(a_index).point;
 	Vec3 b = self.get(b_index).point;
@@ -51,7 +51,7 @@ fn Face SupportArray.create_face(self, sz a_index, sz b_index, sz c_index)
 	return { .a = a_index, .b = b_index, .c = c_index, .distance = distance, .normal = normal };
 }
 
-fn void SupportArray.reconstruct(self, FaceArray* faces, Vec3 new_point)
+fn void SupportArray.reconstruct(&self, FaceArray* faces, Vec3 new_point)
 {
 	EdgeArray edges;
 
@@ -72,7 +72,6 @@ fn void SupportArray.reconstruct(self, FaceArray* faces, Vec3 new_point)
 	foreach (edge : edges)
 	{
 		Face new_face = self.create_face(edge.a, edge.b, self.len() - 1);
-		float magnitude = new_face.normal.length_sq();
 		if (new_face.normal.length_sq() < 0.001) continue;
 		faces.push(new_face);
 	}
