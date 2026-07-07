@@ -2364,12 +2364,13 @@ fn sz PhysicsWorld.test_bvh_collision(&self, Rigidbody* body_a, Rigidbody* body_
 	else if (use_capsule)
 	{
 		Capsule* capsule = (Capsule*)other_body.collider.shape;
-		// Capsule axis endpoints in local space (from support function convention)
-		Vec3 local_p0 = { 0, capsule.radius_bottom, 0 };
-		Vec3 local_p1 = { 0, capsule.radius_top, 0 };
+		// Capsule axis endpoints in local space: cap-sphere centers at ±height/2
+		float half = capsule.height * 0.5f;
+		Vec3 local_p0 = { 0, -half, 0 };
+		Vec3 local_p1 = { 0, half, 0 };
 		capsule_p0 = other_body.collider.rotation * (local_p0 * other_scale) + other_body.collider.translation;
 		capsule_p1 = other_body.collider.rotation * (local_p1 * other_scale) + other_body.collider.translation;
-		world_radius = capsule.height * other_scale.x;
+		world_radius = math::max(capsule.radius_top, capsule.radius_bottom) * other_scale.x;
 	}
 
 	sz contact_count = 0;

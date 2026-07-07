@@ -58,6 +58,8 @@ struct Sphere (CollisionShape)
 	float radius;
 }
 
+// Cylinder centered at the origin, axis +y: flat caps at y = ±height/2 with
+// the given radii (a truncated cone when they differ).
 struct Cylinder (CollisionShape)
 {
 	float height;
@@ -65,6 +67,8 @@ struct Cylinder (CollisionShape)
 	float radius_bottom;
 }
 
+// Capsule centered at the origin, axis +y: sphere caps centered at y = ±height/2
+// (height covers the cylindrical section only, matching KHR_implicit_shapes).
 struct Capsule (CollisionShape)
 {
 	float height;
@@ -230,17 +234,26 @@ fn Vec3 Sphere.furthest_point(&self, Vec3 direction) @dynamic => direction.norma
 
 fn Vec3 Cylinder.furthest_point(&self, Vec3 direction) @dynamic
 {
+	float half = self.height * 0.5f;
 	Vec3 dir_xz = { direction.x, 0, direction.z };
-	Vec3 result = dir_xz.normalize() * self.height;
-	result.y = (direction.y > 0) ? self.radius_top : self.radius_bottom;
-	return result;
+	if (dir_xz.length() > 1e-12f) dir_xz = dir_xz.normalize();
+
+	// Candidate points on the top and bottom cap rims; pick the one with the
+	// larger projection (handles truncated cones where the radii differ).
+	Vec3 top = dir_xz * self.radius_top + (Vec3) { 0, half, 0 };
+	Vec3 bottom = dir_xz * self.radius_bottom + (Vec3) { 0, -half, 0 };
+	return direction.dot(top) > direction.dot(bottom) ? top : bottom;
 }
 
 fn Vec3 Capsule.furthest_point(&self, Vec3 direction) @dynamic
 {
-	Vec3 result = direction.normalize() * self.height;
-	result.y += (direction.y > 0) ? self.radius_top : self.radius_bottom;
-	return result;
+	float half = self.height * 0.5f;
+	Vec3 n = direction.normalize();
+
+	// Support of the convex hull of the two cap spheres.
+	Vec3 top = n * self.radius_top + (Vec3) { 0, half, 0 };
+	Vec3 bottom = n * self.radius_bottom + (Vec3) { 0, -half, 0 };
+	return direction.dot(top) > direction.dot(bottom) ? top : bottom;
 }
 
 fn Matrix3f TransformedShape.inertia_tensor(&self, float mass) @dynamic
@@ -378,15 +391,20 @@ fn Aabb3 Sphere.get_aabb(&self) @dynamic => { .min = self.center - self.radius, 
 fn Aabb3 Capsule.get_aabb(&self) @dynamic
 {
 	float radius_max = math::max(self.radius_top, self.radius_bottom);
+	float half = self.height * 0.5f;
 
-	return { .min = { -radius_max, 0, -radius_max }, .max = { radius_max, self.height, radius_max } };
+	return {
+		.min = { -radius_max, -half - self.radius_bottom, -radius_max },
+		.max = { radius_max, half + self.radius_top, radius_max },
+	};
 }
 
 fn Aabb3 Cylinder.get_aabb(&self) @dynamic
 {
 	float radius_max = math::max(self.radius_top, self.radius_bottom);
+	float half = self.height * 0.5f;
 
-	return { .min = { -radius_max, 0, -radius_max }, .max = { radius_max, self.height, radius_max } };
+	return { .min = { -radius_max, -half, -radius_max }, .max = { radius_max, half, radius_max } };
 }
 
 fn Vec3 TransformedShape.get_world_center_of_mass(
