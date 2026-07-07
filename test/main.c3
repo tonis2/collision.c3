@@ -1,6 +1,7 @@
 module collision_tests @test;
 
 import collision;
+import pool_test_util;
 
 import std::math;
 import std::io;
@@ -765,6 +766,54 @@ fn void test_xpbd_rigid_contact()
 	assert (z < 2.0f); // Has fallen from initial position of 5
 }
 
+fn void test_worker_pool()
+{
+	WorkerPool pool;
+	pool.init(3)!!;
+	defer pool.destroy();
+	assert (pool.workers() == 3);
+
+	// More tasks than queue capacity (workers * 4) to exercise blocking push,
+	// several rounds to exercise join + reuse
+	int[64] slots;
+	for (int round = 0; round < 4; round++)
+	{
+		for (int i = 0; i < 64; i++) slots[i] = 0;
+		for (int i = 0; i < 64; i++) pool.push(&pool_test_util::slot_worker, &slots[i]);
+		pool.join();
+		for (int i = 0; i < 64; i++) assert (slots[i] == 1);
+	}
+}
+
+fn void test_world_thread_count()
+{
+	PhysicsWorld world = collision::DEFAULT_PHYSICS_WORLD;
+	world.thread_count = 2;
+	defer world.free();
+
+	Aabb3 box_shape = { { -0.5f, -0.5f, -0.5f }, { 0.5f, 0.5f, 0.5f } };
+	world.add_body(
+		{
+			.id = 1,
+			.collider = {
+				.shape = &box_shape,
+				.translation = { 0, 0, 5 },
+				.scale = { 1, 1, 1 },
+				.rotation = { 0, 0, 0, 1 },
+			},
+			.mass = 1.0f,
+			.gravity_factor = 1.0f,
+			.can_sleep = false,
+		}
+	)!!;
+
+	world.run_step(1.0f / 60.0f);
+	assert (world.thread_pool.workers() == 2);
+
+	// Default (thread_count = 0) resolves to the machine's core count
+	assert (collision::default_worker_count() >= 1);
+}
+
 // Helper: flat two-triangle ground mesh at z=0 spanning ±10, with BVH
 macro Mesh create_test_ground_mesh()
 {
@@ -966,4 +1015,12 @@ fn void test_xpbd_joint()
 
 	// Body B should have moved downward from gravity
 	assert (body_b.collider.translation.z < 5.0f);
+}
+
+module pool_test_util;
+
+fn int slot_worker(void* arg)
+{
+	*(int*)arg += 1;
+	return 0;
 }

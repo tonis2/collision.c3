@@ -12,9 +12,12 @@ A physics and collision detection library for the [C3 language](https://c3-lang.
 
 **Physics Simulation**
 - Rigid body dynamics with mass and inertia
-- Impulse-based collision resolution with friction and restitution
+- XPBD position-based solver with friction and restitution
+- Multi-contact manifolds for stable stacking and mesh contacts
+- Swept CCD — fast bodies don't tunnel through static geometry
 - Gravity, linear/angular damping, and sleep states
 - Generic 6-DOF joint constraints with limits
+- XPBD soft bodies with distance, volume and bending constraints
 
 **Collision Shapes**
 - `Sphere` - Sphere with radius
@@ -161,14 +164,19 @@ foreach (piece : pieces) {
 
 ```c3
 PhysicsWorld world = {
-    .gravity = {0, 0, -9.8},       // Gravity vector
+    .gravity = {0, 0, -9.8},       // Gravity vector (library convention is z-up)
     .spatial_map.cell_size = 2.0,  // Broad-phase cell size
     .sleep_timer = 5.0,            // Seconds before bodies sleep
     .linear_dampening = 0.9,       // Velocity damping per step
     .angular_dampening = 0.9,
     .sleep_delta = 0.1,            // Velocity threshold for sleep
+    .ccd_enabled = true,           // Swept CCD for fast-moving bodies
+    .thread_count = 0,             // Solver worker threads; 0 = auto (CPU cores - 1)
 };
 ```
+
+Triangle meshes are treated as one-sided: contacts always push bodies out along
+the triangle face normal, so meshes need consistent (outward) winding.
 
 ## Links
 

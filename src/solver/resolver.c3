@@ -6,10 +6,9 @@ import std::math;
 import std::collections::list;
 import std::time;
 import std::collections::map;
-import std::thread::pool;
+import std::thread;
 import std::core::mem;
 
-const NUM_WORKER_THREADS @local = 8;
 const MAX_CONTACTS_PER_PAIR @local = 8;
 
 const float EPSILON @local = 1e-8f;
@@ -29,9 +28,8 @@ alias ConstraintList = List {XpbdConstraint*};
 
 
 // Task structure for parallel collision testing.
-// Each task processes a contiguous slice of pairs: the pool's queue only has
-// NUM_WORKER_THREADS slots and push() spins while it is full, so work must be
-// batched to at most one task per worker rather than one task per pair.
+// Each task processes a contiguous slice of pairs — batching to at most one
+// task per worker keeps thread pool overhead out of the hot path.
 struct CollisionTask
 {
 	PhysicsWorld* world;
@@ -246,10 +244,10 @@ struct PhysicsWorld
 	float angular_dampening;
 	float linear_dampening;
 
-	// Threading support
-	// Template param sets both queue size AND thread count
-	ThreadPool {NUM_WORKER_THREADS} thread_pool;
-	bool thread_pool_initialized;
+	// Threading support. Worker count comes from thread_count, resolved on
+	// the first run_step: 0 = auto (CPU cores - 1, see default_worker_count).
+	sz thread_count;
+	WorkerPool thread_pool;
 
 	// Reusable task lists (avoid per-frame allocations)
 	List {CollisionTask} collision_tasks;
@@ -262,10 +260,7 @@ struct PhysicsWorld
 
 fn void PhysicsWorld.free(&self)
 {
-	if (self.thread_pool_initialized)
-	{
-		self.thread_pool.stop_and_destroy();
-	}
+	self.thread_pool.destroy();
 	self.bodies.free();
 	self.collisions.free();
 	self.manifold_scratch.free();
@@ -1119,7 +1114,8 @@ fn void PhysicsWorld.dispatch_collision_tasks(&self, Pair[] pairs, ThreadFn work
 
 	// Batch pairs into at most one task per worker
 	self.collision_tasks.clear();
-	sz batch_size = (count + NUM_WORKER_THREADS - 1) / NUM_WORKER_THREADS;
+	sz workers = self.thread_pool.workers();
+	sz batch_size = (count + workers - 1) / workers;
 
 	for (sz start = 0; start < count; start += batch_size)
 	{
@@ -1164,10 +1160,10 @@ fn void PhysicsWorld.dispatch_collision_tasks(&self, Pair[] pairs, ThreadFn work
 fn void PhysicsWorld.run_step(&self, float time, uint step_count = 1, uint sub_steps = 1)
 {
 	// Lazy init thread pool (can't do in create_world because workers get pointer before move)
-	if (!self.thread_pool_initialized)
+	if (!self.thread_pool.initialized)
 	{
-		self.thread_pool.init()!!;
-		self.thread_pool_initialized = true;
+		sz workers = self.thread_count > 0 ? self.thread_count : default_worker_count();
+		self.thread_pool.init(workers)!!;
 	}
 
 	self.trigger_events.clear();
@@ -1396,15 +1392,16 @@ fn void PhysicsWorld.dispatch_phase_tasks(&self, float dt, ThreadFn worker_fn)
 {
 	sz num_active = self.active_bodies.len();
 	Rigidbody** all_bodies_ptr = self.active_bodies.array_view().ptr;
+	sz workers = self.thread_pool.workers();
 
-	if (num_active < NUM_WORKER_THREADS * 2)
+	if (num_active < workers * 2)
 	{
 		XpbdPhaseTask task = { .world = self, .bodies = all_bodies_ptr, .count = num_active, .time = dt, };
 		worker_fn(&task);
 		return;
 	}
 
-	sz batch_size = (num_active + NUM_WORKER_THREADS - 1) / NUM_WORKER_THREADS;
+	sz batch_size = (num_active + workers - 1) / workers;
 	sz num_tasks = (num_active + batch_size - 1) / batch_size;
 	self.phase_tasks.clear();
 
@@ -1643,9 +1640,11 @@ fn void PhysicsWorld.xpbd_solve_constraints(&self, uint step_count)
 
 	// Pack islands into at most one bucket per worker. Islands touch disjoint
 	// bodies, so one Gauss-Seidel sweep over a bucket's combined constraint
-	// list is equivalent to solving its islands independently — and the pool's
-	// small spinning queue makes one-task-per-island prohibitive anyway.
-	ConstraintList[NUM_WORKER_THREADS] buckets;
+	// list is equivalent to solving its islands independently, and bounding
+	// the task count keeps thread pool overhead out of the hot path.
+	sz workers = self.thread_pool.workers();
+	ConstraintList[MAX_WORKER_THREADS] bucket_storage;
+	ConstraintList[] buckets = bucket_storage[:workers];
 	defer foreach (&bucket : buckets) bucket.free();
 
 	HashMap {sz, sz} island_bucket; // island root -> bucket index
@@ -1665,7 +1664,7 @@ fn void PhysicsWorld.xpbd_solve_constraints(&self, uint step_count)
 		{
 			// New island: assign to the currently smallest bucket
 			bucket_index = 0;
-			for (sz i = 1; i < NUM_WORKER_THREADS; i++)
+			for (sz i = 1; i < workers; i++)
 			{
 				if (buckets[i].len() < buckets[bucket_index].len()) bucket_index = i;
 			}
