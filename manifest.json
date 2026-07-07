@@ -1,12 +1,13 @@
 {
-  "provides" : "collision",
-  "sources": ["src/**"],
-  "targets" : {
-    "macos-x64" : {
-    },
-    "linux-x64" : {
-    },
-    "windows-x64" : {
-    }
+  "provides": "collision",
+  "sources": [
+    "src/**"
+  ],
+  "targets": {
+    "macos-x64": {},
+    "linux-x64": {},
+    "windows-x64": {},
+    "macos-aarch64": {},
+    "linux-aarch64": {}
   }
 }
