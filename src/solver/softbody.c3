@@ -5,6 +5,7 @@ import std::collections::map;
 import std::math;
 import std::io;
 import std::core::mem;
+import collision::dmath;
 
 // XPBD constraint types for soft bodies
 struct DistanceConstraint
@@ -271,7 +272,8 @@ fn float SoftBody.compute_dihedral_angle(&self, sz e0, sz e1, sz opp0, sz opp1)
 	float cos_angle = math::clamp(n0.dot(n1), -1.0f, 1.0f);
 	float sin_angle = n0.cross(n1).dot(edge);
 
-	return math::atan2(sin_angle, cos_angle);
+	// dmath::atan2: libm atan2 is not cross-platform deterministic
+	return dmath::atan2(sin_angle, cos_angle);
 }
 
 // Compute AABB from current particle positions
@@ -515,7 +517,7 @@ fn void SoftBody.solve_bending_constraint(&self, BendingConstraint* c, float dt)
 
 	float cos_angle = math::clamp(n0.dot(n1), -1.0f, 1.0f);
 	float sin_angle = n0.cross(n1).dot(edge_dir);
-	float current_angle = math::atan2(sin_angle, cos_angle);
+	float current_angle = dmath::atan2(sin_angle, cos_angle);
 
 	float constraint_value = current_angle - c.rest_angle;
 

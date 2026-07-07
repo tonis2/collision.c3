@@ -32,6 +32,8 @@ A physics and collision detection library for the [C3 language](https://c3-lang.
 - CoACD convex decomposition for concave meshes
 - Parallel constraint solving with thread pool
 - Collision filtering between body pairs
+- Deterministic lockstep support: bit-identical simulation across machines,
+  state hashing, and snapshot/restore for rollback netcode.
 
 ## Quick Start
 
@@ -177,6 +179,43 @@ PhysicsWorld world = {
 
 Triangle meshes are treated as one-sided: contacts always push bodies out along
 the triangle face normal, so meshes need consistent (outward) winding.
+
+## Deterministic lockstep
+
+The simulation is bit-deterministic: two machines that create the same bodies
+in the same order and step with the same inputs produce bit-identical worlds,
+so multiplayer games can send only player inputs over the wire. The full
+contract.
+
+- Build with `-O3` or below (default `--fp-math=strict`); `-O4`/`-O5` enable
+  fast math and break bit-equality
+- Create bodies in the same order on every peer, step with a fixed,
+  bit-identical `dt` (accumulator pattern), and apply inputs at agreed
+  simulation ticks only
+
+```c3
+const float TICK_DT = 1.0f / 60.0f;
+float accumulator;
+
+// Game loop: fixed simulation ticks, never the variable frame time
+accumulator += frame_time;
+while (accumulator >= TICK_DT) {
+    apply_player_inputs(&world, current_tick); // same inputs on every peer
+    world.run_step(TICK_DT, step_count: 4);
+    accumulator -= TICK_DT;
+    current_tick++;
+}
+
+// Desync detection: exchange hashes with peers (cheap, every frame if you like)
+ulong hash = world.state_hash();
+
+// Rollback netcode: snapshot, simulate ahead, restore and replay on a
+// mispredicted input — the replay is bit-exact
+WorldSnapshot snap = world.snapshot();
+defer snap.free();
+// ... simulate ahead, receive authoritative inputs ...
+world.restore(&snap)!!;
+```
 
 ## Links
 

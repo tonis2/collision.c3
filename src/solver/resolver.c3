@@ -8,6 +8,8 @@ import std::time;
 import std::collections::map;
 import std::thread;
 import std::core::mem;
+import std::sort;
+import collision::dmath;
 
 const MAX_CONTACTS_PER_PAIR @local = 8;
 
@@ -550,12 +552,18 @@ fn float compute_generalized_inverse_mass(Rigidbody* body, Vec3 r, Vec3 n)
 	return w;
 }
 
-// Apply angular rotation from axis-angle correction vector
+// Apply angular rotation from axis-angle correction vector.
+// Builds the quaternion with dmath::sincos instead of
+// quaternion::from_axis_angle — libm sin/cos differ across platforms, which
+// would break lockstep determinism (see determinism.md).
 fn void apply_angular_rotation(Rigidbody* body, Vec3 correction) @local
 {
 	float angle = correction.length();
 	if (angle <= EPSILON) return;
-	body.collider.rotation = (quaternion::from_axis_angle(correction, angle) * body.collider.rotation).normalize();
+	Vec3 axis = correction / angle;
+	float[<2>] sc = dmath::sincos(angle * 0.5f);
+	QuaternionValue dq = { ...(axis * sc[0]), sc[1] };
+	body.collider.rotation = (dq * body.collider.rotation).normalize();
 }
 
 // XPBD positional correction: apply delta_lambda along direction n at contact arm r
@@ -798,9 +806,10 @@ fn void derive_bodies(Rigidbody*[] bodies, float dt) @local
 		if (dq.l < 0) dq = -dq;
 		body.angular_velocity = dq.v.xyz * (2.0f * inv_dt);
 
-		// Apply per-body dampening
-		body.angular_velocity *= math::pow(body.angular_dampening, dt);
-		body.linear_velocity *= math::pow(body.linear_dampening, dt);
+		// Apply per-body dampening (dmath::pow: libm pow is not
+		// cross-platform deterministic)
+		body.angular_velocity *= dmath::pow(body.angular_dampening, dt);
+		body.linear_velocity *= dmath::pow(body.linear_dampening, dt);
 	}
 }
 
@@ -1176,9 +1185,41 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 1, uint sub_s
 	}
 }
 
+// Canonical orderings for lockstep determinism (see determinism.md): the
+// Gauss-Seidel solver is order-dependent, so candidate pairs and the events
+// handed to game logic are sorted by body id instead of inheriting hash-map
+// iteration order.
+fn int pair_id_cmp(Pair x, Pair y) @private
+{
+	if (x.a != y.a) return x.a < y.a ? -1 : 1;
+	if (x.b != y.b) return x.b < y.b ? -1 : 1;
+	return 0;
+}
+
+fn int trigger_event_cmp(TriggerEvent x, TriggerEvent y) @local
+{
+	if (x.trigger_id != y.trigger_id) return x.trigger_id < y.trigger_id ? -1 : 1;
+	if (x.other_id != y.other_id) return x.other_id < y.other_id ? -1 : 1;
+	if (x.type != y.type) return x.type.ordinal < y.type.ordinal ? -1 : 1;
+	return 0;
+}
+
+fn int contact_event_cmp(ContactEvent x, ContactEvent y) @local
+{
+	if (x.body_a != y.body_a) return x.body_a < y.body_a ? -1 : 1;
+	if (x.body_b != y.body_b) return x.body_b < y.body_b ? -1 : 1;
+	if (x.type != y.type) return x.type.ordinal < y.type.ordinal ? -1 : 1;
+	return 0;
+}
+
 fn void PhysicsWorld.run_substep(&self, float time, uint step_count)
 {
 	if (time <= 0.0f) return;
+
+	// Events accumulate across substeps; remember where this substep's
+	// slice starts so it can be canonically sorted below.
+	sz trigger_events_start = self.trigger_events.len();
+	sz contact_events_start = self.contact_events.len();
 
 	// Recompute islands if joint topology changed
 	self.compute_islands();
@@ -1250,6 +1291,17 @@ fn void PhysicsWorld.run_substep(&self, float time, uint step_count)
 	self.active_triggers.free();
 	self.active_triggers = current_triggers;
 	current_triggers = { }; // Prevent double-free in defer
+
+	// Canonical order: pair order decides constraint order, and the
+	// Gauss-Seidel solve is order-dependent
+	if (candidate_pairs.len() > 1)
+	{
+		sort::quicksort(candidate_pairs.array_view(), &pair_id_cmp);
+	}
+	if (self.trigger_events.len() - trigger_events_start > 1)
+	{
+		sort::quicksort(self.trigger_events.array_view()[trigger_events_start..], &trigger_event_cmp);
+	}
 
 	// === Phase 3: Narrow-phase collision testing ===
 	// Convex and BVH collisions run in parallel via thread pool
@@ -1345,6 +1397,12 @@ fn void PhysicsWorld.run_substep(&self, float time, uint step_count)
 	self.active_contacts.free();
 	self.active_contacts = current_contacts;
 	current_contacts = { }; // Prevent double-free in defer
+
+	// Canonical event order (END events come from hash-map iteration)
+	if (self.contact_events.len() - contact_events_start > 1)
+	{
+		sort::quicksort(self.contact_events.array_view()[contact_events_start..], &contact_event_cmp);
+	}
 
 	// === Phase 4.5: Expand contact manifolds ===
 	// EPA gives one contact per pair. For box-on-box or box-on-floor contacts,
