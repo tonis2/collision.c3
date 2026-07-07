@@ -108,15 +108,6 @@ fn Matrix3f QuaternionValue.as_mat3(self)
 
 fn void Vec3.set(&self, Vec3 new) => mem::copy(self, &new, Vec3::size, 0);
 
-fn sz Vec3.hash(&self)
-{
-	sz hash = 17;
-	hash = (sz)(hash * 23f + self.x);
-	hash = (sz)(hash * 23f + self.y);
-	hash = (sz)(hash * 23f + self.z);
-	return hash;
-}
-
 fn float Vec3.distance_sq(self, Vec3 v2) => (self - v2).length_sq();
 
 fn sz? ContactPoints.to_format(
@@ -126,10 +117,14 @@ fn sz? ContactPoints.to_format(
 fn sz? Pair.to_format(&self, Formatter* formatter) @dynamic => formatter.printf("%s, %s", self.a, self.b)!;
 macro bool Pair.equals(a, Pair b) @operator(==) => (a.a == b.a && a.b == b.b) || (a.a == b.b && a.b == b.a);
 
-macro uint Pair.hash(&self)
+macro uint Pair.hash(self)
 {
-	if (self.a > self.b) @swap(self.a, self.b);
-	return builtin::@generic_hash(self.a) + builtin::@generic_hash(self.b);
+	// Order-normalized (Pair.equals is unordered) without mutating self.
+	// Distribution only: exactness comes from Pair.equals inside the map.
+	ulong lo = (ulong)math::min(self.a, self.b);
+	ulong hi = (ulong)math::max(self.a, self.b);
+	ulong h = (lo * 0x9E3779B97F4A7C15) ^ (hi * 0xC2B2AE3D27D4EB4F);
+	return (uint)(h ^ (h >> 32));
 }
 
 // Removed: QuaternionValue.equals is now provided by std::math::quaternion
