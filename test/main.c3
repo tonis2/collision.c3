@@ -765,6 +765,131 @@ fn void test_xpbd_rigid_contact()
 	assert (z < 2.0f); // Has fallen from initial position of 5
 }
 
+// Helper: flat two-triangle ground mesh at z=0 spanning ±10, with BVH
+macro Mesh create_test_ground_mesh()
+{
+	Mesh mesh;
+	mesh.vertices.push_all(
+		{
+			{ -10.0f, -10.0f, 0.0f },
+			{ 10.0f, -10.0f, 0.0f },
+			{ -10.0f, 10.0f, 0.0f },
+			{ 10.0f, 10.0f, 0.0f },
+		}
+	);
+	// Consistent winding — face normals point up (+z)
+	mesh.triangles.push_all({ { 0, 1, 2 }, { 1, 3, 2 } });
+	mesh.aabb = mesh.get_aabb();
+	mesh.build_bvh();
+	return mesh;
+}
+
+fn void test_ccd_fast_projectile()
+{
+	PhysicsWorld world = collision::DEFAULT_PHYSICS_WORLD;
+	defer world.free();
+
+	Mesh ground = create_test_ground_mesh();
+	defer ground.free();
+
+	world.add_body(
+		{
+			.id = 1,
+			.collider = {
+				.shape = &ground,
+				.translation = { 0, 0, 0 },
+				.scale = { 1, 1, 1 },
+				.rotation = { 0, 0, 0, 1 },
+			},
+			.mass = 0,
+			.gravity_factor = 0,
+			.can_sleep = false,
+		}
+	)!!;
+
+	// Small, very fast sphere: moves 2.5 units per step — far more than its
+	// 0.1 radius — and would pass straight through the ground without CCD.
+	Sphere bullet = { .center = { 0, 0, 0 }, .radius = 0.1f };
+	world.add_body(
+		{
+			.id = 2,
+			.collider = {
+				.shape = &bullet,
+				.translation = { 0, 0, 5 },
+				.scale = { 1, 1, 1 },
+				.rotation = { 0, 0, 0, 1 },
+			},
+			.mass = 0.1f,
+			.gravity_factor = 1.0f,
+			.can_sleep = false,
+			.linear_velocity = { 0, 0, -150.0f },
+		}
+	)!!;
+
+	for (int i = 0; i < 60; i++)
+	{
+		world.run_step(1.0f / 60.0f, step_count: 8);
+	}
+
+	// Projectile must have been stopped by the ground, not tunneled through
+	float z = world.find_body(2)!!.collider.translation.z;
+	assert (z > -0.5f);
+	assert (z < 1.0f);
+}
+
+fn void test_mesh_contact_manifold()
+{
+	PhysicsWorld world = collision::DEFAULT_PHYSICS_WORLD;
+	defer world.free();
+
+	Mesh ground = create_test_ground_mesh();
+	defer ground.free();
+
+	world.add_body(
+		{
+			.id = 1,
+			.collider = {
+				.shape = &ground,
+				.translation = { 0, 0, 0 },
+				.scale = { 1, 1, 1 },
+				.rotation = { 0, 0, 0, 1 },
+			},
+			.mass = 0,
+			.gravity_factor = 0,
+			.can_sleep = false,
+		}
+	)!!;
+
+	// Box dropped across the shared edge of the two triangles — needs the
+	// multi-contact manifold to settle flat instead of rocking or sinking.
+	Aabb3 box_shape = { { -0.5f, -0.5f, -0.5f }, { 0.5f, 0.5f, 0.5f } };
+	world.add_body(
+		{
+			.id = 2,
+			.collider = {
+				.shape = &box_shape,
+				.translation = { 0, 0, 2 },
+				.scale = { 1, 1, 1 },
+				.rotation = { 0, 0, 0, 1 },
+			},
+			.mass = 1.0f,
+			.gravity_factor = 1.0f,
+			.can_sleep = false,
+			.material = { .static_friction = 0.5f, .dynamic_friction = 0.4f },
+		}
+	)!!;
+
+	for (int i = 0; i < 180; i++)
+	{
+		world.run_step(1.0f / 60.0f, step_count: 8);
+	}
+
+	// Box should rest on the surface: center near half its height
+	float z = world.find_body(2)!!.collider.translation.z;
+	assert (z > 0.3f);
+	assert (z < 0.8f);
+}
+
 fn void test_xpbd_joint()
 {
 	PhysicsWorld world = collision::DEFAULT_PHYSICS_WORLD;

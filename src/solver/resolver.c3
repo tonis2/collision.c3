@@ -36,8 +36,8 @@ struct CollisionTask
 {
 	PhysicsWorld* world;
 	Pair* pairs;
-	Collision* results; // Per-pair result slots
-	bool* hits; // Per-pair collision flags
+	Collision* results; // MAX_CONTACTS_PER_PAIR result slots per pair
+	sz* counts; // Number of contacts written per pair
 	sz count;
 }
 
@@ -112,6 +112,7 @@ struct Collision
 	Vec3 normal;
 	Vec3[2] contact;
 	float depth;
+	bool skip_expand; // Contact is already part of a manifold — don't vertex-expand it
 }
 
 enum TriggerEventType : char
@@ -191,6 +192,11 @@ struct Rigidbody
 	Vec3 mass_center;
 	Matrix3f inertia; // Inverse local-space inertia tensor (set by add_body)
 
+	// Conservative inner radius for swept CCD, set by add_body. A body whose
+	// per-substep displacement exceeds this is swept against static geometry.
+	// 0 disables CCD for this body.
+	float ccd_radius;
+
 	// XPBD: previous state for velocity derivation
 	Vec3 prev_position;
 	QuaternionValue prev_rotation;
@@ -231,6 +237,9 @@ struct PhysicsWorld
 	float ground_plane_z;
 	bool ground_plane_enabled;
 
+	// Swept CCD for fast-moving bodies (see apply_ccd)
+	bool ccd_enabled;
+
 	Vec3 gravity;
 	float sleep_timer;
 	float sleep_delta;
@@ -245,14 +254,10 @@ struct PhysicsWorld
 	// Reusable task lists (avoid per-frame allocations)
 	List {CollisionTask} collision_tasks;
 	List {Collision} collision_results;
-	List {bool} collision_hits;
+	List {sz} collision_counts;
 	List {IslandSolveTask} island_tasks;
 	List {XpbdPhaseTask} phase_tasks;
 	List {Rigidbody*} active_bodies;
-
-	// Contact sorting cache (keep deepest N contacts per pair)
-	Collision[MAX_CONTACTS_PER_PAIR] contact_cache;
-	sz contact_cache_count;
 }
 
 fn void PhysicsWorld.free(&self)
@@ -272,7 +277,7 @@ fn void PhysicsWorld.free(&self)
 	// Free reusable task lists
 	self.collision_tasks.free();
 	self.collision_results.free();
-	self.collision_hits.free();
+	self.collision_counts.free();
 	self.island_tasks.free();
 	self.phase_tasks.free();
 	self.active_bodies.free();
@@ -296,6 +301,7 @@ const PhysicsWorld DEFAULT_PHYSICS_WORLD = {
 	.linear_dampening = 0.9,
 	.angular_dampening = 0.9,
 	.sleep_delta = 0.2,
+	.ccd_enabled = true,
 };
 
 <*
@@ -346,6 +352,16 @@ fn void? PhysicsWorld.add_body(&self, Rigidbody body)
 	// Use AABB-based inertia - consistent for all shape types including mesh
 	if (!body.is_static
 		&& &body.collider.shape.inertia_tensor) body.inertia = body.aabb.inertia_tensor(body.mass).inverse()!!;
+
+	// Conservative inner radius for swept CCD: half the smallest world-space extent
+	if (!body.is_static)
+	{
+		Vec3 half_extent = body.aabb.extent() * body.collider.scale;
+		body.ccd_radius = math::min(
+			math::abs(half_extent.x),
+			math::min(math::abs(half_extent.y), math::abs(half_extent.z))
+		);
+	}
 
 	// Default to world dampening if not specified per-body
 	if (body.linear_dampening == 0) body.linear_dampening = self.linear_dampening;
@@ -715,14 +731,14 @@ fn int collision_test_worker(void* arg) @local
 
 		if (info.collided)
 		{
-			task.results[i] = {
+			task.results[i * MAX_CONTACTS_PER_PAIR] = {
 				.a = pair.a,
 				.b = pair.b,
 				.normal = info.normal,
 				.contact = info.contact_points,
 				.depth = info.depth,
 			};
-			task.hits[i] = true;
+			task.counts[i] = 1;
 		}
 	}
 	return 0;
@@ -740,12 +756,8 @@ fn int bvh_collision_test_worker(void* arg) @local
 		Rigidbody* body_a = world.find_body(pair.a)!!;
 		Rigidbody* body_b = world.find_body(pair.b)!!;
 
-		Collision? collision = world.test_bvh_collision(body_a, body_b, pair);
-		if (try c = collision)
-		{
-			task.results[i] = c;
-			task.hits[i] = true;
-		}
+		Collision[] slots = task.results[i * MAX_CONTACTS_PER_PAIR : MAX_CONTACTS_PER_PAIR];
+		task.counts[i] = world.test_bvh_collision(body_a, body_b, pair, slots);
 	}
 	return 0;
 }
@@ -983,6 +995,13 @@ fn bool is_manifold_shape(TransformedShape* collider) @local @inline
 // onto the reference body's contact plane and creates additional contacts.
 fn void PhysicsWorld.generate_manifold(&self, Collision* collision)
 {
+	// Secondary contacts of a mesh/compound manifold are already spread out
+	if (collision.skip_expand)
+	{
+		self.collisions.push(*collision);
+		return;
+	}
+
 	Rigidbody* a = self.find_body(collision.a)!!;
 	Rigidbody* b = self.find_body(collision.b)!!;
 
@@ -1088,15 +1107,15 @@ fn void PhysicsWorld.dispatch_collision_tasks(&self, Pair[] pairs, ThreadFn work
 	if (count == 0) return;
 
 	self.collision_results.clear();
-	self.collision_hits.clear();
+	self.collision_counts.clear();
 	for (sz i = 0; i < count; i++)
 	{
-		self.collision_results.push({ });
-		self.collision_hits.push(false);
+		for (sz j = 0; j < MAX_CONTACTS_PER_PAIR; j++) self.collision_results.push({ });
+		self.collision_counts.push(0);
 	}
 
 	Collision* results = self.collision_results.array_view().ptr;
-	bool* hits = self.collision_hits.array_view().ptr;
+	sz* counts = self.collision_counts.array_view().ptr;
 
 	// Batch pairs into at most one task per worker
 	self.collision_tasks.clear();
@@ -1109,8 +1128,8 @@ fn void PhysicsWorld.dispatch_collision_tasks(&self, Pair[] pairs, ThreadFn work
 			{
 				.world = self,
 				.pairs = pairs.ptr + start,
-				.results = results + start,
-				.hits = hits + start,
+				.results = results + start * MAX_CONTACTS_PER_PAIR,
+				.counts = counts + start,
 				.count = batch_count,
 			}
 		);
@@ -1132,9 +1151,9 @@ fn void PhysicsWorld.dispatch_collision_tasks(&self, Pair[] pairs, ThreadFn work
 
 	for (sz i = 0; i < count; i++)
 	{
-		if (self.collision_hits[i])
+		for (sz j = 0; j < self.collision_counts[i]; j++)
 		{
-			self.collisions.push(self.collision_results[i]);
+			self.collisions.push(self.collision_results[i * MAX_CONTACTS_PER_PAIR + j]);
 		}
 	}
 }
@@ -1403,6 +1422,79 @@ fn void PhysicsWorld.dispatch_phase_tasks(&self, float dt, ThreadFn worker_fn)
 	self.thread_pool.join();
 }
 
+<*
+ Swept CCD against static geometry. A body whose predicted displacement this
+ substep exceeds its own ccd_radius ray-casts its motion (center segment from
+ prev_position to the predicted position) against static bodies — exact BVH
+ triangle casts for meshes, world-AABB casts for other shapes — and is clamped
+ just short of the first hit. The narrow phase then sees a regular overlap
+ instead of the body skipping through, and the derive phase absorbs the lost
+ velocity automatically.
+
+ Limitations: rotation during the sweep is ignored, dynamic-vs-dynamic pairs
+ are not swept, and kinematic movers are treated as stationary obstacles.
+*>
+fn void PhysicsWorld.apply_ccd(&self)
+{
+	foreach (body : self.active_bodies)
+	{
+		float radius = body.ccd_radius;
+		if (radius <= 0) continue;
+
+		Vec3 disp = body.collider.translation - body.prev_position;
+		float disp_sq = disp.length_sq();
+		if (disp_sq <= radius * radius) continue;
+
+		// All hit fractions are along the motion segment: 0 = prev, 1 = predicted
+		float best_fraction = float::max;
+
+		RigidBodyIterator iter = self.bodies.value_iter();
+		while (iter.next())
+		{
+			Rigidbody* obstacle = iter.get()!!;
+			if (!obstacle.is_static || obstacle.is_trigger || obstacle.id == body.id) continue;
+
+			if (obstacle.has_mesh_bvh())
+			{
+				// Cast in mesh-local space; the affine transform preserves
+				// fractions along the segment.
+				Mesh* mesh = (Mesh*)obstacle.collider.shape;
+				Vec3 obstacle_scale = obstacle.collider.scale;
+				Quaternionf inv_rot = obstacle.collider.rotation.conjugate();
+				Vec3 inv_scale = { 1.0f / obstacle_scale.x, 1.0f / obstacle_scale.y, 1.0f / obstacle_scale.z };
+				Vec3 local_start = (inv_rot * (body.prev_position - obstacle.collider.translation)) * inv_scale;
+				Vec3 local_end = (inv_rot * (body.collider.translation - obstacle.collider.translation)) * inv_scale;
+
+				HitInfo hit = mesh.bvh.ray_intersects({ .origin = local_start, .direction = local_end - local_start });
+				if (hit.collided && hit.depth > 0 && hit.depth <= 1.0f && hit.depth < best_fraction)
+				{
+					best_fraction = hit.depth;
+				}
+			}
+			else
+			{
+				// Conservative: cast against the obstacle's world AABB.
+				// depth == 0 means we started inside — that's a resting
+				// overlap for the narrow phase, not a CCD hit.
+				HitInfo hit = obstacle.transformed_aabb.intersect_ray({ .origin = body.prev_position, .direction = disp });
+				if (hit.collided && hit.depth > 0 && hit.depth <= 1.0f && hit.depth < best_fraction)
+				{
+					best_fraction = hit.depth;
+				}
+			}
+		}
+
+		if (best_fraction < float::max)
+		{
+			// Stop just short of the impact point so the next narrow phase
+			// generates a regular contact at the surface
+			float back_off = radius * 0.99f / math::sqrt(disp_sq);
+			float clamped = math::max(0.0f, best_fraction - back_off);
+			body.collider.translation = body.prev_position + disp * clamped;
+		}
+	}
+}
+
 // XPBD predict phase: save prev state, apply gravity, advance positions
 fn void PhysicsWorld.xpbd_predict(&self, float dt)
 {
@@ -1421,6 +1513,9 @@ fn void PhysicsWorld.xpbd_predict(&self, float dt)
 	if (self.active_bodies.len() == 0) return;
 
 	self.dispatch_phase_tasks(dt, &predict_worker);
+
+	// Clamp fast movers to their first time of impact before the broad phase
+	if (self.ccd_enabled) self.apply_ccd();
 
 	// Sequential: update spatial map AABBs after predict (must happen before broad phase)
 	foreach (body : self.active_bodies)
@@ -1850,36 +1945,58 @@ fn void Collision.create_xpbd_constraint(&collision, PhysicsWorld* world, float 
 }
 
 
-// Insert a contact into the sorted cache (deepest contacts first, up to MAX_CONTACTS_PER_PAIR)
-fn void PhysicsWorld.insert_contact_sorted(&self, Collision contact)
+// Insert a contact into a sorted cache (deepest contacts first, capacity
+// MAX_CONTACTS_PER_PAIR). Near-duplicates — same contact point and normal —
+// keep only the deeper entry, so manifolds spread across distinct points.
+// Thread-safe: operates on a caller-owned cache. Returns the new count.
+fn sz insert_contact_sorted(Collision[] cache, sz count, Collision contact) @local
 {
-	sz insert_pos = self.contact_cache_count;
-	for (sz i = 0; i < self.contact_cache_count; i++)
+	// Dedup against existing contacts
+	for (sz i = 0; i < count; i++)
 	{
-		if (contact.depth > self.contact_cache[i].depth)
+		if (cache[i].contact[0].distance_sq(contact.contact[0]) < DEDUP_DIST_SQ
+			&& cache[i].normal.dot(contact.normal) > 0.99f)
+		{
+			if (contact.depth <= cache[i].depth) return count; // Existing one is deeper
+			// New one is deeper: remove the duplicate, then insert sorted below
+			for (sz j = i; j + 1 < count; j++)
+			{
+				cache[j] = cache[j + 1];
+			}
+			count--;
+			break;
+		}
+	}
+
+	sz insert_pos = count;
+	for (sz i = 0; i < count; i++)
+	{
+		if (contact.depth > cache[i].depth)
 		{
 			insert_pos = i;
 			break;
 		}
 	}
 
-	if (self.contact_cache_count < MAX_CONTACTS_PER_PAIR)
+	if (count < MAX_CONTACTS_PER_PAIR)
 	{
-		for (sz i = self.contact_cache_count; i > insert_pos; i--)
+		for (sz i = count; i > insert_pos; i--)
 		{
-			self.contact_cache[i] = self.contact_cache[i - 1];
+			cache[i] = cache[i - 1];
 		}
-		self.contact_cache[insert_pos] = contact;
-		self.contact_cache_count++;
+		cache[insert_pos] = contact;
+		return count + 1;
 	}
-	else if (insert_pos < MAX_CONTACTS_PER_PAIR)
+
+	if (insert_pos < MAX_CONTACTS_PER_PAIR)
 	{
 		for (sz i = MAX_CONTACTS_PER_PAIR - 1; i > insert_pos; i--)
 		{
-			self.contact_cache[i] = self.contact_cache[i - 1];
+			cache[i] = cache[i - 1];
 		}
-		self.contact_cache[insert_pos] = contact;
+		cache[insert_pos] = contact;
 	}
+	return count;
 }
 
 // Check collisions using CoACD decomposed convex pieces
@@ -1911,8 +2028,8 @@ fn void PhysicsWorld.check_coacd_collision(&self, Rigidbody* body_a, Rigidbody* 
 
 	CompoundShape* compound = (CompoundShape*)compound_body.collider.shape;
 
-	// Reset contact cache
-	self.contact_cache_count = 0;
+	Collision[MAX_CONTACTS_PER_PAIR] contact_cache;
+	sz contact_count = 0;
 
 	// Test each convex piece against the other body
 	foreach (&piece : compound.shapes)
@@ -1943,7 +2060,9 @@ fn void PhysicsWorld.check_coacd_collision(&self, Rigidbody* body_a, Rigidbody* 
 
 		if (info.collided && info.depth > 0)
 		{
-			self.insert_contact_sorted(
+			contact_count = insert_contact_sorted(
+				&contact_cache,
+				contact_count,
 				{
 					.a = pair.a,
 					.b = pair.b,
@@ -1955,10 +2074,12 @@ fn void PhysicsWorld.check_coacd_collision(&self, Rigidbody* body_a, Rigidbody* 
 		}
 	}
 
-	// Push the best contacts to collision list
-	for (sz i = 0; i < self.contact_cache_count; i++)
+	// Push the best contacts to the collision list; only the deepest one is
+	// worth vertex-expanding — the rest already form a manifold.
+	for (sz i = 0; i < contact_count; i++)
 	{
-		self.collisions.push(self.contact_cache[i]);
+		contact_cache[i].skip_expand = i > 0;
+		self.collisions.push(contact_cache[i]);
 	}
 }
 
@@ -1983,8 +2104,18 @@ fn bool test_sphere_triangle_collision(
 	if (dist_sq > DEGENERATE_DIST_SQ)
 	{
 		float dist = math::sqrt(dist_sq);
-		*out_normal = diff / dist;
-		*out_depth = radius - dist;
+		if (diff.dot(mesh_normal) >= 0)
+		{
+			*out_normal = diff / dist;
+			*out_depth = radius - dist;
+		}
+		else
+		{
+			// Center crossed to the back side of the one-sided surface —
+			// push back out along the face normal instead of ejecting through.
+			*out_normal = mesh_normal;
+			*out_depth = radius + dist;
+		}
 	}
 	else
 	{
@@ -2093,8 +2224,18 @@ fn bool test_capsule_triangle_collision(
 	if (dist_sq > DEGENERATE_DIST_SQ)
 	{
 		float dist = math::sqrt(dist_sq);
-		*out_normal = diff / dist;
-		*out_depth = radius - dist;
+		if (diff.dot(mesh_normal) >= 0)
+		{
+			*out_normal = diff / dist;
+			*out_depth = radius - dist;
+		}
+		else
+		{
+			// Axis crossed to the back side of the one-sided surface —
+			// push back out along the face normal instead of ejecting through.
+			*out_normal = mesh_normal;
+			*out_depth = radius + dist;
+		}
 	}
 	else
 	{
@@ -2105,8 +2246,14 @@ fn bool test_capsule_triangle_collision(
 	return true;
 }
 
-// Thread-safe version of check_bvh_collision that returns result instead of pushing to list
-fn Collision? PhysicsWorld.test_bvh_collision(&self, Rigidbody* body_a, Rigidbody* body_b, Pair pair)
+<*
+ Test a mesh-BVH pair and collect a contact manifold: up to MAX_CONTACTS_PER_PAIR
+ deduplicated contacts across the overlapped triangles, deepest first.
+ Thread-safe — writes only into the caller-provided out_contacts.
+ Returns the number of contacts written.
+ @require out_contacts.len >= MAX_CONTACTS_PER_PAIR : `Output buffer too small`
+*>
+fn sz PhysicsWorld.test_bvh_collision(&self, Rigidbody* body_a, Rigidbody* body_b, Pair pair, Collision[] out_contacts)
 {
 	bool a_has_bvh = body_a.has_mesh_bvh();
 
@@ -2168,9 +2315,7 @@ fn Collision? PhysicsWorld.test_bvh_collision(&self, Rigidbody* body_a, Rigidbod
 		world_radius = capsule.height * other_scale.x;
 	}
 
-	Vec3 best_normal;
-	Vec3[2] best_contact;
-	float max_depth = 0;
+	sz contact_count = 0;
 
 	mesh.bvh.@foreach_triangle(local_aabb; TriangleVerts tri)
 	{
@@ -2183,9 +2328,11 @@ fn Collision? PhysicsWorld.test_bvh_collision(&self, Rigidbody* body_a, Rigidbod
 
 		if (tri_aabb.collides(other_body.transformed_aabb))
 		{
+			// Face normal of the (one-sided) mesh surface; requires consistent winding
+			Vec3 tri_normal = (v1 - v0).cross(v2 - v0).normalize();
+
 			if (use_specialized)
 			{
-				Vec3 tri_normal = (v1 - v0).cross(v2 - v0).normalize();
 				Vec3 n;
 				Vec3[2] contact;
 				float depth;
@@ -2221,19 +2368,20 @@ fn Collision? PhysicsWorld.test_bvh_collision(&self, Rigidbody* body_a, Rigidbod
 					);
 				}
 
-				if (hit && depth > max_depth)
+				if (hit)
 				{
-					max_depth = depth;
+					Collision c = { .a = pair.a, .b = pair.b, .depth = depth };
 					if (mesh_is_a)
 					{
-						best_normal = n;
-						best_contact = contact;
+						c.normal = n;
+						c.contact = contact;
 					}
 					else
 					{
-						best_normal = -n;
-						best_contact = { contact[1], contact[0] };
+						c.normal = -n;
+						c.contact = { contact[1], contact[0] };
 					}
+					contact_count = insert_contact_sorted(out_contacts, contact_count, c);
 				}
 			}
 			else
@@ -2251,22 +2399,62 @@ fn Collision? PhysicsWorld.test_bvh_collision(&self, Rigidbody* body_a, Rigidbod
 					info = collision::check_convex_collision(&other_body.collider, &tri_shape, epa: true);
 				}
 
-				if (info.collided && info.depth > max_depth)
+				if (info.collided && info.depth > 0)
 				{
-					max_depth = info.depth;
-					best_normal = info.normal;
-					best_contact = info.contact_points;
+					// One-sided surface: contacts must push the other body out
+					// along the face normal. EPA resolving through the back side
+					// means the body crossed the surface this step — rebuild the
+					// contact against the triangle's plane instead of ejecting
+					// the body through the mesh.
+					Vec3 push_dir = mesh_is_a ? info.normal : -info.normal;
+					if (push_dir.dot(tri_normal) < 0)
+					{
+						Vec3 deep = other_body.collider.furthest_point(-tri_normal);
+						float plane_depth = (v0 - deep).dot(tri_normal);
+						if (plane_depth > 0)
+						{
+							Vec3 on_plane = deep + tri_normal * plane_depth;
+							Collision c = { .a = pair.a, .b = pair.b, .depth = plane_depth };
+							if (mesh_is_a)
+							{
+								c.normal = tri_normal;
+								c.contact = { on_plane, deep };
+							}
+							else
+							{
+								c.normal = -tri_normal;
+								c.contact = { deep, on_plane };
+							}
+							contact_count = insert_contact_sorted(out_contacts, contact_count, c);
+						}
+					}
+					else
+					{
+						contact_count = insert_contact_sorted(
+							out_contacts,
+							contact_count,
+							{
+								.a = pair.a,
+								.b = pair.b,
+								.normal = info.normal,
+								.contact = info.contact_points,
+								.depth = info.depth,
+							}
+						);
+					}
 				}
 			}
 		}
 	};
 
-	if (max_depth > 0)
+	// Clamp depth to prevent extreme correction forces from BVH triangle
+	// collisions. Only the deepest contact is vertex-expanded later — the
+	// rest of the manifold is already spread across triangles.
+	for (sz i = 0; i < contact_count; i++)
 	{
-		// Clamp depth to prevent extreme correction forces from BVH triangle collisions
-		float clamped_depth = math::min(max_depth, CLAMPED_DEPTH_MAX);
-		return { .a = pair.a, .b = pair.b, .normal = best_normal, .contact = best_contact, .depth = clamped_depth, };
+		out_contacts[i].depth = math::min(out_contacts[i].depth, CLAMPED_DEPTH_MAX);
+		out_contacts[i].skip_expand = i > 0;
 	}
 
-	return NOT_FOUND~;
+	return contact_count;
 }
