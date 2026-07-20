@@ -29,7 +29,7 @@ fn void test_physics()
 
 	Aabb3[] boxes = { { { 0, 0, 0 }, { 1, 1, 1 } }, { { 1, 1, 1 }, { 2.5, 2.5, 2.5 } }, { { 5, 5, 5 }, { 6, 6, 6 } }, };
 
-	foreach (sz i, item : boxes) spatial_map.insert(item, i)!!;
+	foreach (sz i, item : boxes) spatial_map.insert(item, i);
 
 	spatial_map.@get_pairs(; Pair pair)
 	{
@@ -249,11 +249,11 @@ fn void test_spatial_hash_update()
 
 	// Insert a box at position (0,0,0) to (1,1,1)
 	Aabb3 box1_old = { { 0, 0, 0 }, { 0.9, 0.9, 0.9 } };
-	spatial_map.insert(box1_old, 0)!!;
+	spatial_map.insert(box1_old, 0);
 
 	// Insert another box that overlaps
 	Aabb3 box2 = { { 0.5, 0.5, 0.5 }, { 1.5, 1.5, 1.5 } };
-	spatial_map.insert(box2, 1)!!;
+	spatial_map.insert(box2, 1);
 
 	// Verify they form a pair (both in cell 0,0,0)
 	sz pair_count = 0;
@@ -266,7 +266,7 @@ fn void test_spatial_hash_update()
 
 	// Move box1 to a non-overlapping position
 	Aabb3 box1_new = { { 5, 5, 5 }, { 5.9, 5.9, 5.9 } };
-	spatial_map.update(box1_old, box1_new, 0)!!;
+	spatial_map.update(box1_old, box1_new, 0);
 
 	// Verify no pairs after move
 	pair_count = 0;
@@ -284,11 +284,11 @@ fn void test_spatial_hash_update_same_cell()
 
 	// Insert a box
 	Aabb3 box_old = { { 0.1, 0.1, 0.1 }, { 0.5, 0.5, 0.5 } };
-	spatial_map.insert(box_old, 0)!!;
+	spatial_map.insert(box_old, 0);
 
 	// Move within the same cell (both positions map to cell 0,0,0)
 	Aabb3 box_new = { { 0.2, 0.2, 0.2 }, { 0.6, 0.6, 0.6 } };
-	spatial_map.update(box_old, box_new, 0)!!;
+	spatial_map.update(box_old, box_new, 0);
 
 	// Should still be in the map
 	sz count = 0;
@@ -306,11 +306,11 @@ fn void test_spatial_hash_update_cross_cells()
 
 	// Insert a box spanning cells (0,0,0) and (1,0,0)
 	Aabb3 box_old = { { 0.5, 0.5, 0.5 }, { 1.5, 0.9, 0.9 } };
-	spatial_map.insert(box_old, 0)!!;
+	spatial_map.insert(box_old, 0);
 
 	// Insert a stationary box in cell (2,0,0)
 	Aabb3 box_stationary = { { 2.1, 0.5, 0.5 }, { 2.9, 0.9, 0.9 } };
-	spatial_map.insert(box_stationary, 1)!!;
+	spatial_map.insert(box_stationary, 1);
 
 	// Initially no collision (boxes don't share cells)
 	sz pair_count = 0;
@@ -322,7 +322,7 @@ fn void test_spatial_hash_update_cross_cells()
 
 	// Move box to span cells (1,0,0) and (2,0,0) - now overlaps with stationary box's cell
 	Aabb3 box_new = { { 1.5, 0.5, 0.5 }, { 2.5, 0.9, 0.9 } };
-	spatial_map.update(box_old, box_new, 0)!!;
+	spatial_map.update(box_old, box_new, 0);
 
 	// Should now have a pair
 	pair_count = 0;
@@ -339,13 +339,13 @@ fn void test_spatial_hash_multiple_updates()
 	defer spatial_map.free();
 
 	Aabb3 box = { { 0, 0, 0 }, { 0.9, 0.9, 0.9 } };
-	spatial_map.insert(box, 0)!!;
+	spatial_map.insert(box, 0);
 
 	// Perform multiple sequential updates
 	for (int i = 1; i <= 5; i++)
 	{
 		Aabb3 new_box = { { (float)i, 0, 0 }, { (float)i + 0.9, 0.9, 0.9 } };
-		spatial_map.update(box, new_box, 0)!!;
+		spatial_map.update(box, new_box, 0);
 		box = new_box;
 	}
 
@@ -364,6 +364,81 @@ fn void test_spatial_hash_multiple_updates()
 		if (id == 0) count++;
 	};
 	assert (count == 0);
+}
+
+fn void test_spatial_hash_distinct_cells_no_false_pairs()
+{
+	// Regression: the old float-linear cell hash merged distinct cells —
+	// grid cells (5,3,7), (5,4,-16) and (4,26,7) all shared one key — which
+	// produced false candidate pairs between distant bodies.
+	SpatialHash3D spatial_map = { .cell_size = 2.0 };
+	defer spatial_map.free();
+
+	// World positions landing exactly in those previously-colliding cells
+	spatial_map.insert({ { 10.1, 6.1, 14.1 }, { 10.9, 6.9, 14.9 } }, 0); // cell (5,3,7)
+	spatial_map.insert({ { 10.1, 8.1, -31.9 }, { 10.9, 8.9, -31.1 } }, 1); // cell (5,4,-16)
+	spatial_map.insert({ { 8.1, 52.1, 14.1 }, { 8.9, 52.9, 14.9 } }, 2); // cell (4,26,7)
+
+	sz pair_count = 0;
+	spatial_map.@get_pairs(; Pair pair)
+	{
+		pair_count++;
+	};
+	assert (pair_count == 0);
+}
+
+fn void test_spatial_hash_update_wide_body()
+{
+	// Regression: with the old hash two cells of one body's own range could
+	// share a bucket (e.g. (0,1,0) and (0,0,23)); update() then removed both
+	// copies of the id and the body vanished from a cell it still occupied.
+	SpatialHash3D spatial_map = { .cell_size = 1.0 };
+	defer spatial_map.free();
+
+	// Wide body spanning cells x 0, y 0..1, z 0..23
+	Aabb3 wide_old = { { 0.1, 0.1, 0.1 }, { 0.9, 1.9, 23.9 } };
+	spatial_map.insert(wide_old, 0);
+
+	// Small box overlapping the far end, cell (0,0,23)
+	spatial_map.insert({ { 0.2, 0.2, 23.2 }, { 0.8, 0.8, 23.8 } }, 1);
+
+	sz pair_count = 0;
+	spatial_map.@get_pairs(; Pair pair)
+	{
+		assert (pair.a == 0 && pair.b == 1);
+		pair_count++;
+	};
+	assert (pair_count == 1);
+
+	// Shrink the wide body's y range so cells at y 1 are vacated;
+	// cell (0,0,23) stays occupied and the pair must survive.
+	Aabb3 wide_new = { { 0.1, 0.1, 0.1 }, { 0.9, 0.9, 23.9 } };
+	spatial_map.update(wide_old, wide_new, 0);
+
+	pair_count = 0;
+	spatial_map.@get_pairs(; Pair pair)
+	{
+		assert (pair.a == 0 && pair.b == 1);
+		pair_count++;
+	};
+	assert (pair_count == 1);
+}
+
+fn void test_spatial_hash_nearby_objects_cell_size()
+{
+	// Regression: @get_nearby_objects used to re-divide grid coordinates by
+	// cell_size, querying the wrong cells for any cell_size != 1.
+	SpatialHash3D spatial_map = { .cell_size = 2.0 };
+	defer spatial_map.free();
+
+	spatial_map.insert({ { 20.1, 0.1, 0.1 }, { 20.9, 0.9, 0.9 } }, 7); // cell (10,0,0)
+
+	sz count = 0;
+	spatial_map.@get_nearby_objects({ 21.0, 0.5, 0.5 } ; sz id)
+	{
+		if (id == 7) count++;
+	};
+	assert (count == 1);
 }
 
 // Helper: create a simple tetrahedron mesh for soft body testing
@@ -1180,6 +1255,89 @@ fn void test_snapshot_restore_rollback()
 	ulong hash_replayed = world.state_hash();
 
 	assert (hash_original == hash_replayed); // replay reproduces the timeline
+}
+
+fn void test_capsule_cylinder_shape_conventions()
+{
+	// Both shapes are centered at the origin with their axis along +y;
+	// capsule height covers the cylindrical section only (KHR_implicit_shapes).
+	Capsule capsule = { .height = 2, .radius_top = 0.5f, .radius_bottom = 0.5f };
+
+	Vec3 cap_down = capsule.furthest_point({ 0, -1, 0 });
+	Vec3 cap_up = capsule.furthest_point({ 0, 1, 0 });
+	assert (math::abs(cap_down.y + 1.5f) < 1e-5f); // bottom cap: -h/2 - r
+	assert (math::abs(cap_up.y - 1.5f) < 1e-5f); // top cap: +h/2 + r
+
+	Aabb3 cap_aabb = capsule.get_aabb();
+	assert (math::abs(cap_aabb.min.y + 1.5f) < 1e-5f && math::abs(cap_aabb.max.y - 1.5f) < 1e-5f);
+	assert (math::abs(cap_aabb.min.x + 0.5f) < 1e-5f && math::abs(cap_aabb.max.x - 0.5f) < 1e-5f);
+
+	Cylinder cylinder = { .height = 2, .radius_top = 0.5f, .radius_bottom = 0.5f };
+
+	Vec3 cyl_side = cylinder.furthest_point({ 1, 0, 0 });
+	assert (math::abs(cyl_side.x - 0.5f) < 1e-5f); // rim radius
+	assert (math::abs(math::abs(cyl_side.y) - 1.0f) < 1e-5f); // rim sits on a cap plane
+
+	Aabb3 cyl_aabb = cylinder.get_aabb();
+	assert (math::abs(cyl_aabb.min.y + 1.0f) < 1e-5f && math::abs(cyl_aabb.max.y - 1.0f) < 1e-5f);
+}
+
+fn void test_capsule_rests_on_box()
+{
+	// z-up world; the capsule axis (+y) is horizontal, so it rests on its side
+	// at ground_top + radius.
+	PhysicsWorld world = collision::DEFAULT_PHYSICS_WORLD;
+	defer world.free();
+
+	Aabb3 ground_shape = collision::aabb_from_half({ 10, 10, 1 });
+	world.add_body(body: {
+		.id = 1,
+		.collider = { .shape = &ground_shape, .translation = { 0, 0, -0.5f }, .rotation = { 0, 0, 0, 1 }, .scale = { 1, 1, 1 } },
+		.material = { .static_friction = 0.5f, .dynamic_friction = 0.5f, .restitution = 0 },
+	})!!;
+
+	Capsule capsule_shape = { .height = 2, .radius_top = 0.5f, .radius_bottom = 0.5f };
+	world.add_body(body: {
+		.id = 2,
+		.mass = 1, .gravity_factor = 1,
+		.collider = { .shape = &capsule_shape, .translation = { 0, 0, 1 }, .rotation = { 0, 0, 0, 1 }, .scale = { 1, 1, 1 } },
+		.material = { .static_friction = 0.5f, .dynamic_friction = 0.5f, .restitution = 0 },
+	})!!;
+
+	for (int i = 0; i < 240; i++) world.run_step(1.0f / 60.0f, step_count: 4);
+
+	Rigidbody* capsule_body = world.find_body(2)!!;
+	assert (math::abs(capsule_body.collider.translation.z - 0.5f) < 0.05f,
+		"capsule should rest at ground + radius, got z=%f", capsule_body.collider.translation.z);
+}
+
+fn void test_box_rests_on_thin_box()
+{
+	// Paper-thin static slab (like glTF exporter ground planes): a dropped box
+	// must neither tunnel through nor get ejected.
+	PhysicsWorld world = collision::DEFAULT_PHYSICS_WORLD;
+	defer world.free();
+
+	Aabb3 slab_shape = collision::aabb_from_half({ 15, 15, 0.001f });
+	world.add_body(body: {
+		.id = 1,
+		.collider = { .shape = &slab_shape, .translation = { 0, 0, 0 }, .rotation = { 0, 0, 0, 1 }, .scale = { 1, 1, 1 } },
+		.material = { .static_friction = 0.5f, .dynamic_friction = 0.5f, .restitution = 0 },
+	})!!;
+
+	Aabb3 box_shape = collision::aabb_from_half({ 1, 1, 1 });
+	world.add_body(body: {
+		.id = 2,
+		.mass = 1, .gravity_factor = 1,
+		.collider = { .shape = &box_shape, .translation = { 0, 0, 1.2f }, .rotation = { 0, 0, 0, 1 }, .scale = { 1, 1, 1 } },
+		.material = { .static_friction = 0.5f, .dynamic_friction = 0.5f, .restitution = 0 },
+	})!!;
+
+	for (int i = 0; i < 300; i++) world.run_step(1.0f / 60.0f, step_count: 4);
+
+	Rigidbody* box_body = world.find_body(2)!!;
+	assert (box_body.collider.translation.z > 0.4f && box_body.collider.translation.z < 0.6f,
+		"box should rest on the thin slab, got z=%f", box_body.collider.translation.z);
 }
 
 module pool_test_util;

@@ -100,13 +100,15 @@ body.apply_impulse({5, 0, 0}, point: {0, 0.5, 0});
 // Sphere
 Sphere sphere = { .radius = 1.0 };
 
-// Capsule (pill shape)
+// Capsule (pill shape), centered at origin, axis +y. height is the
+// cylindrical section only (KHR_implicit_shapes convention), so this one
+// spans y in [-1.5, 1.5].
 Capsule capsule = { .height = 2.0, .radius_top = 0.5, .radius_bottom = 0.5 };
 
-// Box from half-extents
-Aabb3 box = collision::aabb_from_half({1, 1, 1});  // 2x2x2 box
+// Box from its full size, centered at origin
+Aabb3 box = collision::aabb_from_half({2, 2, 2});  // 2x2x2 box
 
-// Cylinder
+// Cylinder, centered at origin, axis +y (caps at y = ±height/2)
 Cylinder cylinder = { .height = 2.0, .radius_top = 0.5, .radius_bottom = 0.5 };
 
 // Triangle mesh with BVH

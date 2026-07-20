@@ -369,7 +369,7 @@ fn void? PhysicsWorld.add_body(&self, Rigidbody body)
 	body.prev_rotation = body.collider.rotation;
 
 	self.bodies.set(body.id, body);
-	self.spatial_map.insert(body.transformed_aabb, body.id)!;
+	self.spatial_map.insert(body.transformed_aabb, body.id);
 }
 
 <*
@@ -390,7 +390,7 @@ fn void? PhysicsWorld.add_trigger(&self, Rigidbody body)
 	body.transformed_aabb = body.get_transformed_aabb();
 
 	self.bodies.set(body.id, body);
-	self.spatial_map.insert(body.transformed_aabb, body.id)!;
+	self.spatial_map.insert(body.transformed_aabb, body.id);
 }
 
 <*
@@ -423,7 +423,7 @@ fn void PhysicsWorld.set_kinematic_target(&self, sz id, Vec3 position, Quaternio
 
 	// Update spatial hash
 	Aabb3 new_aabb = body.get_transformed_aabb();
-	self.spatial_map.update(body.transformed_aabb, new_aabb, body.id)!!;
+	self.spatial_map.update(body.transformed_aabb, new_aabb, body.id);
 	body.transformed_aabb = new_aabb;
 }
 
@@ -1238,7 +1238,14 @@ fn void PhysicsWorld.run_substep(&self, float time, uint step_count)
 		Rigidbody* body_a = self.find_body(pair.a)!!;
 		Rigidbody* body_b = self.find_body(pair.b)!!;
 
-		bool has_filter = self.filters.has_key({ body_a.id, body_b.id });
+		// Static geometry never collides with itself — skip the filter lookup
+		// and AABB test. Kinematics are marked is_static but do move, and
+		// static triggers still need overlap events, so both are exempt.
+		bool skip_static = body_a.is_static && body_b.is_static
+			&& !body_a.is_kinematic && !body_b.is_kinematic
+			&& !body_a.is_trigger && !body_b.is_trigger;
+
+		bool has_filter = skip_static || self.filters.has_key({ body_a.id, body_b.id });
 
 		if (!has_filter && body_a.transformed_aabb.collides(body_b.transformed_aabb))
 		{
@@ -1576,7 +1583,7 @@ fn void PhysicsWorld.xpbd_predict(&self, float dt)
 	foreach (body : self.active_bodies)
 	{
 		Aabb3 new_aabb = body.get_transformed_aabb();
-		self.spatial_map.update(body.transformed_aabb, new_aabb, body.id)!!;
+		self.spatial_map.update(body.transformed_aabb, new_aabb, body.id);
 		body.transformed_aabb = new_aabb;
 	}
 }
@@ -1647,7 +1654,7 @@ fn void PhysicsWorld.xpbd_derive_and_update(&self, float dt)
 		if (rotating || moving)
 		{
 			Aabb3 new_aabb = body.get_transformed_aabb();
-			self.spatial_map.update(body.transformed_aabb, new_aabb, body.id)!!;
+			self.spatial_map.update(body.transformed_aabb, new_aabb, body.id);
 			body.transformed_aabb = new_aabb;
 		}
 
@@ -2364,12 +2371,13 @@ fn sz PhysicsWorld.test_bvh_collision(&self, Rigidbody* body_a, Rigidbody* body_
 	else if (use_capsule)
 	{
 		Capsule* capsule = (Capsule*)other_body.collider.shape;
-		// Capsule axis endpoints in local space (from support function convention)
-		Vec3 local_p0 = { 0, capsule.radius_bottom, 0 };
-		Vec3 local_p1 = { 0, capsule.radius_top, 0 };
+		// Capsule axis endpoints in local space: cap-sphere centers at ±height/2
+		float half = capsule.height * 0.5f;
+		Vec3 local_p0 = { 0, -half, 0 };
+		Vec3 local_p1 = { 0, half, 0 };
 		capsule_p0 = other_body.collider.rotation * (local_p0 * other_scale) + other_body.collider.translation;
 		capsule_p1 = other_body.collider.rotation * (local_p1 * other_scale) + other_body.collider.translation;
-		world_radius = capsule.height * other_scale.x;
+		world_radius = math::max(capsule.radius_top, capsule.radius_bottom) * other_scale.x;
 	}
 
 	sz contact_count = 0;

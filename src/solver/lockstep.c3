@@ -184,7 +184,7 @@ fn void? PhysicsWorld.restore(&self, WorldSnapshot* snap)
 
 		// Keep broad-phase state in sync with the restored transform
 		Aabb3 new_aabb = body.get_transformed_aabb();
-		self.spatial_map.update(body.transformed_aabb, new_aabb, body.id)!;
+		self.spatial_map.update(body.transformed_aabb, new_aabb, body.id);
 		body.transformed_aabb = new_aabb;
 	}
 
