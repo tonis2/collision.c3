@@ -95,13 +95,48 @@ fn Vec3 VoxelGrid.center(self, int voxel)
 	};
 }
 
+// Where an entry sits in space, for callers holding entries rather than voxels.
+fn Vec3 VoxelGrid.entry_center(self, int entry) => self.center(self.cells[entry]);
+
+// Whether `point` is in solid material.
+//
+// The cheap half of what a solid voxelization is for: one lookup, no casts, no
+// BVH walk — worth building a grid for on its own if a shape is asked this
+// often enough. Accurate to half a cell, so it answers "is this in the body",
+// not "which side of that triangle"; anything nearer the surface than the cell
+// size is a coin flip by construction.
+//
+// A point outside the grid is outside the mesh. Tested rather than clamped, so
+// this is also safe on a grid that was never built.
+fn bool VoxelGrid.inside(self, Vec3 point)
+{
+	if (self.cells.len == 0) return false;
+
+	int x = (int)math::floor((point.x - self.origin.x) / self.cell + 0.5f);
+	int y = (int)math::floor((point.y - self.origin.y) / self.cell + 0.5f);
+	int z = (int)math::floor((point.z - self.origin.z) / self.cell + 0.5f);
+
+	if (x < 0 || y < 0 || z < 0) return false;
+	if (x >= self.nx || y >= self.ny || z >= self.nz) return false;
+
+	return self.index[self.at(x, y, z)] >= 0;
+}
+
 // The entry nearest `point`, or -1 when the mesh is not close.
 //
 // The cell the point falls in first, then the shells around it: a point on the
 // surface sits exactly where the inside stops, so half of them land in a cell
-// the parity test called empty and have to reach in one step. The search stops
-// at VOXEL_PAD, past which the nearest inside is some other part of the model.
-fn int VoxelGrid.nearest_cell(&self, Vec3 point)
+// the parity test called empty and have to reach in one step.
+//
+// `reach` is the last shell searched, in cells. The default finds a point that
+// is essentially already on the surface, which is what mapping a mesh's own
+// vertices needs. Raise it to pull a point that is genuinely in mid-air onto
+// the nearest body — but the wider the search, the more likely the answer is
+// some *other* part of the model, so a caller that widens it should have a
+// reason to believe the point belongs to the shape at all.
+//
+// @param reach : `Shells to search outward, in cells. Cost grows with its cube.`
+fn int VoxelGrid.nearest_cell(&self, Vec3 point, int reach = VOXEL_PAD)
 {
 	int x = (int)math::floor((point.x - self.origin.x) / self.cell + 0.5f);
 	int y = (int)math::floor((point.y - self.origin.y) / self.cell + 0.5f);
@@ -117,7 +152,7 @@ fn int VoxelGrid.nearest_cell(&self, Vec3 point)
 	int best = -1;
 	float nearest = float::max;
 
-	for (int radius = 1; radius <= VOXEL_PAD; radius++)
+	for (int radius = 1; radius <= reach; radius++)
 	{
 		for (int cz = math::max(z - radius, 0); cz <= math::min(z + radius, self.nz - 1); cz++)
 		{
@@ -125,6 +160,15 @@ fn int VoxelGrid.nearest_cell(&self, Vec3 point)
 			{
 				for (int cx = math::max(x - radius, 0); cx <= math::min(x + radius, self.nx - 1); cx++)
 				{
+					// Only the new shell: everything inside this radius was
+					// looked at last time round and found empty, or the loop
+					// would already have returned. Without this the search
+					// re-reads its own box every step and costs a fourth power
+					// of the reach rather than a cube.
+					if (math::abs(cx - x) < radius &&
+						math::abs(cy - y) < radius &&
+						math::abs(cz - z) < radius) continue;
+
 					int voxel = self.at(cx, cy, cz);
 					int entry = self.index[voxel];
 					if (entry < 0) continue;

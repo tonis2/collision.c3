@@ -1478,6 +1478,46 @@ fn void test_voxel_field_measures_and_interpolates()
 	assert(a != b, "the field is stepping at the grid resolution");
 }
 
+// The one-lookup half: point-in-solid, and how far a point in mid-air is
+// allowed to reach for a body.
+fn void test_voxel_grid_answers_inside_and_reaches()
+{
+	BoxPoints vertices;
+	Triangles triangles;
+	defer
+	{
+		vertices.free();
+		triangles.free();
+	}
+
+	// Two bars with a wide gap between them, so "the nearest body" is a real
+	// question and not the one the point is already standing in.
+	push_box(&vertices, &triangles, { -1.0, -0.15, -0.15 }, { -0.4, 0.15, 0.15 });
+	push_box(&vertices, &triangles, { 0.4, -0.15, -0.15 }, { 1.0, 0.15, 0.15 });
+
+	VoxelGrid grid = collision::create_voxel_grid(vertices.array_view(), triangles.array_view());
+	defer grid.free();
+	assert(grid.usable());
+
+	assert(grid.inside({ -0.7f, 0, 0 }), "the middle of a bar is not inside");
+	assert(!grid.inside({ 0, 0, 0 }), "the gap between the bars is inside");
+	assert(!grid.inside({ 0, 9, 0 }), "a point nowhere near the mesh is inside");
+
+	// Safe on a grid that was never built — the reason this tests its ranges
+	// rather than leaning on the padding the fill guarantees.
+	VoxelGrid nothing;
+	assert(!nothing.inside({ 0, 0, 0 }));
+
+	// A point in the gap is further from either bar than the default search
+	// goes, and finds one once it is allowed to look.
+	assert(grid.nearest_cell({ 0, 0, 0 }) < 0, "the default reach crossed the gap");
+
+	int found = grid.nearest_cell({ 0, 0, 0 }, 32);
+	assert(found >= 0, "a wide search still found no body");
+	// It came back with the near bar's end, not with whatever it scanned first.
+	assert(math::abs(grid.entry_center(found).x) > 0.3f, "the nearest cell is not on a bar");
+}
+
 
 module pool_test_util;
 
