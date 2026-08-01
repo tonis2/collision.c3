@@ -14,6 +14,9 @@ alias Vec4 = float[<4>];
 
 alias Vertices = List {Vec3};
 alias Triangles = List {Triangle};
+// `Vertices` above is ambiguous with collision's own, which aliases a private
+// Vec3 — so the voxel tests below name their point list separately.
+alias BoxPoints = List {Vec3};
 
 fn void test_physics()
 {
@@ -220,7 +223,7 @@ fn void test_bvh()
 
 fn void test_remesh()
 {
-	Vertices vertices;
+	BoxPoints vertices;
 	Triangles triangles;
 
 	vertices.push_all(
@@ -1339,6 +1342,142 @@ fn void test_box_rests_on_thin_box()
 	assert (box_body.collider.translation.z > 0.4f && box_body.collider.translation.z < 0.6f,
 		"box should rest on the thin slab, got z=%f", box_body.collider.translation.z);
 }
+
+// ============================================================================
+// Solid voxelization and distance fields
+// ============================================================================
+
+// A closed axis-aligned box, twelve triangles, appended to the lists given.
+macro void push_box(BoxPoints* vertices, Triangles* triangles, Vec3 low, Vec3 high)
+{
+	uint first = (uint)vertices.len();
+	vertices.push_all({
+		{ low.x, low.y, low.z },   { high.x, low.y, low.z },
+		{ high.x, high.y, low.z }, { low.x, high.y, low.z },
+		{ low.x, low.y, high.z },  { high.x, low.y, high.z },
+		{ high.x, high.y, high.z }, { low.x, high.y, high.z },
+	});
+
+	uint[36] faces = {
+		0, 1, 2,  0, 2, 3,   // -z
+		4, 6, 5,  4, 7, 6,   // +z
+		0, 5, 1,  0, 4, 5,   // -y
+		3, 2, 6,  3, 6, 7,   // +y
+		0, 3, 7,  0, 7, 4,   // -x
+		1, 5, 6,  1, 6, 2,   // +x
+	};
+	for (usz i = 0; i < 36; i += 3)
+	{
+		triangles.push({ first + faces[i], first + faces[i + 1], first + faces[i + 2] });
+	}
+}
+
+// A box is the one shape whose inside is known in closed form, so it is the
+// only place the fill can be checked against something other than itself.
+fn void test_voxel_grid_fills_a_box()
+{
+	BoxPoints vertices;
+	Triangles triangles;
+	defer
+	{
+		vertices.free();
+		triangles.free();
+	}
+
+	push_box(&vertices, &triangles, { -0.5, -0.25, -0.25 }, { 0.5, 0.25, 0.25 });
+
+	VoxelGrid grid = collision::create_voxel_grid(vertices.array_view(), triangles.array_view());
+	defer grid.free();
+
+	assert(grid.usable());
+
+	float filled = (float)grid.cells.len * grid.cell * grid.cell * grid.cell;
+	float actual = 1.0f * 0.5f * 0.5f;
+	assert(math::abs(filled - actual) / actual < 0.05f, "filled volume is not the box's");
+
+	// The middle is inside; a point well outside the box is not, and does not
+	// find a cell within the shell search either.
+	assert(grid.nearest_cell({ 0, 0, 0 }) >= 0);
+	assert(grid.nearest_cell({ 0, 5, 0 }) < 0);
+}
+
+// The property everything else rests on: distance is measured *through* solid
+// space, so two bodies with air between them are unreachable from each other
+// however short the straight line is.
+fn void test_voxel_field_stops_at_a_gap()
+{
+	BoxPoints vertices;
+	Triangles triangles;
+	defer
+	{
+		vertices.free();
+		triangles.free();
+	}
+
+	push_box(&vertices, &triangles, { -0.5, -0.25, -0.25 }, { -0.2, 0.25, 0.25 });
+	push_box(&vertices, &triangles, { 0.2, -0.25, -0.25 }, { 0.5, 0.25, 0.25 });
+
+	VoxelGrid grid = collision::create_voxel_grid(vertices.array_view(), triangles.array_view());
+	defer grid.free();
+	assert(grid.usable());
+
+	float[] field = mem::new_array(float, (sz)grid.cells.len);
+	defer mem::free(field);
+
+	assert(grid.distance_from_segment({ -0.35f, 0, 0 }, { -0.35f, 0, 0 }, field));
+
+	usz reached_left = 0;
+	usz reached_right = 0;
+	foreach (usz entry, distance : field)
+	{
+		if (distance >= collision::VOXEL_UNREACHED) continue;
+		if (grid.center(grid.cells[entry]).x < 0.0f) { reached_left++; } else { reached_right++; }
+	}
+
+	assert(reached_left > 0, "the seeded body was not filled");
+	assert(reached_right == 0, "a path crossed the gap");
+
+	// A seed that touches nothing says so, rather than handing back a field of
+	// infinities the caller cannot tell from a body that is merely far away.
+	assert(!grid.distance_from_segment({ 0, 5, 0 }, { 0, 5, 0 }, field));
+}
+
+// Distance grows with the path, and reading between cells does not step.
+fn void test_voxel_field_measures_and_interpolates()
+{
+	BoxPoints vertices;
+	Triangles triangles;
+	defer
+	{
+		vertices.free();
+		triangles.free();
+	}
+
+	push_box(&vertices, &triangles, { -1.0, -0.1, -0.1 }, { 1.0, 0.1, 0.1 });
+
+	VoxelGrid grid = collision::create_voxel_grid(vertices.array_view(), triangles.array_view());
+	defer grid.free();
+	assert(grid.usable());
+
+	float[] field = mem::new_array(float, (sz)grid.cells.len);
+	defer mem::free(field);
+
+	assert(grid.distance_from_segment({ -0.9f, 0, 0 }, { -0.9f, 0, 0 }, field));
+
+	float near = grid.sample(field, { -0.5f, 0, 0 });
+	float far = grid.sample(field, { 0.9f, 0, 0 });
+
+	assert(near < far, "distance did not grow along the bar");
+	// The 26-neighbour steps overestimate a straight run by a few percent, so
+	// this is a bound rather than an equality.
+	assert(math::abs(far - 1.8f) < 0.2f, "distance along the bar is not its length");
+
+	// Two points inside one cell must not read the same value.
+	float a = grid.sample(field, { 0.0f, 0, 0 });
+	float b = grid.sample(field, { 0.0f + grid.cell * 0.4f, 0, 0 });
+	assert(a != b, "the field is stepping at the grid resolution");
+}
+
 
 module pool_test_util;
 
