@@ -211,9 +211,16 @@ fn int[] VoxelGrid.map_points(&self, Vec3[] points)
 // turn up in practice — open, self-intersecting, or with a stray flipped face —
 // where one direction can be wrong for a whole line and the other two are not.
 //
-// The grid borrows nothing: the BVH is built and freed here. The caller owns
-// the result.
-fn VoxelGrid create_voxel_grid(Vec3[] vertices, Triangle[] triangles, uint resolution = DEFAULT_VOXEL_RESOLUTION)
+// The grid retains nothing once it is built — not the BVH, not the vertices —
+// so `shared_bvh` only has to stay alive for the length of this call. The caller
+// owns the result.
+//
+// @param shared_bvh : `A BVH already built over these same two arrays, to march instead of building another. Null builds one here and frees it. One that does not match is ignored rather than trusted — see below.`
+fn VoxelGrid create_voxel_grid(
+	Vec3[] vertices,
+	Triangle[] triangles,
+	uint resolution = DEFAULT_VOXEL_RESOLUTION,
+	TriBVHNode* shared_bvh = null)
 {
 	if (vertices.len == 0 || triangles.len == 0 || resolution < 4) return {};
 
@@ -255,11 +262,31 @@ fn VoxelGrid create_voxel_grid(Vec3[] vertices, Triangle[] triangles, uint resol
 	char[] votes = mem::new_array(char, (sz)total);
 	defer mem::free(votes);
 
-	TriBVHNode* bvh = create_indexed_tri_bvh(vertices.ptr, triangles.ptr, (sz)triangles.len);
+	// A caller that already marches this mesh — anything holding a picker — has
+	// paid for a BVH over exactly these arrays, and building a second one here is
+	// the single most expensive thing this function does.
+	//
+	// Checked rather than trusted, and it is the pointers that are checked: a BVH
+	// over a *different* mesh would voxelize that mesh's interior into this
+	// mesh's grid, and the result is a plausible-looking grid describing the
+	// wrong body. That failure is silent and survives into everything fitted
+	// against it afterwards, so a mismatch falls back to building one — always
+	// correct, merely slower, and the one outcome that cannot corrupt a rig.
+	bool own_bvh = shared_bvh == null
+		|| !shared_bvh.indexed
+		|| shared_bvh.vertices != vertices.ptr
+		|| shared_bvh.triangles != triangles.ptr;
+
+	TriBVHNode* bvh = own_bvh
+		? create_indexed_tri_bvh(vertices.ptr, triangles.ptr, (sz)triangles.len)
+		: shared_bvh;
 	defer
 	{
-		bvh.free_indexed();
-		mem::free(bvh);
+		if (own_bvh)
+		{
+			bvh.free_indexed();
+			mem::free(bvh);
+		}
 	}
 
 	float step = cell * VOXEL_CROSSING_STEP;
