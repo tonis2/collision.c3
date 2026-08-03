@@ -65,6 +65,94 @@ fn void TriBVHNode.free_indexed(&self)
 	self.free();
 }
 
+<*
+ One triangle's centroid on a split axis. Axes past 2 read as Z, which is what
+ `longest_axis` can never return but a caller passing a raw number might.
+*>
+fn float centroid_on(TriangleInfo info, sz axis) @local
+{
+	switch (axis)
+	{
+		case 0: return info.centroid.x;
+		case 1: return info.centroid.y;
+		default: return info.centroid.z;
+	}
+}
+
+<*
+ Put the element a full sort would leave at `nth` there, with everything before
+ it no greater on `axis` and everything after it no less. Reorders
+ `order[start : count]` in place and touches nothing outside that range.
+
+ A node needs a median to split at, not an ordered range: each half is
+ re-partitioned on its own axis by the recursion below, so any ordering imposed
+ here beyond the median is work the next level immediately throws away. Sorting
+ instead is what made building quadratic — every node sorted its whole range, so
+ the root alone cost O(n^2) and a 48k-triangle mesh spent 1.5 s in here.
+
+ Three-way partitioning, not two. Equal centroids are ordinary in real meshes —
+ anything mirrored, tiled or with duplicated geometry has them in quantity — and
+ a two-way split of a range that is all one value makes no progress at all.
+
+ @require count > 0 : `An empty range has no nth element.`
+ @require nth >= start && nth < start + count : `The rank has to lie inside the range.`
+*>
+fn void select_nth(TriangleInfo* info, sz* order, sz start, sz count, sz nth, sz axis) @local
+{
+	sz low = start;
+	sz high = start + count - 1;
+
+	while (low < high)
+	{
+		// Median of the three ends, which keeps input that is already sorted or
+		// reversed off the quadratic path. A mesh emitted in scan order is both,
+		// depending on the axis.
+		float a = centroid_on(info[order[low]], axis);
+		float b = centroid_on(info[order[low + (high - low) / 2]], axis);
+		float c = centroid_on(info[order[high]], axis);
+		float pivot = math::max(math::min(a, b), math::min(math::max(a, b), c));
+
+		// Dutch-flag partition: below pivot, equal to it, above it.
+		sz less = low;
+		sz i = low;
+		sz greater = high;
+		while (i <= greater)
+		{
+			float value = centroid_on(info[order[i]], axis);
+			if (value < pivot)
+			{
+				sz swap = order[less]; order[less] = order[i]; order[i] = swap;
+				less++;
+				i++;
+			}
+			else if (value > pivot)
+			{
+				sz swap = order[greater]; order[greater] = order[i]; order[i] = swap;
+				greater--;
+			}
+			else
+			{
+				i++;
+			}
+		}
+
+		// The equal block is already in its final place, so a rank landing inside
+		// it is answered — that is the case a two-way partition cannot close.
+		if (nth < less)
+		{
+			high = less - 1;
+		}
+		else if (nth > greater)
+		{
+			low = greater + 1;
+		}
+		else
+		{
+			return;
+		}
+	}
+}
+
 fn int compare_triangles(TriangleInfo a, TriangleInfo b, sz* split_axis) @local
 {
 	float val_a, val_b;
@@ -277,21 +365,11 @@ fn TriBVHNode* build_indexed_bvh_recursive(
 
 	sz split_axis = centroid_aabb.longest_axis();
 
-	// Sort indices by centroid along split axis
-	for (sz i = start; i < start + count - 1; i++)
-	{
-		for (sz j = start; j < start + count - 1 - (i - start); j++)
-		{
-			if (compare_triangles(tri_info[sorted_indices[j]], tri_info[sorted_indices[j + 1]], &split_axis) > 0)
-			{
-				sz tmp = sorted_indices[j];
-				sorted_indices[j] = sorted_indices[j + 1];
-				sorted_indices[j + 1] = tmp;
-			}
-		}
-	}
-
+	// Partition about the median centroid on that axis. Only the median matters:
+	// the two halves below are each split on their own axis, so ordering them
+	// here would be discarded immediately — see `select_nth`.
 	sz mid = start + count / 2;
+	select_nth(tri_info, sorted_indices, start, count, mid, split_axis);
 
 	node.left = build_indexed_bvh_recursive(tri_info, sorted_indices, vertices, triangles, start, mid - start);
 	node.right = build_indexed_bvh_recursive(tri_info, sorted_indices, vertices, triangles, mid, start + count - mid);
