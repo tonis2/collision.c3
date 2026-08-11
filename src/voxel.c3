@@ -188,6 +188,74 @@ fn int VoxelGrid.nearest_cell(&self, Vec3 point, int reach = VOXEL_PAD)
 	return -1;
 }
 
+// The entry nearest `point` that `field` has actually been solved for, or -1
+// when no shell out to `reach` holds one.
+//
+// `nearest_cell` asks where the mesh is; this asks where the mesh *this field
+// reached* is, which is a different question wherever the interior comes apart.
+// A grid built from a shape with a spine thinner than a cell — an antenna, a
+// whisker, a wire — voxelizes that spine as islands with no face shared with
+// the body, and a flood seeded anywhere on the body never enters them. Points
+// mapped into such an island are inside the mesh, and are still cut off from
+// everything a field has to say. This is how a caller borrows an answer from
+// the nearest part of the body the field did reach, rather than falling back on
+// straight lines and letting whatever is nearest through the air answer instead.
+//
+// The same shell search as `nearest_cell`, with the same warning: the wider the
+// reach, the likelier the answer belongs to some other part of the model.
+//
+// @param field : `Solved by distance_from_segment. Entries at VOXEL_UNREACHED are treated as absent.`
+// @param reach : `Shells to search outward, in cells. Cost grows with its cube.`
+fn int VoxelGrid.nearest_solved(&self, float[] field, Vec3 point, int reach = VOXEL_PAD)
+{
+	if (field.len != self.cells.len) return -1;
+
+	int x = (int)math::floor((point.x - self.origin.x) / self.cell + 0.5f);
+	int y = (int)math::floor((point.y - self.origin.y) / self.cell + 0.5f);
+	int z = (int)math::floor((point.z - self.origin.z) / self.cell + 0.5f);
+
+	x = math::clamp(x, 0, self.nx - 1);
+	y = math::clamp(y, 0, self.ny - 1);
+	z = math::clamp(z, 0, self.nz - 1);
+
+	int direct = self.index[self.at(x, y, z)];
+	if (direct >= 0 && field[direct] < VOXEL_UNREACHED) return direct;
+
+	int best = -1;
+	float nearest = float::max;
+
+	for (int radius = 1; radius <= reach; radius++)
+	{
+		for (int cz = math::max(z - radius, 0); cz <= math::min(z + radius, self.nz - 1); cz++)
+		{
+			for (int cy = math::max(y - radius, 0); cy <= math::min(y + radius, self.ny - 1); cy++)
+			{
+				for (int cx = math::max(x - radius, 0); cx <= math::min(x + radius, self.nx - 1); cx++)
+				{
+					// Only the new shell — see `nearest_cell`.
+					if (math::abs(cx - x) < radius &&
+						math::abs(cy - y) < radius &&
+						math::abs(cz - z) < radius) continue;
+
+					int voxel = self.at(cx, cy, cz);
+					int entry = self.index[voxel];
+					if (entry < 0 || field[entry] >= VOXEL_UNREACHED) continue;
+
+					float distance = (self.center(voxel) - point).length();
+					if (distance < nearest)
+					{
+						nearest = distance;
+						best = entry;
+					}
+				}
+			}
+		}
+		if (best >= 0) return best;
+	}
+
+	return -1;
+}
+
 // One entry per point, for callers that query the same set repeatedly — the
 // shell search above is not cheap enough to repeat per frame. The caller owns
 // the returned array.
