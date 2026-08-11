@@ -1444,6 +1444,64 @@ fn void test_voxel_field_stops_at_a_gap()
 	assert(!grid.distance_from_segment({ 0, 5, 0 }, { 0, 5, 0 }, field));
 }
 
+// `nearest_solved` asks a different question from `nearest_cell`: not where the
+// mesh is, but where the part of it this field reached is. The two disagree
+// exactly where a body comes apart — which is the case it exists for, since a
+// point mapped into an unreachable piece is inside the mesh and still has
+// nothing any field can tell it.
+fn void test_voxel_nearest_solved_skips_the_unreached_body()
+{
+	BoxPoints vertices;
+	Triangles triangles;
+	defer
+	{
+		vertices.free();
+		triangles.free();
+	}
+
+	push_box(&vertices, &triangles, { -0.5, -0.25, -0.25 }, { -0.2, 0.25, 0.25 });
+	push_box(&vertices, &triangles, { 0.2, -0.25, -0.25 }, { 0.5, 0.25, 0.25 });
+
+	VoxelGrid grid = collision::create_voxel_grid(vertices.array_view(), triangles.array_view());
+	defer grid.free();
+	assert(grid.usable());
+
+	float[] field = mem::new_array(float, (sz)grid.cells.len);
+	defer mem::free(field);
+
+	// Seeded in the left body, so the right one is inside the mesh and unreached.
+	assert(grid.distance_from_segment({ -0.35f, 0, 0 }, { -0.35f, 0, 0 }, field));
+
+	Vec3 in_the_right_body = { 0.35f, 0, 0 };
+
+	int mapped = grid.nearest_cell(in_the_right_body);
+	assert(mapped >= 0, "the right body did not voxelize, so there is nothing to tell apart");
+	assert(field[mapped] >= collision::VOXEL_UNREACHED, "the seed crossed the gap");
+
+	// Deep inside the unreached body, the left one is many cells away: the
+	// default shell search must come back empty rather than reach across.
+	assert(grid.nearest_solved(field, in_the_right_body) < 0,
+		"the default reach borrowed an answer from across the gap");
+
+	// Widened far enough to cross, it finds the reached body — and what it finds
+	// is on the reached side, which is the whole point of not using nearest_cell.
+	int borrowed = grid.nearest_solved(field, in_the_right_body, 64);
+	assert(borrowed >= 0, "a wide search still found nothing the field had reached");
+	assert(field[borrowed] < collision::VOXEL_UNREACHED, "it borrowed from an unreached cell");
+	assert(grid.center(grid.cells[borrowed]).x < 0.0f, "it borrowed from the wrong body");
+
+	// Inside the reached body it agrees with nearest_cell, since there the two
+	// questions have the same answer.
+	Vec3 in_the_left_body = { -0.35f, 0, 0 };
+	assert(grid.nearest_solved(field, in_the_left_body) == grid.nearest_cell(in_the_left_body),
+		"the two disagreed where the field had reached");
+
+	// A field of the wrong length is a caller error, not a shape to search.
+	float[] wrong = mem::new_array(float, 3);
+	defer mem::free(wrong);
+	assert(grid.nearest_solved(wrong, in_the_left_body) < 0, "a mis-sized field was searched anyway");
+}
+
 // Distance grows with the path, and reading between cells does not step.
 fn void test_voxel_field_measures_and_interpolates()
 {
