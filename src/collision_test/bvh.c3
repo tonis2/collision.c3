@@ -609,6 +609,80 @@ fn Vec3 closest_point_on_segment(Vec3 p, Vec3 a, Vec3 b)
 	return a + ab * t;
 }
 
+// What capsule_push_point found. `hit` false leaves the rest zeroed.
+struct CapsuleHit
+{
+	bool hit;
+	Vec3 normal; // Unit direction out of the capsule, from the axis toward p
+	float depth; // How far inside the surface p is, along that normal
+	Vec3 point; // Where on the (expanded) surface p belongs
+}
+
+<*
+ Push a point out of a capsule given in world space: the segment a→b swept by
+ `radius`, grown by `p_radius` so a point that is itself a sphere is separated by
+ its own radius too.
+
+ The world-space counterpart to the mesh tests above — a triangle-less body (a
+ particle chain, a point cloud) has nothing for a convex test to work with, but
+ every particle can still be asked this. No capsule *shape* is involved and no
+ transform is applied: the two endpoints are already wherever the caller posed
+ them, which is what lets a host pose bones however it likes and still ask.
+
+ `point` is the position that resolves the overlap, so a caller wanting a hard
+ separation assigns it and a caller wanting a soft one moves toward it.
+
+ A point exactly on the axis has no direction to be pushed in — every one is
+ equally correct — so rather than normalizing a zero vector into NaNs, one
+ perpendicular to the axis is chosen, picked against whichever axis the segment
+ leans on least so the cross product cannot come out near zero. A degenerate
+ segment (a sphere) falls back to +y.
+
+ @param p_radius : `Radius of the point itself; 0 treats it as a point.`
+*>
+fn CapsuleHit capsule_push_point(Vec3 p, Vec3 a, Vec3 b, float radius, float p_radius = 0)
+{
+	CapsuleHit hit;
+
+	float total = radius + p_radius;
+	if (total <= 0) return hit;
+
+	Vec3 c = closest_point_on_segment(p, a, b);
+	Vec3 diff = p - c;
+	float dist_sq = diff.dot(diff);
+	if (dist_sq >= total * total) return hit;
+
+	float dist = math::sqrt(dist_sq);
+	Vec3 normal;
+
+	if (dist < BVH_EPSILON)
+	{
+		Vec3 axis = b - a;
+		float axis_sq = axis.dot(axis);
+		if (axis_sq < BVH_EPSILON)
+		{
+			normal = { 0, 1, 0 };
+		}
+		else
+		{
+			Vec3 dir = axis / math::sqrt(axis_sq);
+			Vec3 aside = math::abs(dir.x) < math::abs(dir.z) ? (Vec3){ 1, 0, 0 } : (Vec3){ 0, 0, 1 };
+			normal = dir.cross(aside).normalize();
+		}
+		dist = 0;
+	}
+	else
+	{
+		normal = diff / dist;
+	}
+
+	hit.hit = true;
+	hit.normal = normal;
+	hit.depth = total - dist;
+	hit.point = c + normal * total;
+	return hit;
+}
+
 // Closest points between two line segments (Ericson's method)
 fn void closest_points_segments(Vec3 p1, Vec3 q1, Vec3 p2, Vec3 q2, Vec3* c1, Vec3* c2)
 {

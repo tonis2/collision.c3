@@ -27,6 +27,7 @@ module collision::ik;
 
 import std::math;
 import std::math::quaternion;
+import collision::dmath;
 
 // Its own rather than borrowed from `module collision`, whose Vec3 is @private.
 // Structurally the same three floats, so values pass between the two — and
@@ -208,8 +209,9 @@ fn Quaternionf shortest_arc(Vec3 from, Vec3 to, float limit = 0.0)
 
 	// The cross length is the sine and the dot the cosine, so this is the angle
 	// between them over the whole range — including past a quarter turn, where
-	// the cross length alone stops rising.
-	float angle = (float)math::atan2(across, a.dot(b));
+	// the cross length alone stops rising. dmath rather than libm, whose atan2
+	// differs between platforms and would break lockstep determinism.
+	float angle = dmath::atan2(across, a.dot(b));
 	if (angle <= 0.0f) return quaternion::IDENTITY;
 
 	if (across <= 0.0f)

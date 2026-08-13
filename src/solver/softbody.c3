@@ -5,6 +5,7 @@ import std::collections::map;
 import std::math;
 import std::io;
 import std::core::mem;
+import std::core::mem::allocator;
 import collision::dmath;
 
 // XPBD constraint types for soft bodies
@@ -33,6 +34,30 @@ struct BendingConstraint
 	float rest_angle; // Rest dihedral angle
 	float compliance;
 	float lambda;
+}
+
+// Pull a particle toward a world-space point the host moves between substeps.
+// One-sided: the target is immovable, so this is a spring to an external goal
+// rather than a link between two particles (that is DistanceConstraint).
+struct TargetConstraint
+{
+	sz particle; // Particle index
+	Vec3 target; // World-space goal
+	float compliance; // Inverse stiffness (0 = snap onto the target)
+	float lambda; // Lagrange multiplier (warm-starting)
+}
+
+// Cone limit: keeps (p_child - p_pivot) within max_angle of reference_dir.
+// The reference direction is world space and owned by the host, which refreshes
+// it every substep when the cone follows an animated bone.
+struct SwingConstraint
+{
+	sz p_pivot; // Particle the cone is anchored at
+	sz p_child; // Particle held inside the cone
+	Vec3 reference_dir; // Cone axis, world space (need not be normalized)
+	float max_angle; // Cone half-angle in radians; <= 0 pins the child to the axis
+	float compliance; // Inverse stiffness (0 = hard clamp)
+	float lambda; // Lagrange multiplier (warm-starting)
 }
 
 // Collision constraint generated per-frame during soft-rigid narrow phase
@@ -66,11 +91,25 @@ struct SoftBody
 	List {Vec3} velocities;
 	List {float} inverse_masses;
 
+	// Optional per-particle overrides. Both are empty by default and stay
+	// empty unless a caller fills them, which is what keeps the plain
+	// mesh soft body behaving exactly as it always did.
+	// particle_damping: fraction of velocity kept per *second*, in [0, 1].
+	//   Set entries are applied dt-normalized (pow(d, sub_dt)) like the rigid
+	//   path does; unset particles fall back to the whole-body `damping`
+	//   with its original per-substep meaning.
+	// particle_radius: collision radius of the particle, model units. Unset
+	//   particles are points. Read by generate_capsule_collisions.
+	List {float} particle_damping;
+	List {float} particle_radius;
+
 	// Surface mesh connectivity
 	List {Triangle} triangles;
 
 	// Constraints
 	List {DistanceConstraint} distance_constraints;
+	List {TargetConstraint} target_constraints;
+	List {SwingConstraint} swing_constraints;
 	List {VolumeConstraint} volume_constraints;
 	List {BendingConstraint} bending_constraints;
 	List {SoftCollisionConstraint} collision_constraints;
@@ -84,6 +123,14 @@ struct SoftBody
 	// XPBD solver settings
 	uint substeps;
 	uint constraint_iterations;
+
+	// Apply pins before each substep's prediction as well as after its
+	// constraint sweep. Off by default: a pin the host moves between substeps
+	// otherwise only reaches the solver *after* this substep's constraints ran,
+	// so everything hanging off a moving pin trails it by one substep. Turning
+	// it on costs one extra pass over `pins` and changes nothing for a pin that
+	// does not move.
+	bool pins_first;
 
 	// AABB for broad phase
 	Aabb3 aabb;
@@ -100,8 +147,12 @@ fn void SoftBody.free(&self)
 	self.prev_positions.free();
 	self.velocities.free();
 	self.inverse_masses.free();
+	self.particle_damping.free();
+	self.particle_radius.free();
 	self.triangles.free();
 	self.distance_constraints.free();
+	self.target_constraints.free();
+	self.swing_constraints.free();
 	self.volume_constraints.free();
 	self.bending_constraints.free();
 	self.collision_constraints.free();
@@ -143,6 +194,78 @@ fn SoftBody create_softbody_from_mesh(Mesh* mesh, float total_mass, sz id)
 	sb.extract_distance_constraints();
 
 	// Compute initial AABB
+	sb.aabb = sb.compute_aabb();
+
+	return sb;
+}
+
+<*
+ Create a soft body that is a chain of world-space points: particle i joined to
+ particle i+1 by a distance constraint whose rest length is the distance between
+ the two points as given. No triangles, so no volume, bending or
+ triangle-vs-rigidbody collision — use generate_capsule_collisions for contact.
+
+ This is the shape a tail, a rope, a hair strand or a jiggle bone run has, and
+ the only constructor that does not need a mesh. Solver defaults match
+ create_softbody_from_mesh so a chain tunes the same way as any other body; the
+ caller pins whichever particles the host drives (usually the root) with
+ pin_particle.
+
+ Every list the body holds is seated on `allocator` up front — including the
+ ones that start empty and are filled later by the host (pins, targets, swings,
+ the per-substep collision constraints). A `List` that is never given an
+ allocator takes the *temp* allocator on its first push, and a chain routinely
+ outlives the temp scope it was built in.
+
+ @param allocator : `Owns every list in the body; SoftBody.free returns them to it.`
+ @param points : `Particle positions in world space, in chain order.`
+ @param inverse_masses : `One per point; 0 makes that particle immovable.`
+ @require points.len > 0 : `create_particle_chain needs at least one point`
+ @require points.len == inverse_masses.len : `create_particle_chain needs one inverse mass per point`
+*>
+fn SoftBody create_particle_chain(Allocator allocator = mem, Vec3[] points, float[] inverse_masses, sz id)
+{
+	SoftBody sb;
+	sb.id = id;
+	sb.gravity_factor = 1.0;
+	sb.damping = 0.99;
+	sb.substeps = 4;
+	sb.constraint_iterations = 8;
+	sb.can_sleep = true;
+	sb.material = { .static_friction = 0.5, .dynamic_friction = 0.3, .restitution = 0.2, };
+
+	sb.positions.init(allocator, points.len);
+	sb.prev_positions.init(allocator, points.len);
+	sb.velocities.init(allocator, points.len);
+	sb.inverse_masses.init(allocator, points.len);
+	sb.particle_damping.init(allocator, points.len);
+	sb.particle_radius.init(allocator, points.len);
+	sb.triangles.init(allocator, 1);
+	sb.distance_constraints.init(allocator, points.len);
+	sb.target_constraints.init(allocator, points.len);
+	sb.swing_constraints.init(allocator, points.len);
+	sb.volume_constraints.init(allocator, 1);
+	sb.bending_constraints.init(allocator, 1);
+	sb.collision_constraints.init(allocator, points.len);
+	sb.pins.init(allocator, 1);
+
+	foreach (sz i, p : points)
+	{
+		sb.positions.push(p);
+		sb.prev_positions.push(p);
+		sb.velocities.push({ 0, 0, 0 });
+		sb.inverse_masses.push(inverse_masses[i]);
+	}
+
+	for (sz i = 1; i < points.len; i++)
+	{
+		float rest_len = (points[i] - points[i - 1]).length();
+		sb.distance_constraints.push(
+			{ .p0 = i - 1, .p1 = i, .rest_length = rest_len, .compliance = 0.0, // Default: rigid
+			.lambda = 0, }
+		);
+	}
+
 	sb.aabb = sb.compute_aabb();
 
 	return sb;
@@ -323,6 +446,17 @@ fn void SoftBody.xpbd_solve(&self, Vec3 gravity, float dt, PhysicsWorld* world =
 
 	for (uint sub = 0; sub < self.substeps; sub++)
 	{
+		// === Step 0 (opt-in): Apply pins before predicting ===
+		// So a pin the host moved since the last substep is where the
+		// constraints below see it, instead of a substep behind them.
+		if (self.pins_first)
+		{
+			foreach (&pin : self.pins)
+			{
+				self.apply_pin(pin, world);
+			}
+		}
+
 		// === Step 1: Predict positions ===
 		for (sz i = 0; i < num_particles; i++)
 		{
@@ -345,6 +479,18 @@ fn void SoftBody.xpbd_solve(&self, Vec3 gravity, float dt, PhysicsWorld* world =
 			foreach (&dc : self.distance_constraints)
 			{
 				self.solve_distance_constraint(dc, sub_dt);
+			}
+
+			// Target constraints (pull toward host-supplied world points)
+			foreach (&tc : self.target_constraints)
+			{
+				self.solve_target_constraint(tc, sub_dt);
+			}
+
+			// Swing constraints (cone limits about host-supplied axes)
+			foreach (&sc : self.swing_constraints)
+			{
+				self.solve_swing_constraint(sc, sub_dt);
 			}
 
 			// Volume constraints
@@ -379,8 +525,18 @@ fn void SoftBody.xpbd_solve(&self, Vec3 gravity, float dt, PhysicsWorld* world =
 
 			self.velocities[i] = (self.positions[i] - self.prev_positions[i]) / sub_dt;
 
-			// Apply damping
-			self.velocities[i] *= self.damping;
+			// Apply damping. A per-particle entry is a per-second fraction and
+			// is normalized by the substep length, so halving the substep does
+			// not double the drag; the whole-body `damping` keeps its original
+			// per-substep meaning for every particle without one.
+			if (i < self.particle_damping.len())
+			{
+				self.velocities[i] *= dmath::pow(self.particle_damping[i], sub_dt);
+			}
+			else
+			{
+				self.velocities[i] *= self.damping;
+			}
 		}
 	}
 
@@ -389,6 +545,8 @@ fn void SoftBody.xpbd_solve(&self, Vec3 gravity, float dt, PhysicsWorld* world =
 
 	// Reset Lagrange multipliers for next frame
 	foreach (&dc : self.distance_constraints) dc.lambda = 0;
+	foreach (&tc : self.target_constraints) tc.lambda = 0;
+	foreach (&sc : self.swing_constraints) sc.lambda = 0;
 	foreach (&vc : self.volume_constraints) vc.lambda = 0;
 	foreach (&bc : self.bending_constraints) bc.lambda = 0;
 
@@ -422,6 +580,100 @@ fn void SoftBody.solve_distance_constraint(&self, DistanceConstraint* c, float d
 	// Apply position corrections
 	if (w0 > 0) self.positions[c.p0] -= grad * (w0 * delta_lambda);
 	if (w1 > 0) self.positions[c.p1] += grad * (w1 * delta_lambda);
+}
+
+// XPBD target constraint solver — a distance constraint to a fixed world point
+// with rest length 0, so only the particle moves.
+fn void SoftBody.solve_target_constraint(&self, TargetConstraint* c, float dt)
+{
+	float w = self.inverse_masses[c.particle];
+	if (w == 0) return;
+
+	Vec3 diff = self.positions[c.particle] - c.target;
+	float dist = diff.length();
+	if (dist < 1e-7) return;
+
+	Vec3 grad = diff / dist;
+
+	// XPBD: compliance-scaled correction
+	float alpha = c.compliance / (dt * dt);
+	float delta_lambda = -(dist + alpha * c.lambda) / (w + alpha);
+	c.lambda += delta_lambda;
+
+	self.positions[c.particle] += grad * (w * delta_lambda);
+}
+
+// Rotate v about a unit axis by `angle` (Rodrigues). dmath::sincos rather than
+// libm, so the result is the same on every platform.
+fn Vec3 rotate_about_axis(Vec3 v, Vec3 axis, float angle) @local
+{
+	float[<2>] sc = dmath::sincos(angle);
+	return v * sc[1] + axis.cross(v) * sc[0] + axis * (axis.dot(v) * (1.0f - sc[1]));
+}
+
+// XPBD swing constraint solver — cone limit on the direction from pivot to child.
+//
+// The constraint is on the angle, C = angle(reference_dir, child - pivot) - max_angle,
+// and it is one-sided: inside the cone there is nothing to solve. The correction
+// is applied as a rotation of the pivot-to-child vector, so the distance between
+// the two particles is preserved exactly however far the clamp has to turn; the
+// resulting translation is split between the two particles by inverse mass, which
+// leaves their centre of mass where it was.
+fn void SoftBody.solve_swing_constraint(&self, SwingConstraint* c, float dt)
+{
+	float w_pivot = self.inverse_masses[c.p_pivot];
+	float w_child = self.inverse_masses[c.p_child];
+	float w_sum = w_pivot + w_child;
+	if (w_sum == 0) return;
+
+	Vec3 pivot = self.positions[c.p_pivot];
+	Vec3 d = self.positions[c.p_child] - pivot;
+	float len = d.length();
+	if (len < 1e-7) return;
+
+	float ref_len = c.reference_dir.length();
+	if (ref_len < 1e-7) return;
+
+	Vec3 ref = c.reference_dir / ref_len;
+	Vec3 dir = d / len;
+
+	// Cross length is the sine and the dot the cosine, so this reads the angle
+	// over the whole range instead of saturating past a quarter turn.
+	Vec3 cross_v = ref.cross(dir);
+	float across = cross_v.length();
+	float angle = dmath::atan2(across, math::clamp(ref.dot(dir), -1.0f, 1.0f));
+
+	float max_angle = math::max(c.max_angle, 0.0f);
+	float constraint_value = angle - max_angle;
+	if (constraint_value <= 0) return;
+
+	Vec3 axis;
+	if (across > 1e-7)
+	{
+		axis = cross_v / across;
+	}
+	else
+	{
+		// Antiparallel: every axis perpendicular to `ref` turns by the same
+		// amount, so pick the one the cross product is furthest from degenerate
+		// on. (Parallel cannot reach here — its angle is 0.)
+		Vec3 aside = math::abs(ref.x) < math::abs(ref.z) ? (Vec3){ 1, 0, 0 } : (Vec3){ 0, 0, 1 };
+		axis = ref.cross(aside).normalize();
+	}
+
+	// Turning about `axis` by +phi opens the angle, so the correction is negative.
+	// Gradient magnitude of the angle w.r.t. either endpoint is 1/len.
+	float len_sq = len * len;
+	float grad_sq = w_sum / len_sq;
+	float alpha = c.compliance / (dt * dt);
+	float delta_lambda = -(constraint_value + alpha * c.lambda) / (grad_sq + alpha);
+	c.lambda += delta_lambda;
+
+	float phi = w_sum * delta_lambda / len_sq;
+	Vec3 delta = rotate_about_axis(d, axis, phi) - d;
+
+	if (w_child > 0) self.positions[c.p_child] += delta * (w_child / w_sum);
+	if (w_pivot > 0) self.positions[c.p_pivot] -= delta * (w_pivot / w_sum);
 }
 
 // XPBD volume constraint solver (pressure-based)
@@ -660,6 +912,59 @@ fn void SoftBody.unpin_particle(&self, sz particle, float mass)
 	}
 }
 
+// Spring a particle toward a world position. Unlike pin_particle this leaves the
+// particle dynamic: it is pulled, not placed, and compliance sets how hard.
+// Returns the constraint index, which set_target_at and the list both accept.
+fn sz SoftBody.add_target(&self, sz particle, Vec3 world_pos, float compliance = 0.0)
+{
+	sz index = self.target_constraints.len();
+	self.target_constraints.push(
+		{ .particle = particle, .target = world_pos, .compliance = compliance, .lambda = 0, }
+	);
+	return index;
+}
+
+// Move every target belonging to a particle. This is the per-substep call: the
+// host samples its animation and pushes the world point the particle chases.
+fn void SoftBody.set_target(&self, sz particle, Vec3 world_pos)
+{
+	foreach (&tc : self.target_constraints)
+	{
+		if (tc.particle == particle) tc.target = world_pos;
+	}
+}
+
+// Move one target by constraint index, for hosts that kept the index add_target
+// returned and do not want the scan.
+fn void SoftBody.set_target_at(&self, sz index, Vec3 world_pos)
+{
+	self.target_constraints.get_ref(index).target = world_pos;
+}
+
+// Limit the direction from p_pivot to p_child to a cone of half-angle max_angle
+// about reference_dir. Returns the constraint index for set_swing_reference.
+fn sz SoftBody.add_swing(&self, sz p_pivot, sz p_child, Vec3 reference_dir, float max_angle, float compliance = 0.0)
+{
+	sz index = self.swing_constraints.len();
+	self.swing_constraints.push(
+		{
+			.p_pivot = p_pivot,
+			.p_child = p_child,
+			.reference_dir = reference_dir,
+			.max_angle = max_angle,
+			.compliance = compliance,
+			.lambda = 0,
+		}
+	);
+	return index;
+}
+
+// Re-aim a cone. The per-substep call for a limit that follows an animated bone.
+fn void SoftBody.set_swing_reference(&self, sz index, Vec3 dir)
+{
+	self.swing_constraints.get_ref(index).reference_dir = dir;
+}
+
 // Set distance constraint compliance (0 = rigid, higher = softer)
 fn void SoftBody.set_distance_compliance(&self, float compliance)
 {
@@ -735,6 +1040,54 @@ fn void SoftBody.generate_ground_collisions(&self, float ground_z = 0, float fri
 					.normal = { 0, 0, 1 },
 					.depth = ground_z - p.z,
 					.contact_point = { p.x, p.y, ground_z },
+					.rigidbody_id = 0,
+					.friction = friction,
+				}
+			);
+		}
+	}
+}
+
+<*
+ Generate collision constraints for particles inside world-space capsules.
+
+ The point-based counterpart to generate_rigidbody_collisions, which walks
+ triangles and so finds nothing at all on a body that has none — a particle
+ chain among them. Capsule `i` is the segment seg_a[i] → seg_b[i] swept by
+ radius[i]; no shape or transform is involved, the host poses the endpoints.
+ Each particle is grown by its `particle_radius` entry, or treated as a point
+ when the list is unset.
+
+ Constraints land in `collision_constraints` with rigidbody_id 0, so the ordinary
+ collision solve treats them as immovable-world contacts and does the pushout.
+ Call this before xpbd_solve, as with the other generators: the list is cleared
+ at the end of every solve.
+
+ @require seg_a.len == seg_b.len : `generate_capsule_collisions needs matching segment endpoints`
+ @require seg_a.len == radius.len : `generate_capsule_collisions needs one radius per segment`
+*>
+fn void SoftBody.generate_capsule_collisions(&self, Vec3[] seg_a, Vec3[] seg_b, float[] radius, float friction = 0.0f)
+{
+	if (seg_a.len == 0) return;
+
+	for (sz i = 0; i < self.positions.len(); i++)
+	{
+		if (self.inverse_masses[i] == 0) continue;
+
+		Vec3 p = self.positions[i];
+		float p_radius = i < self.particle_radius.len() ? self.particle_radius[i] : 0;
+
+		for (sz s = 0; s < seg_a.len; s++)
+		{
+			CapsuleHit hit = collision::capsule_push_point(p, seg_a[s], seg_b[s], radius[s], p_radius);
+			if (!hit.hit) continue;
+
+			self.collision_constraints.push(
+				{
+					.particle = i,
+					.normal = hit.normal,
+					.depth = hit.depth,
+					.contact_point = hit.point,
 					.rigidbody_id = 0,
 					.friction = friction,
 				}
