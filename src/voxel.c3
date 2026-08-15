@@ -1,7 +1,7 @@
 module collision;
 
 import std::math;
-import std::core::mem;
+
 
 // ============================================================================
 // Solid voxelization and distance fields through the inside of a mesh
