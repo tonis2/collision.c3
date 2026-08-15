@@ -5,7 +5,7 @@ import std::collections::map;
 import std::math;
 import std::io;
 
-import std::core::mem::allocator;
+
 import collision::dmath;
 
 // XPBD constraint types for soft bodies
