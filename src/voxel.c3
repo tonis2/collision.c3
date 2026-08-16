@@ -468,6 +468,19 @@ fn void VoxelGrid.clear_field(&self, float[] field)
 // many it found. Zero means the segment touches no inside at all, which the
 // caller usually wants to distinguish from "far away".
 //
+// **The cells it passes through, and only those, while there are any.** Reaching
+// outward is what a point on the surface needs — `nearest_cell` is built for
+// exactly that — and it is the wrong instinct here, because a seed is not an
+// approximation but a *zero*: a segment that reached two cells sideways for want
+// of one under itself declares whatever it landed on to be at no distance at
+// all. On a hand whose fingers stand a cell apart that is one finger holding
+// every other, and nothing later in the walk can argue with a zero.
+//
+// So the reach is a second pass and a third, taken only when the segment lies
+// outside the mesh altogether. That is a different situation — a joint dropped
+// in mid-air rather than a limb too thin to fill — and there an answer somewhere
+// beats no answer at all.
+//
 // Pass the same point twice to seed a single position.
 fn usz VoxelGrid.seed_segment(&self, float[] field, Vec3 head, Vec3 tail)
 {
@@ -478,15 +491,19 @@ fn usz VoxelGrid.seed_segment(&self, float[] field, Vec3 head, Vec3 tail)
 	// passes through.
 	usz steps = (usz)math::max(2.0f, math::ceil(along.length() / (self.cell * 0.5f)) + 1.0f);
 
-	usz seeded = 0;
-	for (usz s = 0; s < steps; s++)
+	for (int reach = 0; reach <= VOXEL_PAD; reach++)
 	{
-		int entry = self.nearest_cell(head + along * ((float)s / (float)(steps - 1)));
-		if (entry < 0 || field[entry] == 0.0f) continue;
-		field[entry] = 0.0f;
-		seeded++;
+		usz seeded = 0;
+		for (usz s = 0; s < steps; s++)
+		{
+			int entry = self.nearest_cell(head + along * ((float)s / (float)(steps - 1)), reach);
+			if (entry < 0 || field[entry] == 0.0f) continue;
+			field[entry] = 0.0f;
+			seeded++;
+		}
+		if (seeded > 0) return seeded;
 	}
-	return seeded;
+	return 0;
 }
 
 // Propagate the seeds through the interior.
@@ -633,4 +650,395 @@ fn float VoxelGrid.sample(&self, float[] field, Vec3 point, int fallback = -1)
 	if (total > 0.0f) return sum / total;
 	if (fallback < 0) return VOXEL_UNREACHED;
 	return field[fallback];
+}
+
+// ============================================================================
+// Many sources at once
+//
+// The field above answers "how far is this cell from *that* source", and a
+// caller with sixty-five sources pays for sixty-five sweeps of the whole
+// interior to find out. Almost all of that work is thrown away: a hand's bone is
+// nowhere near a foot, and the answer for every cell in the leg is a large
+// number nobody reads.
+//
+// So this solves them together. Each cell keeps the nearest few sources rather
+// than one distance, the sweep relaxes those lists against each other, and one
+// pass over the grid answers for every source at once. What it will not tell you
+// is how far a cell is from a source that is not among its nearest few — which
+// is the trade, and it is a cheap one wherever the caller was going to keep only
+// a handful of influences anyway.
+//
+//     VoxelSource[] field = mem::new_array(VoxelSource, grid.cells.len * slots);
+//     grid.clear_sources(field, slots);
+//     foreach (usz b, bone : bones) grid.seed_source(field, slots, (int)b, bone.head, bone.tail);
+//     grid.solve_sources(field, slots);
+// ============================================================================
+
+// An empty slot, and the id no source may use.
+const int NO_VOXEL_SOURCE = -1;
+
+// The most slots a cell may keep.
+//
+// Not a limit anything here needs — every loop below works off the slice it is
+// handed. It is a guard against the caller that means to keep four and passes
+// the source *count*: the field would be sized in gigabytes and the sweep would
+// spend its life shuffling lists nobody reads. Asking for more is refused rather
+// than attempted.
+const usz MAX_VOXEL_SOURCES = 16;
+
+// One source reaching one cell, and how far through the body it had to come.
+//
+// A cell's slots run ascending by distance with the empty ones last, so slot
+// zero is always the nearest source and a scan can stop at the first empty.
+struct VoxelSource
+{
+	int source;
+	float distance;
+}
+
+fn void VoxelGrid.clear_sources(&self, VoxelSource[] field, usz slots)
+{
+	foreach (&slot : field) *slot = { .source = NO_VOXEL_SOURCE, .distance = VOXEL_UNREACHED };
+}
+
+// Put `source` at zero on every interior cell the segment passes through, and
+// report how many it reached. The reach rules are `seed_segment`'s, and for the
+// same reason.
+fn usz VoxelGrid.seed_source(&self, VoxelSource[] field, usz slots, int source, Vec3 head, Vec3 tail)
+{
+	if (!self.usable() || slots == 0 || field.len != self.cells.len * slots) return 0;
+	if (source < 0) return 0;
+
+	Vec3 along = tail - head;
+	usz steps = (usz)math::max(2.0f, math::ceil(along.length() / (self.cell * 0.5f)) + 1.0f);
+
+	for (int reach = 0; reach <= VOXEL_PAD; reach++)
+	{
+		usz seeded = 0;
+		for (usz s = 0; s < steps; s++)
+		{
+			int entry = self.nearest_cell(head + along * ((float)s / (float)(steps - 1)), reach);
+			if (entry < 0) continue;
+
+			VoxelSource[] cell = field[(usz)entry * slots : slots];
+			offer_source(cell, source, 0.0f);
+
+			// Counted by asking the cell, not by whether the offer changed it. All
+			// the sources start at zero, so a bone landing on a cell another bone
+			// already reached is told nothing changed — and a caller reading that
+			// as "this bone touched no inside" would hand the bone straight-line
+			// weights over the whole mesh, which is the bleed the grid is here to
+			// prevent. What matters is whether the source is in the cell now.
+			if (cell[0].source != NO_VOXEL_SOURCE && cell[0].distance <= 0.0f)
+			{
+				for (usz k = 0; k < slots; k++)
+				{
+					if (cell[k].distance > 0.0f || cell[k].source == NO_VOXEL_SOURCE) break;
+					if (cell[k].source == source) { seeded++; break; }
+				}
+			}
+		}
+		if (seeded > 0) return seeded;
+	}
+	return 0;
+}
+
+// Propagate every source through the interior at once.
+//
+// The chamfer sweep `solve_field` runs, with a list per cell instead of a
+// number: each pass walks the cells in scan order relaxing against the 13
+// neighbours already visited, then back the other way against the other 13, and
+// stops when a pass changes nothing.
+//
+// A source evicted from a cell's list stops spreading through that cell, which
+// is what makes this cost a few sweeps rather than one per source — and it is
+// also exactly the answer being asked for, since a source that is not among a
+// cell's nearest few is not among the answers the caller keeps.
+fn void VoxelGrid.solve_sources(&self, VoxelSource[] field, usz slots)
+{
+	if (!self.usable() || slots == 0 || slots > MAX_VOXEL_SOURCES) return;
+	if (field.len != self.cells.len * slots) return;
+
+	int plane = self.nx * self.ny;
+	int[27] offset;
+	float[27] cost;
+	usz slot = 0;
+	for (int dz = -1; dz <= 1; dz++)
+	{
+		for (int dy = -1; dy <= 1; dy++)
+		{
+			for (int dx = -1; dx <= 1; dx++)
+			{
+				offset[slot] = dz * plane + dy * self.nx + dx;
+				cost[slot] = self.cell * math::sqrt((float)(dx * dx + dy * dy + dz * dz));
+				slot++;
+			}
+		}
+	}
+
+	usz count = self.cells.len;
+	bool changed = true;
+	for (usz sweep = 0; sweep < MAX_VOXEL_SWEEPS && changed; sweep++)
+	{
+		changed = false;
+
+		for (usz i = 0; i < count; i++)
+		{
+			if (relax_sources(self, field, slots, i, &offset, &cost, 0, 13)) changed = true;
+		}
+		for (usz i = count; i > 0; i--)
+		{
+			if (relax_sources(self, field, slots, i - 1, &offset, &cost, 14, 27)) changed = true;
+		}
+	}
+}
+
+// One cell's list against half of its neighbourhood. Split out of the sweep only
+// so the two directions cannot drift apart, exactly as `relax_voxel` is.
+fn bool relax_sources(
+	VoxelGrid* grid,
+	VoxelSource[] field,
+	usz slots,
+	usz entry,
+	int[27]* offset,
+	float[27]* cost,
+	usz first,
+	usz last) @local
+{
+	int voxel = grid.cells[entry];
+	VoxelSource[] here = field[entry * slots : slots];
+	bool moved = false;
+
+	// Once a list is full, nothing further than its worst entry can enter it — so
+	// a neighbour whose *nearest* source is already too far to fit has nothing to
+	// offer at all, and one compare settles all of its slots. Deep inside a body
+	// every list is full and almost every neighbour is turned away here, which is
+	// what keeps this near the cost of the single-source sweep rather than at
+	// `slots` times it.
+	bool full = here[slots - 1].source != NO_VOXEL_SOURCE;
+	float worst = here[slots - 1].distance;
+
+	for (usz k = first; k < last; k++)
+	{
+		int neighbour = grid.index[voxel + (*offset)[k]];
+		if (neighbour < 0) continue;
+
+		VoxelSource[] there = field[(usz)neighbour * slots : slots];
+		if (there[0].source == NO_VOXEL_SOURCE) continue;
+		if (full && there[0].distance + (*cost)[k] >= worst) continue;
+
+		for (usz s = 0; s < slots; s++)
+		{
+			// Ascending with the empties last, so the first empty ends the list.
+			if (there[s].source == NO_VOXEL_SOURCE) break;
+			if (!offer_source(here, there[s].source, there[s].distance + (*cost)[k])) continue;
+
+			moved = true;
+			full = here[slots - 1].source != NO_VOXEL_SOURCE;
+			worst = here[slots - 1].distance;
+		}
+	}
+	return moved;
+}
+
+// Offer one source at one distance to a cell's list, keeping it ascending and
+// one entry per source. False when the list already knew as much or better.
+fn bool offer_source(VoxelSource[] cell, int source, float distance) @local
+{
+	usz slots = cell.len;
+
+	// Nothing to do if the list is full of nearer sources — the common case by
+	// far, and one compare settles it.
+	if (cell[slots - 1].source != NO_VOXEL_SOURCE && distance >= cell[slots - 1].distance) return false;
+
+	// Where it goes, and whether it is already in here somewhere.
+	usz at = slots;
+	usz was = slots;
+	for (usz s = 0; s < slots; s++)
+	{
+		if (cell[s].source == source)
+		{
+			if (cell[s].distance <= distance) return false;
+			was = s;
+			break;
+		}
+	}
+	for (usz s = 0; s < slots; s++)
+	{
+		if (cell[s].source == NO_VOXEL_SOURCE || distance < cell[s].distance) { at = s; break; }
+	}
+	if (at >= slots) return false;
+
+	// Shift down to `at`, stopping at the old copy of this source when there is
+	// one — which both removes it and leaves the list one shorter to write into.
+	usz from = was < slots ? was : slots - 1;
+	for (usz s = from; s > at; s--) cell[s] = cell[s - 1];
+	cell[at] = { .source = source, .distance = distance };
+	return true;
+}
+
+// What one cell knows about one source, or VOXEL_UNREACHED when that source is
+// not among its nearest.
+fn float VoxelGrid.source_at(&self, VoxelSource[] field, usz slots, int entry, int source)
+{
+	if (entry < 0) return VOXEL_UNREACHED;
+
+	VoxelSource[] cell = field[(usz)entry * slots : slots];
+	for (usz s = 0; s < slots; s++)
+	{
+		if (cell[s].source == NO_VOXEL_SOURCE) break;
+		if (cell[s].source == source) return cell[s].distance;
+	}
+	return VOXEL_UNREACHED;
+}
+
+// The nearest cell to `point` that any source reached, or -1 within `reach`.
+//
+// `nearest_solved` for a many-source field: the same shell search, asking
+// whether a cell has an answer at all rather than whether it has one for a
+// particular source.
+fn int VoxelGrid.nearest_sourced(&self, VoxelSource[] field, usz slots, Vec3 point, int reach = VOXEL_PAD)
+{
+	if (slots == 0 || field.len != self.cells.len * slots) return -1;
+
+	int x = (int)math::floor((point.x - self.origin.x) / self.cell + 0.5f);
+	int y = (int)math::floor((point.y - self.origin.y) / self.cell + 0.5f);
+	int z = (int)math::floor((point.z - self.origin.z) / self.cell + 0.5f);
+
+	x = math::clamp(x, 0, self.nx - 1);
+	y = math::clamp(y, 0, self.ny - 1);
+	z = math::clamp(z, 0, self.nz - 1);
+
+	int direct = self.index[self.at(x, y, z)];
+	if (direct >= 0 && field[(usz)direct * slots].source != NO_VOXEL_SOURCE) return direct;
+
+	int best = -1;
+	float nearest = float::max;
+
+	for (int radius = 1; radius <= reach; radius++)
+	{
+		for (int cz = math::max(z - radius, 0); cz <= math::min(z + radius, self.nz - 1); cz++)
+		{
+			for (int cy = math::max(y - radius, 0); cy <= math::min(y + radius, self.ny - 1); cy++)
+			{
+				for (int cx = math::max(x - radius, 0); cx <= math::min(x + radius, self.nx - 1); cx++)
+				{
+					// Only the new shell — see `nearest_cell`.
+					if (math::abs(cx - x) < radius &&
+						math::abs(cy - y) < radius &&
+						math::abs(cz - z) < radius) continue;
+
+					int voxel = self.at(cx, cy, cz);
+					int entry = self.index[voxel];
+					if (entry < 0 || field[(usz)entry * slots].source == NO_VOXEL_SOURCE) continue;
+
+					float distance = (self.center(voxel) - point).length();
+					if (distance < nearest)
+					{
+						nearest = distance;
+						best = entry;
+					}
+				}
+			}
+		}
+		if (best >= 0) return best;
+	}
+
+	return -1;
+}
+
+// Read a many-source field at a point rather than at a cell, into `into`.
+//
+// `sample`'s smoothing, for every source at once: the eight cells around the
+// point are averaged, skipping any that is outside the mesh or that a source
+// never reached, so the result is smooth rather than banded at the grid's own
+// resolution.
+//
+// **`home` decides which sources are asked about**, and the corners only decide
+// how far away they are. A source that reaches a corner but not the point's own
+// cell is by definition not among that cell's nearest, and admitting it here
+// would let a vertex be answered for a bone the cell it sits in has already
+// ruled out.
+//
+// @param home : `The cell the point is in, from nearest_cell. Negative asks about nothing.`
+// @param into : `Filled with what each of home's sources reads here, ascending by distance and terminated by an empty slot when there is room. Sized by the caller; slots beyond its length are dropped.`
+// @return `How many entries were written.`
+fn usz VoxelGrid.sample_sources(
+	&self,
+	VoxelSource[] field,
+	usz slots,
+	Vec3 point,
+	int home,
+	VoxelSource[] into)
+{
+	if (into.len == 0) return 0;
+	if (home < 0 || slots == 0 || slots > MAX_VOXEL_SOURCES) return 0;
+	if (field.len != self.cells.len * slots) return 0;
+
+	float gx = (point.x - self.origin.x) / self.cell;
+	float gy = (point.y - self.origin.y) / self.cell;
+	float gz = (point.z - self.origin.z) / self.cell;
+
+	int bx = math::clamp((int)math::floor(gx), 0, self.nx - 2);
+	int by = math::clamp((int)math::floor(gy), 0, self.ny - 2);
+	int bz = math::clamp((int)math::floor(gz), 0, self.nz - 2);
+
+	float fx = math::clamp(gx - (float)bx, 0.0f, 1.0f);
+	float fy = math::clamp(gy - (float)by, 0.0f, 1.0f);
+	float fz = math::clamp(gz - (float)bz, 0.0f, 1.0f);
+
+	// The corners once, so the per-source loop below is eight array reads rather
+	// than eight index computations.
+	int[8] corner;
+	float[8] share;
+	usz corners = 0;
+	for (int cz = 0; cz < 2; cz++)
+	{
+		float wz = cz == 1 ? fz : 1.0f - fz;
+		for (int cy = 0; cy < 2; cy++)
+		{
+			float wy = cy == 1 ? fy : 1.0f - fy;
+			for (int cx = 0; cx < 2; cx++)
+			{
+				float weight = wz * wy * (cx == 1 ? fx : 1.0f - fx);
+				if (weight <= 0.0f) continue;
+
+				int entry = self.index[self.at(bx + cx, by + cy, bz + cz)];
+				if (entry < 0) continue;
+
+				corner[corners] = entry;
+				share[corners] = weight;
+				corners++;
+			}
+		}
+	}
+
+	VoxelSource[] here = field[(usz)home * slots : slots];
+	usz written = 0;
+
+	for (usz s = 0; s < slots && written < into.len; s++)
+	{
+		int source = here[s].source;
+		if (source == NO_VOXEL_SOURCE) break;
+
+		float sum = 0.0f;
+		float total = 0.0f;
+		for (usz c = 0; c < corners; c++)
+		{
+			float distance = self.source_at(field, slots, corner[c], source);
+			if (distance >= VOXEL_UNREACHED) continue;
+			sum += distance * share[c];
+			total += share[c];
+		}
+
+		// The home cell always has an answer for its own sources, so the average
+		// falls back on it rather than on nothing.
+		into[written++] = {
+			.source = source,
+			.distance = total > 0.0f ? sum / total : here[s].distance,
+		};
+	}
+
+	if (written < into.len) into[written] = { .source = NO_VOXEL_SOURCE, .distance = VOXEL_UNREACHED };
+	return written;
 }
