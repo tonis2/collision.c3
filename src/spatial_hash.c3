@@ -43,7 +43,7 @@ fn void SpatialHash3D.init(&self, Allocator allocator)
  The fallback is the heap rather than temp, so a caller that never calls `init`
  gets the behaviour they almost certainly meant.
 *>
-fn CellList* SpatialHash3D.cell(&self, sz key) @local
+fn CellList* SpatialHash3D.cell(&self, sz key)
 {
 	if (self.allocator.ptr == null) self.allocator = mem;
 	CellList* cells = self.table.get_or_create_ref(key);

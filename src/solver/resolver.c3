@@ -294,7 +294,7 @@ struct PhysicsWorld
  a body that answers false is reset rather than propagated. Deep overlaps are
  something a scene *has*, not something a solver should die of.
 *>
-fn bool Rigidbody.transform_is_finite(&self) @local
+fn bool Rigidbody.transform_is_finite(&self)
 {
 	Vec3 at = self.collider.translation;
 	QuaternionValue rot = self.collider.rotation;
@@ -308,7 +308,7 @@ fn bool Rigidbody.transform_is_finite(&self) @local
  stop it moving. The overlap that caused it is still there, so the alternative
  to stopping is doing this again every step forever.
 *>
-fn void Rigidbody.reset_to_previous(&self) @local
+fn void Rigidbody.reset_to_previous(&self)
 {
 	self.collider.translation = self.prev_position;
 	self.collider.rotation = self.prev_rotation;
