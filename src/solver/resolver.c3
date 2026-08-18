@@ -57,7 +57,7 @@ struct SoftBodySolveTask
 	PhysicsWorld* world;
 	Vec3 gravity;
 	float time;
-	float ground_z;
+	GroundPlane ground_plane;
 	bool ground_enabled;
 	float ground_friction;
 }
@@ -209,6 +209,21 @@ struct Rigidbody
 	Matrix4f inv_rest_world;
 }
 
+<*
+ The plane soft bodies rest on: `dot(p, normal) < offset` is below the surface,
+ and the penetration depth is the difference.
+
+ Was a single `ground_plane_z` until the solver stopped assuming an up axis. A
+ scalar height can only ever describe a plane perpendicular to one axis; this
+ describes any of them, and the arithmetic at the one call site is the same
+ length either way.
+*>
+struct GroundPlane
+{
+	Vec3 normal; // Unit, pointing away from the ground.
+	float offset;
+}
+
 alias TriggerOverlapSet = HashMap {Pair, bool};
 alias ContactOverlapSet = HashMap {Pair, bool};
 
@@ -234,11 +249,15 @@ struct PhysicsWorld
 
 	// Soft body system (XPBD)
 	SoftBodyList soft_bodies;
-	float ground_plane_z;
+	GroundPlane ground_plane;
 	bool ground_plane_enabled;
 
 	// Swept CCD for fast-moving bodies (see apply_ccd)
 	bool ccd_enabled;
+
+	// Where this world's storage lives. Set by `init`; anything that creates a
+	// collection which outlives a step reads it, falling back to the heap.
+	Allocator allocator;
 
 	Vec3 gravity;
 	float sleep_timer;
@@ -258,6 +277,81 @@ struct PhysicsWorld
 	List {IslandSolveTask} island_tasks;
 	List {XpbdPhaseTask} phase_tasks;
 	List {Rigidbody*} active_bodies;
+}
+
+<*
+ Whether a body's transform is still a number.
+
+ **XPBD can produce one that is not.** A body that starts inside static geometry
+ is answered with a correction as deep as the overlap, and a few substeps of
+ that leaves a position or a quaternion holding an infinity or a NaN. Nothing
+ downstream survives it: the AABB built from it fails `SpatialHash3D.update`'s
+ size contract, which aborts the process from inside the broadphase — a long way
+ from the overlap that caused it, and unrecoverable by a caller who would gladly
+ have dropped the body.
+
+ So the predict phase asks this before it hands anything to the broadphase, and
+ a body that answers false is reset rather than propagated. Deep overlaps are
+ something a scene *has*, not something a solver should die of.
+*>
+fn bool Rigidbody.transform_is_finite(&self) @local
+{
+	Vec3 at = self.collider.translation;
+	QuaternionValue rot = self.collider.rotation;
+	return math::is_finite(at.x) && math::is_finite(at.y) && math::is_finite(at.z)
+		&& math::is_finite(rot.i) && math::is_finite(rot.j) && math::is_finite(rot.k)
+		&& math::is_finite(rot.l);
+}
+
+<*
+ Put a body back where it was before a prediction that produced nonsense, and
+ stop it moving. The overlap that caused it is still there, so the alternative
+ to stopping is doing this again every step forever.
+*>
+fn void Rigidbody.reset_to_previous(&self) @local
+{
+	self.collider.translation = self.prev_position;
+	self.collider.rotation = self.prev_rotation;
+	self.linear_velocity = { 0, 0, 0 };
+	self.angular_velocity = { 0, 0, 0 };
+}
+
+<*
+ Put the world's storage on a named allocator, once, before anything is added.
+
+ **Without this every collection below lazily initializes itself into the
+ *temp* allocator**, which is what `std::collections` does for a zero-valued
+ map or list whose allocator pointer is still null. That is harmless in a test,
+ where the temp pool outlives the assertions — and fatal in a host that steps
+ the world across frames, because the pool it landed in is released and the
+ world goes on reading it. It fails as an out-of-bounds access somewhere inside
+ a hash table rather than anywhere near the cause.
+
+ `free` gives all of it back, so a world is init/free like everything else.
+ Call once: initializing twice abandons the first set of allocations.
+*>
+fn void PhysicsWorld.init(&self, Allocator allocator)
+{
+	self.allocator = allocator;
+	self.bodies.init(allocator);
+	self.collisions.init(allocator);
+	self.manifold_scratch.init(allocator);
+	self.constraints.init(allocator);
+	self.joints.init(allocator);
+	self.spatial_map.init(allocator);
+	self.filters.init(allocator);
+	self.island_parent.init(allocator);
+	self.trigger_events.init(allocator);
+	self.active_triggers.init(allocator);
+	self.contact_events.init(allocator);
+	self.active_contacts.init(allocator);
+	self.soft_bodies.init(allocator);
+	self.collision_tasks.init(allocator);
+	self.collision_results.init(allocator);
+	self.collision_counts.init(allocator);
+	self.island_tasks.init(allocator);
+	self.phase_tasks.init(allocator);
+	self.active_bodies.init(allocator);
 }
 
 fn void PhysicsWorld.free(&self)
@@ -289,10 +383,22 @@ fn void PhysicsWorld.free(&self)
 	self.soft_bodies.free();
 }
 
-// Library convention is z-up: soft-body ground plane, impulse_dir and the
-// specialized capsule tests all assume gravity along -z.
+// **The z-down gravity below is a default, not an assumption.** Nothing in the
+// solver reads a fixed axis: `impulse_dir` takes its sign along whatever gravity
+// is set (`add_body`), and the soft-body ground is a plane carrying its own
+// normal (`enable_ground_plane`). Set `gravity` to any direction and the rest
+// follows.
+//
+// An earlier version of this comment said the ground plane, `impulse_dir` *and
+// the specialized capsule tests* all assumed -z. The last clause was never
+// true: `shapes.c3:61` and `:70` define the cylinder and capsule about **+Y**,
+// and the specialized capsule-vs-triangle test builds its endpoints at
+// `{0, ±half, 0}` and rotates them by the collider's own orientation, so it is
+// orientation-agnostic and always was. The sentence is recorded here because it
+// is the kind that talks somebody out of a change that was already safe.
 const PhysicsWorld DEFAULT_PHYSICS_WORLD = {
 	.gravity = { 0.0f, 0.0f, -9.8f },
+	.ground_plane = { .normal = { 0.0f, 0.0f, 1.0f } },
 	.spatial_map .cell_size = 2.0,
 	.sleep_timer = 5.0,
 	.linear_dampening = 0.9,
@@ -339,7 +445,17 @@ fn void? PhysicsWorld.add_body(&self, Rigidbody body)
 		body.inverse_mass = !body.is_static ? 1.0f / body.mass : 0;
 	}
 
-	body.impulse_dir = (self.gravity * body.gravity_factor).z > 0 ? 1 : -1;
+	// **A sign along gravity, taken by projection rather than from `.z`.** What
+	// this wants to know is whether the body's own gravity runs with the world's
+	// or against it — an inverted `gravity_factor` flips the axes an angular
+	// joint limit pushes along (`joint.c3:134`). Reading `.z` was that question
+	// written down for one orientation; the dot product is the question.
+	//
+	// Identical to the old expression at the z-down default for every
+	// `gravity_factor`, including 0, which is why `>=` rather than `>`. The two
+	// diverge only under gravity that is not along -z *and* inverted per body,
+	// which is exactly the case the component form got wrong.
+	body.impulse_dir = (self.gravity * body.gravity_factor).dot(self.gravity) >= 0 ? -1 : 1;
 
 	// Compute AABB from collider
 	body.aabb = body.collider.get_aabb();
@@ -391,6 +507,93 @@ fn void? PhysicsWorld.add_trigger(&self, Rigidbody body)
 
 	self.bodies.set(body.id, body);
 	self.spatial_map.insert(body.transformed_aabb, body.id);
+}
+
+<*
+ Remove a rigid body, and every trace of it.
+
+ The counterpart to `add_body`, and four things beyond dropping it from
+ `bodies` — each of which stays invisible for a long time if it is skipped:
+
+ - the **spatial hash**, or a dead id goes on producing broadphase pairs
+   against whatever moves through the cells it was left in;
+ - the **island union-find**, marked dirty on the way out, because an island
+   that loses a member may split in two and a stale parent chain quietly keeps
+   both halves solving as one;
+ - the **active trigger and contact sets**, whose EXIT and END events are
+   emitted here. A body destroyed inside a trigger must still be seen to leave
+   it, or a game's exit handler never runs for anything that dies there — which
+   reads as a gameplay bug long before anyone suspects the solver;
+ - every **joint** naming it, along with the collision filter `add_constraint`
+   paired with that joint, which would otherwise go on dereferencing a body id
+   that is gone.
+
+ `constraints` needs no attention: `run_substep` rebuilds it from `joints`
+ every substep, so nothing there outlives this call.
+
+ **The events land in `trigger_events` and `contact_events`, which `run_step`
+ clears at the top.** A caller that removes bodies between steps has to drain
+ them before the next step, exactly as it drains a step's own.
+
+ @return `false when no body has that id, so removing twice is not an error.`
+*>
+fn bool PhysicsWorld.remove_body(&self, sz id)
+{
+	Rigidbody*? found = self.bodies.get_ref(id);
+	if (catch found) return false;
+
+	self.spatial_map.remove(found.transformed_aabb, id);
+
+	// Rebuilt rather than edited while iterated: erasing from a map mid-walk is
+	// the kind of thing that works right up until the table resizes.
+	TriggerOverlapSet surviving_triggers;
+	self.active_triggers.@each(; Pair pair, bool active)
+	{
+		if (pair.a == id || pair.b == id)
+		{
+			self.trigger_events.push(
+				{ .trigger_id = pair.a, .other_id = pair.b, .type = TriggerEventType.EXIT }
+			);
+		}
+		else
+		{
+			surviving_triggers.set(pair, active);
+		}
+	};
+	self.active_triggers.free();
+	self.active_triggers = surviving_triggers;
+
+	ContactOverlapSet surviving_contacts;
+	self.active_contacts.@each(; Pair pair, bool active)
+	{
+		if (pair.a == id || pair.b == id)
+		{
+			self.contact_events.push(
+				{ .body_a = pair.a, .body_b = pair.b, .type = ContactEventType.END }
+			);
+		}
+		else
+		{
+			surviving_contacts.set(pair, active);
+		}
+	};
+	self.active_contacts.free();
+	self.active_contacts = surviving_contacts;
+
+	// Backwards, so removing one does not skip the next.
+	for (sz i = self.joints.len(); i > 0; i--)
+	{
+		GenericJoint3D joint = self.joints[i - 1];
+		if (joint.body_a != id && joint.body_b != id) continue;
+		self.filters.remove({ joint.body_a, joint.body_b });
+		self.joints.remove_at(i - 1);
+	}
+
+	self.island_parent.remove(id);
+	self.islands_dirty = true;
+
+	self.bodies.remove(id);
+	return true;
 }
 
 <*
@@ -466,11 +669,20 @@ fn SoftBody*? PhysicsWorld.find_softbody(&self, sz id)
 
 <*
  Enable ground plane collision for soft bodies.
+
+ A normal and an offset rather than the single `z` this took until the axis
+ stopped being fixed. Strictly more general at no cost to the call site — the
+ defaults are the old z=0 plane — and a soft body can now come to rest on a
+ slope, which a scalar height could never express.
+
+ @param normal : `Which way is up, away from the ground. Need not be unit.`
+ @param offset : `Where the surface sits along that normal.`
+ @require normal.length_sq() > 0 : `The ground plane needs a direction`
 *>
-fn void PhysicsWorld.enable_ground_plane(&self, float z = 0)
+fn void PhysicsWorld.enable_ground_plane(&self, Vec3 normal = { 0, 0, 1 }, float offset = 0)
 {
 	self.ground_plane_enabled = true;
-	self.ground_plane_z = z;
+	self.ground_plane = { .normal = normal.normalize(), .offset = offset };
 }
 
 <*
@@ -1233,6 +1445,13 @@ fn void PhysicsWorld.run_substep(&self, float time, uint step_count)
 	defer candidate_pairs.free();
 	defer current_triggers.free();
 
+	// **Not left to bind itself.** `current_triggers` *becomes*
+	// `active_triggers` at the end of this function, so it outlives the step —
+	// and a zero-valued map binds to the temp allocator on first use, which is
+	// a pool that is gone by the next frame. Same reason as `SpatialHash3D.cell`.
+	if (self.allocator.ptr == null) self.allocator = mem;
+	current_triggers.init(self.allocator);
+
 	self.spatial_map.@get_pairs(; Pair pair)
 	{
 		Rigidbody* body_a = self.find_body(pair.a)!!;
@@ -1361,6 +1580,8 @@ fn void PhysicsWorld.run_substep(&self, float time, uint step_count)
 	// === Phase 4: Generate contact events ===
 	ContactOverlapSet current_contacts;
 	defer current_contacts.free();
+	// Becomes `active_contacts` below — see `current_triggers` above.
+	current_contacts.init(self.allocator);
 
 	// Track all collisions this frame and generate START events
 	foreach (&collision : self.collisions)
@@ -1582,6 +1803,16 @@ fn void PhysicsWorld.xpbd_predict(&self, float dt)
 	// Sequential: update spatial map AABBs after predict (must happen before broad phase)
 	foreach (body : self.active_bodies)
 	{
+		// A prediction that stopped being a number is thrown away rather than
+		// handed on — see `Rigidbody.transform_is_finite`. Doing it here rather
+		// than at the contract keeps the body in the world and the world
+		// stepping, which is what a caller can actually do something about.
+		if (!body.transform_is_finite())
+		{
+			body.reset_to_previous();
+			continue;
+		}
+
 		Aabb3 new_aabb = body.get_transformed_aabb();
 		self.spatial_map.update(body.transformed_aabb, new_aabb, body.id);
 		body.transformed_aabb = new_aabb;
@@ -1771,7 +2002,7 @@ fn int softbody_solve_worker(void* arg) @local
 	// Generate ground plane collisions
 	if (task.ground_enabled)
 	{
-		sb.generate_ground_collisions(task.ground_z, task.ground_friction);
+		sb.generate_ground_collisions(task.ground_plane, task.ground_friction);
 	}
 
 	// Run XPBD solver (no rigidbody collisions in parallel — not thread-safe)
@@ -1831,7 +2062,7 @@ fn void PhysicsWorld.solve_soft_bodies(&self, float time)
 				.world = self,
 				.gravity = self.gravity,
 				.time = time,
-				.ground_z = self.ground_plane_z,
+				.ground_plane = self.ground_plane,
 				.ground_enabled = self.ground_plane_enabled,
 				.ground_friction = sb.material.static_friction,
 			}
@@ -1857,7 +2088,7 @@ fn void PhysicsWorld.solve_soft_bodies(&self, float time)
 	{
 		if (self.ground_plane_enabled)
 		{
-			sb.generate_ground_collisions(self.ground_plane_z, sb.material.static_friction);
+			sb.generate_ground_collisions(self.ground_plane, sb.material.static_friction);
 		}
 		sb.xpbd_solve(self.gravity, time, self);
 	}

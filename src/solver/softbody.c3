@@ -1024,22 +1024,30 @@ fn bool SoftBody.is_moving(&self)
 	return false;
 }
 
-// Generate ground plane collision constraints (z=0 default ground)
-fn void SoftBody.generate_ground_collisions(&self, float ground_z = 0, float friction = 0.5)
+<*
+ Generate ground plane collision constraints.
+
+ `dot(p, normal) < offset` is below the surface and the shortfall is the depth;
+ the contact point is the particle projected back onto the plane. This took a
+ scalar `ground_z` until the solver stopped assuming an up axis — the arithmetic
+ is the same length and now describes a plane at any angle. See `GroundPlane`.
+*>
+fn void SoftBody.generate_ground_collisions(&self, GroundPlane plane, float friction = 0.5)
 {
 	for (sz i = 0; i < self.positions.len(); i++)
 	{
 		if (self.inverse_masses[i] == 0) continue;
 
 		Vec3 p = self.positions[i];
-		if (p.z < ground_z)
+		float height = p.dot(plane.normal) - plane.offset;
+		if (height < 0)
 		{
 			self.collision_constraints.push(
 				{
 					.particle = i,
-					.normal = { 0, 0, 1 },
-					.depth = ground_z - p.z,
-					.contact_point = { p.x, p.y, ground_z },
+					.normal = plane.normal,
+					.depth = -height,
+					.contact_point = p - plane.normal * height,
 					.rigidbody_id = 0,
 					.friction = friction,
 				}

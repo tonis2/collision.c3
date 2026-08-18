@@ -582,7 +582,7 @@ fn void test_softbody_ground_collision()
 	Vec3 gravity = { 0, 0, -9.8f };
 	for (int i = 0; i < 300; i++)
 	{
-		sb.generate_ground_collisions(0.0f, 0.5f);
+		sb.generate_ground_collisions({ .normal = { 0, 0, 1 } }, 0.5f);
 		sb.xpbd_solve(gravity, 1.0f / 60.0f);
 	}
 
@@ -638,10 +638,10 @@ fn void test_softbody_distance_constraint_stiffness()
 
 	// Simulate with gravity
 	Vec3 gravity = { 0, 0, -9.8f };
-	sb.generate_ground_collisions(0.0f, 0.5f);
+	sb.generate_ground_collisions({ .normal = { 0, 0, 1 } }, 0.5f);
 	for (int i = 0; i < 100; i++)
 	{
-		sb.generate_ground_collisions(0.0f, 0.5f);
+		sb.generate_ground_collisions({ .normal = { 0, 0, 1 } }, 0.5f);
 		sb.xpbd_solve(gravity, 1.0f / 60.0f);
 	}
 
@@ -684,7 +684,7 @@ fn void test_softbody_volume_preservation()
 fn void test_softbody_in_physics_world()
 {
 	PhysicsWorld world = collision::DEFAULT_PHYSICS_WORLD;
-	world.enable_ground_plane(0.0f);
+	world.enable_ground_plane();
 	defer world.free();
 
 	// Add a static rigidbody (ground box)
@@ -2421,6 +2421,256 @@ fn void test_hull_thin_faces()
 		"a rim point is %g outside its own hull", hull_worst_outside(&hull, rim[..]));
 }
 
+
+// ---------------------------------------------------------------------------
+// The axis, and what it costs to move it — `game.md` G5/S2, S2a, S2b.
+//
+// The claim these hold up is that gravity's direction is a *setting* and not a
+// convention: nothing in the solver reads a fixed component of it any more.
+
+// Runs a box onto a floor and answers with the rest position measured along
+// `up`. A macro because a fn in a `@test` module may take no parameters.
+macro float @box_rest_along(gravity, floor_shape, box_shape, start, up)
+{
+	PhysicsWorld world = collision::DEFAULT_PHYSICS_WORLD;
+	world.gravity = gravity;
+	defer world.free();
+
+	world.add_body(
+		{
+			.id = 1,
+			.collider = {
+				.shape = floor_shape,
+				.translation = { 0, 0, 0 },
+				.scale = { 1, 1, 1 },
+				.rotation = { 0, 0, 0, 1 },
+			},
+			.mass = 0,
+			.gravity_factor = 0,
+			.can_sleep = false,
+		}
+	)!!;
+	world.add_body(
+		{
+			.id = 2,
+			.collider = {
+				.shape = box_shape,
+				.translation = start,
+				.scale = { 1, 1, 1 },
+				.rotation = { 0, 0, 0, 1 },
+			},
+			.mass = 1.0,
+			.gravity_factor = 1.0,
+			.can_sleep = false,
+		}
+	)!!;
+
+	for (int i = 0; i < 300; i++) world.run_step(1.0f / 60.0f, 1, 4);
+
+	return world.find_body(2)!!.collider.translation.dot(up);
+}
+
+// The whole scene rotated so that down is -y instead of -z. The rest height
+// above the floor is the physics; the axis it happens to be measured along is
+// not. A suite that passes at one orientation and fails at the other is testing
+// the orientation, which is the cheapest possible thing to find out.
+fn void test_gravity_is_axis_agnostic()
+{
+	// An untyped macro parameter cannot take a brace list, so the vectors are
+	// named rather than written at the call.
+	Aabb3 floor_z = { { -50, -50, -1 }, { 50, 50, 0 } };
+	Aabb3 box_z = { { -0.5, -0.5, -0.5 }, { 0.5, 0.5, 0.5 } };
+	Vec3 gravity_z = { 0, 0, -9.8f };
+	Vec3 start_z = { 0, 0, 5 };
+	Vec3 up_z = { 0, 0, 1 };
+	float rest_z = @box_rest_along(gravity_z, &floor_z, &box_z, start_z, up_z);
+
+	Aabb3 floor_y = { { -50, -1, -50 }, { 50, 0, 50 } };
+	Aabb3 box_y = { { -0.5, -0.5, -0.5 }, { 0.5, 0.5, 0.5 } };
+	Vec3 gravity_y = { 0, -9.8f, 0 };
+	Vec3 start_y = { 0, 5, 0 };
+	Vec3 up_y = { 0, 1, 0 };
+	float rest_y = @box_rest_along(gravity_y, &floor_y, &box_y, start_y, up_y);
+
+	assert(math::abs(rest_z - rest_y) < 0.01f);
+	// And it actually came to rest on the floor rather than agreeing at
+	// whatever height two identically broken runs both fell to.
+	assert(math::abs(rest_z - 0.5f) < 0.1f);
+}
+
+macro int @impulse_dir_for(gravity, factor, shape)
+{
+	PhysicsWorld world = collision::DEFAULT_PHYSICS_WORLD;
+	world.gravity = gravity;
+	defer world.free();
+
+	world.add_body(
+		{
+			.id = 1,
+			.collider = {
+				.shape = shape,
+				.translation = { 0, 0, 0 },
+				.scale = { 1, 1, 1 },
+				.rotation = { 0, 0, 0, 1 },
+			},
+			.mass = 1.0,
+			.gravity_factor = factor,
+		}
+	)!!;
+
+	return world.find_body(1)!!.impulse_dir;
+}
+
+fn void test_impulse_dir_follows_gravity()
+{
+	Aabb3 shape = { { -0.5, -0.5, -0.5 }, { 0.5, 0.5, 0.5 } };
+	Vec3 z_down = { 0, 0, -9.8f };
+	Vec3 y_down = { 0, -9.8f, 0 };
+
+	// The z-down default, unchanged. This is exactly what the old `.z > 0`
+	// form produced for every factor, zero included — which is what makes the
+	// change a restatement rather than a new behaviour.
+	assert(@impulse_dir_for(z_down, 1.0f, &shape) == -1);
+	assert(@impulse_dir_for(z_down, 0.0f, &shape) == -1);
+	assert(@impulse_dir_for(z_down, -1.0f, &shape) == 1);
+
+	// Y-down gravity. The component form got the first two right by accident —
+	// `.z` is 0, and 0 is not greater than 0. The third is the one it got
+	// wrong: a body with inverted gravity under gravity that is not along z.
+	assert(@impulse_dir_for(y_down, 1.0f, &shape) == -1);
+	assert(@impulse_dir_for(y_down, 0.0f, &shape) == -1);
+	assert(@impulse_dir_for(y_down, -1.0f, &shape) == 1);
+}
+
+// The ground plane's whole point: a scalar height cannot describe this at all.
+fn void test_ground_plane_can_tilt()
+{
+	Mesh mesh = create_test_tetrahedron();
+	defer mesh.free();
+
+	SoftBody sb = collision::create_softbody_from_mesh(&mesh, 1.0, 1);
+	defer sb.free();
+
+	Vec3 normal = ((Vec3){ 0, 1, 1 }).normalize();
+	Vec3 gravity = normal * -9.8f;
+
+	for (int i = 0; i < 300; i++)
+	{
+		sb.generate_ground_collisions({ .normal = normal, .offset = 0 }, 0.5f);
+		sb.xpbd_solve(gravity, 1.0f / 60.0f);
+	}
+
+	foreach (p : sb.positions)
+	{
+		assert(p.dot(normal) >= -0.01f);
+	}
+}
+
+// ---------------------------------------------------------------------------
+// `remove_body` — G5/S5. Written as a cycle for the reason G2's unload test is
+// a cycle: a leak in any one of these four is invisible until a long-running
+// game slows down for no reason anybody can point at.
+fn void test_remove_body_leaves_nothing_behind()
+{
+	PhysicsWorld world = collision::DEFAULT_PHYSICS_WORLD;
+	defer world.free();
+
+	Aabb3 shape = { { -0.5, -0.5, -0.5 }, { 0.5, 0.5, 0.5 } };
+
+	for (sz i = 1; i <= 100; i++)
+	{
+		world.add_body(
+			{
+				.id = i,
+				.collider = {
+					.shape = &shape,
+					.translation = { (float)i * 1.5f, 0, 0 },
+					.scale = { 1, 1, 1 },
+					.rotation = { 0, 0, 0, 1 },
+				},
+				.mass = 1.0,
+				.gravity_factor = 1.0,
+				.can_sleep = false,
+			}
+		)!!;
+	}
+
+	// Joints as well, so the island map and the filter set are not empty to
+	// begin with — an assertion that they end empty proves nothing otherwise.
+	for (sz i = 1; i < 100; i++)
+	{
+		world.add_constraint({ .body_a = i, .body_b = i + 1, .collides = false })!!;
+	}
+
+	world.run_step(1.0f / 60.0f, 1, 1);
+	assert(world.bodies.len() == 100);
+	assert(world.island_parent.len() > 0);
+
+	for (sz i = 1; i <= 100; i++) assert(world.remove_body(i));
+
+	assert(world.bodies.len() == 0);
+	assert(world.joints.len() == 0);
+	assert(world.filters.len() == 0);
+	assert(world.island_parent.len() == 0);
+	assert(world.active_triggers.len() == 0);
+	assert(world.active_contacts.len() == 0);
+	// The one most likely to be forgotten, and the one whose cost is a
+	// broadphase that never stops growing.
+	assert(world.spatial_map.table.len() == 0);
+
+	// Removing what is not there is an answer, not an error.
+	assert(!world.remove_body(1));
+}
+
+// A body destroyed inside a trigger must still be seen to leave it.
+fn void test_remove_body_emits_exit_events()
+{
+	PhysicsWorld world = collision::DEFAULT_PHYSICS_WORLD;
+	defer world.free();
+
+	Aabb3 trigger_shape = { { -2, -2, -2 }, { 2, 2, 2 } };
+	Aabb3 box_shape = { { -0.5, -0.5, -0.5 }, { 0.5, 0.5, 0.5 } };
+
+	world.add_trigger(
+		{
+			.id = 1,
+			.collider = {
+				.shape = &trigger_shape,
+				.translation = { 0, 0, 0 },
+				.scale = { 1, 1, 1 },
+				.rotation = { 0, 0, 0, 1 },
+			},
+		}
+	)!!;
+	world.add_body(
+		{
+			.id = 2,
+			.collider = {
+				.shape = &box_shape,
+				.translation = { 0, 0, 0 },
+				.scale = { 1, 1, 1 },
+				.rotation = { 0, 0, 0, 1 },
+			},
+			.mass = 1.0,
+			.gravity_factor = 0,
+			.can_sleep = false,
+		}
+	)!!;
+
+	world.run_step(1.0f / 60.0f, 1, 1);
+	assert(world.active_triggers.len() == 1);
+
+	world.remove_body(2);
+
+	int exits = 0;
+	world.@get_trigger_events(; TriggerEvent event)
+	{
+		if (event.type == TriggerEventType.EXIT && event.other_id == 2) exits++;
+	};
+
+	assert(exits == 1);
+	assert(world.active_triggers.len() == 0);
+}
 
 module pool_test_util;
 

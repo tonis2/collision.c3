@@ -13,6 +13,42 @@ struct SpatialHash3D
 	float cell_size;
 	SpatialMap table;
 	PairSet unique_map;
+	// Where the per-cell lists are allocated. See `SpatialHash3D.cell` for why
+	// leaving this to chance is not survivable.
+	Allocator allocator;
+}
+
+<*
+ Put the map's storage on a named allocator. Optional — `cell` falls back to the
+ heap — but the explicit call is what a long-lived owner should make.
+*>
+fn void SpatialHash3D.init(&self, Allocator allocator)
+{
+	self.allocator = allocator;
+	self.table.init(allocator);
+	self.unique_map.init(allocator);
+}
+
+<*
+ The list of ids in a cell, on an allocator that will outlive the frame.
+
+ **`get_or_create_ref` hands back a zero-valued `CellList` for a cell that did
+ not exist, and a zero-valued C3 list binds itself to the *temp* allocator on
+ its first push.** That is invisible for the length of a test, where the temp
+ pool outlives every assertion, and fatal in anything that keeps a hash across
+ frames: the pool is released, the cells go on pointing into it, and the
+ broadphase starts yielding body ids nobody ever inserted. It surfaces as an
+ unwrapped NOT_FOUND deep inside the solver, nowhere near this line.
+
+ The fallback is the heap rather than temp, so a caller that never calls `init`
+ gets the behaviour they almost certainly meant.
+*>
+fn CellList* SpatialHash3D.cell(&self, sz key) @local
+{
+	if (self.allocator.ptr == null) self.allocator = mem;
+	CellList* cells = self.table.get_or_create_ref(key);
+	if (cells.allocator.ptr == null) cells.init(self.allocator);
+	return cells;
 }
 
 fn void SpatialHash3D.free(&self)
@@ -64,7 +100,42 @@ fn void SpatialHash3D.insert(&self, Aabb3 box, sz id)
 		{
 			for (int z = min_cell.z; z <= max_cell.z; ++z)
 			{
-				self.table.get_or_create_ref(self.cell_key(x, y, z)).push(id);
+				self.cell(self.cell_key(x, y, z)).push(id);
+			}
+		}
+	}
+}
+
+<*
+ Removes a box from the map.
+
+ The half `update` has had inline since it was written — it drops an id from the
+ cells a box left. `remove_body` is what needed it spelled out: a dead id still
+ sitting in its cells goes on producing broadphase pairs forever.
+
+ @param box : `The box the id was last inserted or updated with`
+ @param id : `The id to drop`
+*>
+fn void SpatialHash3D.remove(&self, Aabb3 box, sz id)
+{
+	int[<3>] min_cell = self.world_to_cell(box.min);
+	int[<3>] max_cell = self.world_to_cell(box.max);
+
+	for (int x = min_cell.x; x <= max_cell.x; ++x)
+	{
+		for (int y = min_cell.y; y <= max_cell.y; ++y)
+		{
+			for (int z = min_cell.z; z <= max_cell.z; ++z)
+			{
+				sz cell_id = self.cell_key(x, y, z);
+				CellList*? cells = self.table.get_ref(cell_id);
+				if (catch cells) continue;
+				cells.remove_using_test(fn (id, ctx) => *id == *(sz*)ctx, &&id);
+				if (cells.is_empty())
+				{
+					cells.free();
+					self.table.remove(cell_id);
+				}
 			}
 		}
 	}
@@ -127,7 +198,7 @@ fn void SpatialHash3D.update(&self, Aabb3 old_box, Aabb3 new_box, sz id)
 					&& z <= old_max.z;
 				if (!in_old)
 				{
-					self.table.get_or_create_ref(self.cell_key(x, y, z)).push(id);
+					self.cell(self.cell_key(x, y, z)).push(id);
 				}
 			}
 		}
