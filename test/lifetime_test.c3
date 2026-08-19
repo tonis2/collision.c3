@@ -398,3 +398,99 @@ fn void test_spatial_hash_cycle_returns_everything() @test
 		map.free();
 	}
 }
+
+<*
+ `remove_body` rebuilds `active_triggers` and `active_contacts` rather than
+ erasing from them mid-walk, and the rebuilt pair has to be seated where the
+ old one was.
+
+ This file's header already names `remove_body` among the four places that had
+ to take an allocator, and `restore`'s comment says `remove_body` seats its
+ overlap sets for the same reason `run_step` does. Neither was true of the code:
+ the two replacements went in zero-valued, bound themselves to the temp pool on
+ the first surviving pair, and were read from a released pool by the next step's
+ broadphase. It reached a host as an out-of-bounds read inside
+ `HashMap.get_ref`, several frames after the removal that caused it.
+
+ Nothing above catches it, because catching it needs a *survivor*. The two
+ `remove_body` tests in `world_test` each remove the only pair there is, so the
+ replacements are never written to, never bind to anything, and stay honest by
+ never being used. This keeps two pairs alive across the removal.
+
+ The binding is checked before anything reads the table on purpose: a map that
+ bound itself to the pool is a probe loop over freed memory with no empty slot
+ to terminate at, so a test that only stepped and looked at the answer would
+ hang the suite instead of failing it.
+*>
+fn void test_remove_body_seats_the_sets_it_rebuilds() @test
+{
+	PhysicsWorld world = collision::create_world();
+	defer world.free();
+
+	Aabb3 trigger_shape = { { -4, -4, -4 }, { 4, 4, 4 } };
+	Aabb3 box_shape = { { -0.5, -0.5, -0.5 }, { 0.5, 0.5, 0.5 } };
+
+	world.add_trigger(
+		{
+			.id = 1,
+			.collider = {
+				.shape = &trigger_shape,
+				.translation = { 0, 0, 0 },
+				.scale = { 1, 1, 1 },
+				.rotation = { 0, 0, 0, 1 },
+			},
+		}
+	)!!;
+
+	// Three inside the trigger and far enough apart to touch nothing else, so
+	// every overlap is a trigger pair and none of them settles or sleeps.
+	for (sz i = 2; i <= 4; i++)
+	{
+		world.add_body(
+			{
+				.id = i,
+				.collider = {
+					.shape = &box_shape,
+					.translation = { (float)(i - 3) * 2.0f, 0, 0 },
+					.scale = { 1, 1, 1 },
+					.rotation = { 0, 0, 0, 1 },
+				},
+				.mass = 1.0,
+				.gravity_factor = 0,
+				.can_sleep = false,
+			}
+		)!!;
+	}
+
+	world.run_step(1.0f / 60.0f, 1, 1);
+	test::@check(world.active_triggers.len() == 3,
+		"the three bodies did not all overlap the trigger: %d", world.active_triggers.len());
+
+	// The removal, and nothing else, inside a scope that takes the temp pool
+	// away on the way out — so a map that bound itself there is definitively
+	// gone rather than merely unlucky.
+	@pool()
+	{
+		test::@check(world.remove_body(3), "the middle body would not remove");
+	};
+
+	test::@check(world.active_triggers.len() == 2,
+		"the survivors did not survive: %d left", world.active_triggers.len());
+
+	test::@check(world.active_triggers.allocator.ptr == mem.ptr,
+		"remove_body rebuilt active_triggers into a map it does not own");
+	test::@check(world.active_contacts.allocator.ptr == mem.ptr,
+		"remove_body rebuilt active_contacts into a map it does not own");
+
+	// And the survivors read back — `run_substep` asks `has_key` of this set
+	// for every overlap it finds, which is where the host crashed.
+	for (int i = 0; i < 4; i++) world.run_step(1.0f / 60.0f, 1, 1);
+
+	int survivors = 0;
+	world.active_triggers.@each(; Pair pair, bool active)
+	{
+		test::@check(pair.a != 3 && pair.b != 3, "a removed body is still in the overlap set");
+		survivors++;
+	};
+	test::@check(survivors == 2, "the surviving pairs did not survive the steps: %d", survivors);
+}

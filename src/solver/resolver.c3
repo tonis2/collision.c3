@@ -572,7 +572,19 @@ fn bool PhysicsWorld.remove_body(&self, sz id)
 
 	// Rebuilt rather than edited while iterated: erasing from a map mid-walk is
 	// the kind of thing that works right up until the table resizes.
+	//
+	// **Both replacements are seated**, for the reason `run_step` seats
+	// `current_triggers` and `restore` seats the pair it re-fills: each one
+	// *becomes* an `active_*` set and so outlives this call by the rest of the
+	// world's life, while a zero-valued map binds itself to the temp pool on
+	// its first write. Nothing fails here — the removal reports success and the
+	// frame finishes — and then the next step's `active_triggers.has_key`
+	// probes a freed table with no empty slot to stop at, from inside the
+	// broadphase.
+	if (self.allocator.ptr == null) self.allocator = mem;
+
 	TriggerOverlapSet surviving_triggers;
+	surviving_triggers.init(self.allocator);
 	self.active_triggers.@each(; Pair pair, bool active)
 	{
 		if (pair.a == id || pair.b == id)
@@ -590,6 +602,7 @@ fn bool PhysicsWorld.remove_body(&self, sz id)
 	self.active_triggers = surviving_triggers;
 
 	ContactOverlapSet surviving_contacts;
+	surviving_contacts.init(self.allocator);
 	self.active_contacts.@each(; Pair pair, bool active)
 	{
 		if (pair.a == id || pair.b == id)
