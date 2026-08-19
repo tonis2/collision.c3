@@ -316,6 +316,44 @@ fn void Rigidbody.reset_to_previous(&self)
 	self.angular_velocity = { 0, 0, 0 };
 }
 
+<*
+ Put the world's storage on a named allocator, once, before anything is added.
+
+ **Without this every collection below lazily initializes itself into the
+ *temp* allocator**, which is what `std::collections` does for a zero-valued
+ map or list whose allocator pointer is still null. That is harmless in a test,
+ where the temp pool outlives the assertions — and fatal in a host that steps
+ the world across frames, because the pool it landed in is released and the
+ world goes on reading it. It fails as an out-of-bounds access somewhere inside
+ a hash table rather than anywhere near the cause.
+
+ `free` gives all of it back, so a world is init/free like everything else.
+ Call once: initializing twice abandons the first set of allocations.
+*>
+fn void PhysicsWorld.init(&self, Allocator allocator)
+{
+	self.allocator = allocator;
+	self.bodies.init(allocator);
+	self.collisions.init(allocator);
+	self.manifold_scratch.init(allocator);
+	self.constraints.init(allocator);
+	self.joints.init(allocator);
+	self.spatial_map.init(allocator);
+	self.filters.init(allocator);
+	self.island_parent.init(allocator);
+	self.trigger_events.init(allocator);
+	self.active_triggers.init(allocator);
+	self.contact_events.init(allocator);
+	self.active_contacts.init(allocator);
+	self.soft_bodies.init(allocator);
+	self.collision_tasks.init(allocator);
+	self.collision_results.init(allocator);
+	self.collision_counts.init(allocator);
+	self.island_tasks.init(allocator);
+	self.phase_tasks.init(allocator);
+	self.active_bodies.init(allocator);
+}
+
 fn void PhysicsWorld.free(&self)
 {
 	self.thread_pool.destroy();
@@ -362,71 +400,19 @@ const PhysicsWorld DEFAULT_PHYSICS_WORLD = {
 	.gravity = { 0.0f, 0.0f, -9.8f },
 	.ground_plane = { .normal = { 0.0f, 0.0f, 1.0f } },
 	.spatial_map .cell_size = 2.0,
-	.sleep_timer = 5.0,
+	// Seconds a body has to stay under `sleep_delta` before it sleeps. It was
+	// 5.0, which is long enough to watch: a landed box keeps whatever residual
+	// tangential velocity the contact solve left it with, and `linear_dampening`
+	// applied as `pow(0.9, dt)` is a ~9.5 second time constant, so the box
+	// creeps for the whole five seconds and stops somewhere it was not dropped.
+	// Half a second is the usual figure and still an order of magnitude longer
+	// than any settling transient.
+	.sleep_timer = 0.5,
 	.linear_dampening = 0.9,
 	.angular_dampening = 0.9,
 	.sleep_delta = 0.2,
 	.ccd_enabled = true,
 };
-
-<*
- A world that is ready to use: settings applied and storage seated, in one call.
-
- This is what `DEFAULT_PHYSICS_WORLD` should almost always be reached through.
- Assigning the constant on its own gives you the settings and *not* the storage,
- and a world whose containers were never seated binds each of them to the temp
- allocator on first use — see `PhysicsWorld.init` for what that costs. Nothing
- about the mistake is visible until a pool is released a frame later.
-
-	// All defaults.
-	PhysicsWorld world = collision::create_world();
-	defer world.free();
-
-	// Changed from the defaults. Start at the constant so the fields you do
-	// not name keep their values — a brace literal would zero them, and a
-	// `cell_size` of zero is a divide in the broadphase rather than a setting.
-	PhysicsWorld config = collision::DEFAULT_PHYSICS_WORLD;
-	config.gravity = { 0, -9.8f, 0 };
-	config.thread_count = 4;
-	PhysicsWorld world = collision::create_world(config);
-	defer world.free();
-
- `config` is a `PhysicsWorld` rather than a struct of its own because every
- setting already lives on the world and a second type would be two lists of
- fields to keep in step. Only the settings are read from it: the containers are
- seated fresh by `init`, so a config carries none of them.
-
- @param config : `Settings to copy. Build it from DEFAULT_PHYSICS_WORLD.`
- @param allocator : `Owns every container in the world; PhysicsWorld.free returns them to it.`
- @require config.spatial_map.cell_size > 0 : `cell_size must be positive — a zero divides in the broadphase`
- @require config.allocator.ptr == null : `create_world takes settings, not a world that is already running`
- @require !config.bodies.is_initialized() : `create_world takes settings, not a world that is already running`
-*>
-fn PhysicsWorld create_world(PhysicsWorld config = DEFAULT_PHYSICS_WORLD, Allocator allocator = mem)
-{
-	PhysicsWorld world = config;
-	world.allocator = allocator;
-	world.bodies.init(allocator);
-	world.collisions.init(allocator);
-	world.manifold_scratch.init(allocator);
-	world.constraints.init(allocator);
-	world.joints.init(allocator);
-	world.spatial_map.init(allocator);
-	world.filters.init(allocator);
-	world.island_parent.init(allocator);
-	world.trigger_events.init(allocator);
-	world.active_triggers.init(allocator);
-	world.contact_events.init(allocator);
-	world.active_contacts.init(allocator);
-	world.soft_bodies.init(allocator);
-	world.collision_tasks.init(allocator);
-	world.collision_results.init(allocator);
-	world.collision_counts.init(allocator);
-	world.island_tasks.init(allocator);
-	world.phase_tasks.init(allocator);
-	world.active_bodies.init(allocator);
-	return world;
-}
 
 <*
  @require self.bodies.len() > 0 : `Must have rigid bodies`
@@ -565,16 +551,9 @@ fn bool PhysicsWorld.remove_body(&self, sz id)
 
 	self.spatial_map.remove(found.transformed_aabb, id);
 
-	// Both sets below *become* the world's, so they outlive this call and must
-	// not be left to bind themselves — same reason `run_step` seats
-	// `current_triggers`, and the same fallback for a world nobody called
-	// `init` on.
-	if (self.allocator.ptr == null) self.allocator = mem;
-
 	// Rebuilt rather than edited while iterated: erasing from a map mid-walk is
 	// the kind of thing that works right up until the table resizes.
 	TriggerOverlapSet surviving_triggers;
-	surviving_triggers.init(self.allocator);
 	self.active_triggers.@each(; Pair pair, bool active)
 	{
 		if (pair.a == id || pair.b == id)
@@ -592,7 +571,6 @@ fn bool PhysicsWorld.remove_body(&self, sz id)
 	self.active_triggers = surviving_triggers;
 
 	ContactOverlapSet surviving_contacts;
-	surviving_contacts.init(self.allocator);
 	self.active_contacts.@each(; Pair pair, bool active)
 	{
 		if (pair.a == id || pair.b == id)
@@ -772,8 +750,14 @@ fn void Rigidbody.apply_impulse(&self, Vec3 impulse, Vec3 point)
 
 fn Vec3 Rigidbody.relative_velocity(self, Vec3 point) => self.linear_velocity + self.angular_velocity.cross(point);
 
-fn bool Rigidbody.is_rotating(self) => self.angular_velocity.length_sq() > self.sleep_delta;
-fn bool Rigidbody.is_moving(self) => self.linear_velocity.length_sq() > self.sleep_delta;
+// `sleep_delta` is a speed — units/second linear, radians/second angular — so
+// it is squared before meeting a squared length. It used to be compared to
+// `length_sq()` directly, which made the real threshold its square root: a
+// nominal 0.2 admitted everything below 0.447, and a body sliding at 0.4
+// counted as "at rest" and ran its sleep timer while it was still visibly
+// moving.
+fn bool Rigidbody.is_rotating(self) => self.angular_velocity.length_sq() > self.sleep_delta * self.sleep_delta;
+fn bool Rigidbody.is_moving(self) => self.linear_velocity.length_sq() > self.sleep_delta * self.sleep_delta;
 fn bool Rigidbody.is_sleeping(self) => self.sleeping;
 fn void Rigidbody.stop_sleeping(&self)
 {
@@ -1470,8 +1454,16 @@ fn void PhysicsWorld.run_substep(&self, float time, uint step_count)
 
 	// === Phase 2: Broad-phase — collect candidate pairs ===
 	List {Pair} candidate_pairs;
+	// Pairs whose bodies are all asleep. They are not narrow-phased — that is
+	// the whole point of sleeping — but they are still touching, and Phase 4
+	// decides "still touching" by whether the narrow phase named the pair. Left
+	// out, every contact ends the moment its bodies sleep: a box resting on a
+	// floor reported END and never a START again, so anything asking "am I
+	// standing on something" got told no while it stood there. Carried instead.
+	List {Pair} dormant_pairs;
 	TriggerOverlapSet current_triggers; // Triggers overlapping this frame
 	defer candidate_pairs.free();
+	defer dormant_pairs.free();
 	defer current_triggers.free();
 
 	// **Not left to bind itself.** `current_triggers` *becomes*
@@ -1526,6 +1518,14 @@ fn void PhysicsWorld.run_substep(&self, float time, uint step_count)
 				if (a_active || b_active)
 				{
 					candidate_pairs.push(pair);
+				}
+				else if (self.active_contacts.has_key(pair))
+				{
+					// Both ends asleep (or static) and they were touching last
+					// step. Their AABBs still overlap — that is the branch this
+					// sits in — and neither has moved since, so the contact is
+					// exactly as true as it was. Say so without solving it.
+					dormant_pairs.push(pair);
 				}
 			}
 		}
@@ -1611,6 +1611,15 @@ fn void PhysicsWorld.run_substep(&self, float time, uint step_count)
 	defer current_contacts.free();
 	// Becomes `active_contacts` below — see `current_triggers` above.
 	current_contacts.init(self.allocator);
+
+	// Contacts held open by sleeping bodies. Seeded before the collisions so
+	// that the END sweep below sees them as present. No START can come of one:
+	// every pair here was already in `active_contacts`, which is the same test
+	// the START branch makes.
+	foreach (pair : dormant_pairs)
+	{
+		current_contacts.set(pair, true);
+	}
 
 	// Track all collisions this frame and generate START events
 	foreach (&collision : self.collisions)
@@ -2191,6 +2200,14 @@ fn void PhysicsWorld.update_sleep_state(&self)
 			{
 				body.sleeping = true;
 				body.sleep_timer = 0;
+				// Sleeping used to keep whatever velocity the body had when it
+				// crossed the threshold, and `wake_island` does not clear it —
+				// so a body that was creeping when it fell asleep resumed at
+				// that speed the moment anything touched it, out of nothing the
+				// scene could see. Under the threshold is close enough to zero
+				// that saying so is more honest than carrying it.
+				body.linear_velocity = { 0, 0, 0 };
+				body.angular_velocity = { 0, 0, 0 };
 			}
 		}
 	}
