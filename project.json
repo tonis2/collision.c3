@@ -8,7 +8,15 @@
 	"features": [],
 	"script-dir": "./",
 	"linked-libraries": [],
-	"sources": ["./test/*", "./src/**"],
+	// The library itself. Tests used to be listed here too, which meant they
+	// were compiled into the default target — the same thing `manifest.json`
+	// ships to a consumer, minus the test files it does not list.
+	"sources": ["./src/**"],
+	//     c3c test                    every test, leak-tracked
+	//     c3c test --test-noleak      faster, and blind to ownership bugs
+	//     c3c test --test-filter collision_tests::world
+
+	"test-sources": ["test/**"],
 	"targets": {
 		"main": {
 			"type": "executable"

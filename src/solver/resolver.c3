@@ -316,44 +316,6 @@ fn void Rigidbody.reset_to_previous(&self)
 	self.angular_velocity = { 0, 0, 0 };
 }
 
-<*
- Put the world's storage on a named allocator, once, before anything is added.
-
- **Without this every collection below lazily initializes itself into the
- *temp* allocator**, which is what `std::collections` does for a zero-valued
- map or list whose allocator pointer is still null. That is harmless in a test,
- where the temp pool outlives the assertions — and fatal in a host that steps
- the world across frames, because the pool it landed in is released and the
- world goes on reading it. It fails as an out-of-bounds access somewhere inside
- a hash table rather than anywhere near the cause.
-
- `free` gives all of it back, so a world is init/free like everything else.
- Call once: initializing twice abandons the first set of allocations.
-*>
-fn void PhysicsWorld.init(&self, Allocator allocator)
-{
-	self.allocator = allocator;
-	self.bodies.init(allocator);
-	self.collisions.init(allocator);
-	self.manifold_scratch.init(allocator);
-	self.constraints.init(allocator);
-	self.joints.init(allocator);
-	self.spatial_map.init(allocator);
-	self.filters.init(allocator);
-	self.island_parent.init(allocator);
-	self.trigger_events.init(allocator);
-	self.active_triggers.init(allocator);
-	self.contact_events.init(allocator);
-	self.active_contacts.init(allocator);
-	self.soft_bodies.init(allocator);
-	self.collision_tasks.init(allocator);
-	self.collision_results.init(allocator);
-	self.collision_counts.init(allocator);
-	self.island_tasks.init(allocator);
-	self.phase_tasks.init(allocator);
-	self.active_bodies.init(allocator);
-}
-
 fn void PhysicsWorld.free(&self)
 {
 	self.thread_pool.destroy();
@@ -406,6 +368,65 @@ const PhysicsWorld DEFAULT_PHYSICS_WORLD = {
 	.sleep_delta = 0.2,
 	.ccd_enabled = true,
 };
+
+<*
+ A world that is ready to use: settings applied and storage seated, in one call.
+
+ This is what `DEFAULT_PHYSICS_WORLD` should almost always be reached through.
+ Assigning the constant on its own gives you the settings and *not* the storage,
+ and a world whose containers were never seated binds each of them to the temp
+ allocator on first use — see `PhysicsWorld.init` for what that costs. Nothing
+ about the mistake is visible until a pool is released a frame later.
+
+	// All defaults.
+	PhysicsWorld world = collision::create_world();
+	defer world.free();
+
+	// Changed from the defaults. Start at the constant so the fields you do
+	// not name keep their values — a brace literal would zero them, and a
+	// `cell_size` of zero is a divide in the broadphase rather than a setting.
+	PhysicsWorld config = collision::DEFAULT_PHYSICS_WORLD;
+	config.gravity = { 0, -9.8f, 0 };
+	config.thread_count = 4;
+	PhysicsWorld world = collision::create_world(config);
+	defer world.free();
+
+ `config` is a `PhysicsWorld` rather than a struct of its own because every
+ setting already lives on the world and a second type would be two lists of
+ fields to keep in step. Only the settings are read from it: the containers are
+ seated fresh by `init`, so a config carries none of them.
+
+ @param config : `Settings to copy. Build it from DEFAULT_PHYSICS_WORLD.`
+ @param allocator : `Owns every container in the world; PhysicsWorld.free returns them to it.`
+ @require config.spatial_map.cell_size > 0 : `cell_size must be positive — a zero divides in the broadphase`
+ @require config.allocator.ptr == null : `create_world takes settings, not a world that is already running`
+ @require !config.bodies.is_initialized() : `create_world takes settings, not a world that is already running`
+*>
+fn PhysicsWorld create_world(PhysicsWorld config = DEFAULT_PHYSICS_WORLD, Allocator allocator = mem)
+{
+	PhysicsWorld world = config;
+	world.allocator = allocator;
+	world.bodies.init(allocator);
+	world.collisions.init(allocator);
+	world.manifold_scratch.init(allocator);
+	world.constraints.init(allocator);
+	world.joints.init(allocator);
+	world.spatial_map.init(allocator);
+	world.filters.init(allocator);
+	world.island_parent.init(allocator);
+	world.trigger_events.init(allocator);
+	world.active_triggers.init(allocator);
+	world.contact_events.init(allocator);
+	world.active_contacts.init(allocator);
+	world.soft_bodies.init(allocator);
+	world.collision_tasks.init(allocator);
+	world.collision_results.init(allocator);
+	world.collision_counts.init(allocator);
+	world.island_tasks.init(allocator);
+	world.phase_tasks.init(allocator);
+	world.active_bodies.init(allocator);
+	return world;
+}
 
 <*
  @require self.bodies.len() > 0 : `Must have rigid bodies`
@@ -544,9 +565,16 @@ fn bool PhysicsWorld.remove_body(&self, sz id)
 
 	self.spatial_map.remove(found.transformed_aabb, id);
 
+	// Both sets below *become* the world's, so they outlive this call and must
+	// not be left to bind themselves — same reason `run_step` seats
+	// `current_triggers`, and the same fallback for a world nobody called
+	// `init` on.
+	if (self.allocator.ptr == null) self.allocator = mem;
+
 	// Rebuilt rather than edited while iterated: erasing from a map mid-walk is
 	// the kind of thing that works right up until the table resizes.
 	TriggerOverlapSet surviving_triggers;
+	surviving_triggers.init(self.allocator);
 	self.active_triggers.@each(; Pair pair, bool active)
 	{
 		if (pair.a == id || pair.b == id)
@@ -564,6 +592,7 @@ fn bool PhysicsWorld.remove_body(&self, sz id)
 	self.active_triggers = surviving_triggers;
 
 	ContactOverlapSet surviving_contacts;
+	surviving_contacts.init(self.allocator);
 	self.active_contacts.@each(; Pair pair, bool active)
 	{
 		if (pair.a == id || pair.b == id)

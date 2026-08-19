@@ -42,7 +42,7 @@ import collision;
 
 fn void main() {
     // Create physics world with default settings
-    PhysicsWorld world = collision::DEFAULT_PHYSICS_WORLD;
+    PhysicsWorld world = collision::create_world();
     defer world.free();
 
     // Create a static ground plane
@@ -166,18 +166,31 @@ foreach (piece : pieces) {
 
 ## Configuration
 
+`create_world` takes the settings and seats the world's storage in one call.
+Start from `DEFAULT_PHYSICS_WORLD` and change what you need, so the fields you
+do not name keep their defaults:
+
 ```c3
-PhysicsWorld world = {
-    .gravity = {0, 0, -9.8},       // Gravity vector (library convention is z-up)
-    .spatial_map.cell_size = 2.0,  // Broad-phase cell size
-    .sleep_timer = 5.0,            // Seconds before bodies sleep
-    .linear_dampening = 0.9,       // Velocity damping per step
-    .angular_dampening = 0.9,
-    .sleep_delta = 0.1,            // Velocity threshold for sleep
-    .ccd_enabled = true,           // Swept CCD for fast-moving bodies
-    .thread_count = 0,             // Solver worker threads; 0 = auto (CPU cores - 1)
-};
+PhysicsWorld config = collision::DEFAULT_PHYSICS_WORLD;
+config.gravity = {0, 0, -9.8};       // Gravity vector (library convention is z-up)
+config.spatial_map.cell_size = 2.0;  // Broad-phase cell size
+config.sleep_timer = 5.0;            // Seconds before bodies sleep
+config.linear_dampening = 0.9;       // Velocity damping per step
+config.angular_dampening = 0.9;
+config.sleep_delta = 0.1;            // Velocity threshold for sleep
+config.ccd_enabled = true;           // Swept CCD for fast-moving bodies
+config.thread_count = 0;             // Solver worker threads; 0 = auto (CPU cores - 1)
+
+PhysicsWorld world = collision::create_world(config);
+defer world.free();
 ```
+
+It takes an allocator too — `create_world(config, my_allocator)` — which owns
+every container in the world until `free`. **Assigning `DEFAULT_PHYSICS_WORLD`
+on its own gives you the settings and not the storage**, and a world whose
+containers were never seated binds each of them to the temp allocator on first
+use: invisible until a pool is released a frame later. `PhysicsWorld.init` is
+the same thing for a world you already have.
 
 Triangle meshes are treated as one-sided: contacts always push bodies out along
 the triangle face normal, so meshes need consistent (outward) winding.
@@ -218,6 +231,19 @@ defer snap.free();
 // ... simulate ahead, receive authoritative inputs ...
 world.restore(&snap)!!;
 ```
+
+## Tests
+
+```sh
+c3c test                                       # every test, leak-tracked
+c3c test --test-noleak                         # faster, and blind to ownership bugs
+```
+
+Tests live in `test/`, one module per area (`collision_tests::world`,
+`::softbody`, `::voxel`, `::hull`, …) and are listed under `test-sources` in
+`project.json`, so `c3c test` is the only thing that builds them.
+
+
 
 ## Links
 

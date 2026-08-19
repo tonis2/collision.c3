@@ -159,8 +159,49 @@ fn void SoftBody.free(&self)
 	self.pins.free();
 }
 
-// Create a soft body from a mesh with the given particle mass
-fn SoftBody create_softbody_from_mesh(Mesh* mesh, float total_mass, sz id)
+<*
+ Seat every list the body owns on `allocator`, including the ones that start
+ empty and are filled later by the host — pins, targets, swings, and the
+ per-substep collision constraints.
+
+ **A `List` that is never given an allocator takes the *temp* allocator on its
+ first push**, and a soft body routinely outlives the temp scope it was built
+ in: the pool is released and the solver goes on reading it. It is also why a
+ leak-tracked run says nothing about an unseated body — the tracking allocator
+ replaces `mem`, and a temp-bound list never goes near it.
+
+ Both constructors below call this. It exists as one function rather than two
+ copies of the same fourteen lines because it once was two, and only one of
+ them was fixed.
+
+ @param allocator : `Owns every list in the body; SoftBody.free returns them to it.`
+ @param particles : `Expected particle count, used as the initial capacity.`
+*>
+fn void SoftBody.init(&self, Allocator allocator, sz particles = 16)
+{
+	sz slots = particles > 0 ? particles : 1;
+	self.positions.init(allocator, slots);
+	self.prev_positions.init(allocator, slots);
+	self.velocities.init(allocator, slots);
+	self.inverse_masses.init(allocator, slots);
+	self.particle_damping.init(allocator, slots);
+	self.particle_radius.init(allocator, slots);
+	self.triangles.init(allocator, 1);
+	self.distance_constraints.init(allocator, slots);
+	self.target_constraints.init(allocator, slots);
+	self.swing_constraints.init(allocator, slots);
+	self.volume_constraints.init(allocator, 1);
+	self.bending_constraints.init(allocator, 1);
+	self.collision_constraints.init(allocator, slots);
+	self.pins.init(allocator, 1);
+}
+
+<*
+ Create a soft body from a mesh with the given particle mass.
+
+ @param allocator : `Owns every list in the body; SoftBody.free returns them to it.`
+*>
+fn SoftBody create_softbody_from_mesh(Mesh* mesh, float total_mass, sz id, Allocator allocator = mem)
 {
 	SoftBody sb;
 	sb.id = id;
@@ -170,6 +211,8 @@ fn SoftBody create_softbody_from_mesh(Mesh* mesh, float total_mass, sz id)
 	sb.constraint_iterations = 8;
 	sb.can_sleep = true;
 	sb.material = { .static_friction = 0.5, .dynamic_friction = 0.3, .restitution = 0.2, };
+
+	sb.init(allocator, mesh.vertices.len());
 
 	sz num_particles = mesh.vertices.len();
 	float particle_mass = total_mass / (float)num_particles;
@@ -211,11 +254,8 @@ fn SoftBody create_softbody_from_mesh(Mesh* mesh, float total_mass, sz id)
  caller pins whichever particles the host drives (usually the root) with
  pin_particle.
 
- Every list the body holds is seated on `allocator` up front — including the
- ones that start empty and are filled later by the host (pins, targets, swings,
- the per-substep collision constraints). A `List` that is never given an
- allocator takes the *temp* allocator on its first push, and a chain routinely
- outlives the temp scope it was built in.
+ Every list the body holds is seated on `allocator` up front by `SoftBody.init`,
+ which says there why leaving that to chance is not survivable.
 
  @param allocator : `Owns every list in the body; SoftBody.free returns them to it.`
  @param points : `Particle positions in world space, in chain order.`
@@ -234,20 +274,7 @@ fn SoftBody create_particle_chain(Allocator allocator = mem, Vec3[] points, floa
 	sb.can_sleep = true;
 	sb.material = { .static_friction = 0.5, .dynamic_friction = 0.3, .restitution = 0.2, };
 
-	sb.positions.init(allocator, points.len);
-	sb.prev_positions.init(allocator, points.len);
-	sb.velocities.init(allocator, points.len);
-	sb.inverse_masses.init(allocator, points.len);
-	sb.particle_damping.init(allocator, points.len);
-	sb.particle_radius.init(allocator, points.len);
-	sb.triangles.init(allocator, 1);
-	sb.distance_constraints.init(allocator, points.len);
-	sb.target_constraints.init(allocator, points.len);
-	sb.swing_constraints.init(allocator, points.len);
-	sb.volume_constraints.init(allocator, 1);
-	sb.bending_constraints.init(allocator, 1);
-	sb.collision_constraints.init(allocator, points.len);
-	sb.pins.init(allocator, 1);
+	sb.init(allocator, points.len);
 
 	foreach (sz i, p : points)
 	{

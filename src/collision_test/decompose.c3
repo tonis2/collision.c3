@@ -609,6 +609,12 @@ fn List {Mesh} coacd_decompose(Mesh* mesh, CoacdParameters params = COACD_MEDIUM
 		{
 			result.push(hull);
 		}
+		else
+		{
+			// A hull too small to keep is still a hull to give back — the other
+			// three call sites in this file already say so.
+			hull.free();
+		}
 		return result;
 	}
 

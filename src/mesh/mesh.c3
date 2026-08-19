@@ -72,9 +72,38 @@ fn sz? Mesh.to_format(&self, Formatter* formatter) @dynamic
 	return lenght;
 }
 
-fn Mesh create_mesh(Vec3[] vertices, uint[] indices)
+<*
+ Put the mesh's two lists on a named allocator, once, before anything is added.
+
+ **Without this both bind themselves to the *temp* allocator on their first
+ push**, which is what `std::collections` does for a zero-valued list. That is
+ harmless inside one temp scope and fatal for anything a host keeps: the pool
+ is released and the mesh goes on being used as a collider.
+
+ `build_bvh` makes it worse than an ordinary dangling read. The tree it builds
+ stores `vertices.entries` and `triangles.entries` in every node rather than
+ copying them, so a mesh that moved — or whose pool went away — leaves a tree
+ pointing at memory that is not the mesh any more, and the failure surfaces as
+ a raycast hitting nothing in particular.
+
+ Also what makes a leak-tracked run mean anything for a mesh: the runner's
+ tracking allocator replaces `mem`, and a temp-bound list never goes near it.
+
+ @param allocator : `Owns both lists; Mesh.free returns them to it.`
+*>
+fn void Mesh.init(&self, Allocator allocator, sz vertices = 16, sz triangles = 16)
+{
+	self.vertices.init(allocator, vertices > 0 ? vertices : 1);
+	self.triangles.init(allocator, triangles > 0 ? triangles : 1);
+}
+
+<*
+ @param allocator : `Owns both lists; Mesh.free returns them to it.`
+*>
+fn Mesh create_mesh(Vec3[] vertices, uint[] indices, Allocator allocator = mem)
 {
 	Mesh mesh;
+	mesh.init(allocator, vertices.len, indices.len / 3);
 	mesh.vertices.push_all(vertices);
 	mesh.set_indices(indices);
 	mesh.aabb = mesh.get_aabb();

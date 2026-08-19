@@ -545,7 +545,15 @@ fn void redistribute_points(
 // from the origin. It can hold a zero-area triangle, where an input point ends
 // up exactly on an edge of the finished hull - the seam it covers has no area,
 // and dropping it would leave a hole in a surface that is otherwise closed.
-fn Mesh quickhull(Vec3[] points)
+//
+// The result's two lists are seated on `allocator` — `Mesh.init` says why that
+// cannot be left to the lists themselves — but only once there is a hull to
+// put in them. **An empty result owns nothing**, so a caller that drops a
+// degenerate hull without freeing it is not leaking, which is the contract
+// every caller here was already written against.
+//
+// @param allocator : `Owns the returned mesh's lists; Mesh.free returns them to it.`
+fn Mesh quickhull(Vec3[] points, Allocator allocator = mem)
 {
 	Mesh result;
 
@@ -680,6 +688,14 @@ fn Mesh quickhull(Vec3[] points)
 	}
 
 	// Build result mesh from alive faces
+	sz alive = 0;
+	foreach (&f : faces) if (f.alive) alive++;
+	// Nothing survived, so the result stays the zero-valued mesh the degenerate
+	// returns above hand back — owning nothing, and needing no free.
+	if (alive == 0) return result;
+
+	result.init(allocator, alive, alive);
+
 	// First, collect unique vertices
 	List {int} vertex_map; // original index -> new index
 	defer vertex_map.free();
