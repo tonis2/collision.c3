@@ -2,20 +2,7 @@
  EPA — the penetration depth and normal for two shapes GJK has already found to
  overlap, by expanding GJK's terminating simplex until its closest face stops
  moving.
-
- **The polytope has to stay closed for any of it to mean anything.** EPA's whole
- claim is "the closest face of the polytope to the origin approaches the closest
- point on the Minkowski boundary", and a polytope with a hole in it has faces
- that are closest only because the ones that would have been closer are missing.
- `reconstruct` used to drop a degenerate face and carry on, which opened exactly
- such a hole; the walk then converged on a face on the far side and reported it.
- Measured against a 1-unit box resting on a 100-unit ground slab: a normal of
- (0.70, 0.72, 0) — horizontal, for a body sitting on a floor — at a depth of
- 71.2 world units, with contact points that were NaN because the face it came
- from had no area. The solver took that at face value and the body left the
- world. So a step that cannot keep the polytope closed now ends the expansion
- and says the answer is not to be trusted, rather than returning it.
-
+ 
  **`FixedList.push` does not bounds check** — it is `entries[size++] = element`
  — so both arrays here are guarded at their capacity rather than trusted to
  stop. Overrunning them was a write past the end of a stack array.
