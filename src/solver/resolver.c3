@@ -354,6 +354,25 @@ fn void PhysicsWorld.init(&self, Allocator allocator)
 	self.active_bodies.init(allocator);
 }
 
+<*
+ A configured world with its storage already seated — `DEFAULT_PHYSICS_WORLD`
+ followed by `init` in one call, which is the pair every caller was writing out.
+
+ `config` is copied before `init` runs and `init` only binds allocators, so
+ everything set on the way in survives: gravity, `spatial_map.cell_size`,
+ `thread_count`, `ccd_enabled`, the sleep figures. Take the constant, change
+ what the game needs, hand it over.
+
+ @param config : `The settings to keep. Defaults to the library's own.`
+ @param allocator : `Where the world's containers live. It has to outlive the world.`
+*>
+fn PhysicsWorld create_world(PhysicsWorld config = DEFAULT_PHYSICS_WORLD, Allocator allocator = mem)
+{
+	PhysicsWorld world = config;
+	world.init(allocator);
+	return world;
+}
+
 fn void PhysicsWorld.free(&self)
 {
 	self.thread_pool.destroy();
