@@ -37,3 +37,56 @@ fn void test_worker_pool() @test
 		for (int i = 0; i < 64; i++) test::@check(slots[i] == 1);
 	}
 }
+
+<*
+ A pool that is never destroyed must not capture the next pool built where it
+ stood.
+
+ **This is the regression for a hang, so read what it does carefully.** The
+ sequence below is exactly what C3's test runner produces: `test::@check`
+ failing calls `longjmp`, which unwinds past every `defer`, so a
+ `PhysicsWorld` whose `free()` sat in one is never freed and its workers are
+ never joined. The frame is then reused by whatever runs next, and the next
+ world initializes its own pool over the abandoned one's bytes.
+
+ When the pool's mutex, condition variables and queue counters lived in the
+ handle, that second `init` re-initialized the very objects the stale worker
+ was parked on. Two workers then serviced one queue whose `in_flight` was
+ accounted for one, and `join()` below never returned — so a single red
+ physics check turned the rest of the suite into a hang that named neither the
+ check nor the cause.
+
+ `abandoned` stands in for the handle the longjmp threw away, and is kept only
+ so this test can clean up after itself; the code under test never sees it.
+ **Injecting the bug makes this hang rather than fail**, which is the nature
+ of what it guards and the reason it is worth having.
+*>
+fn void an_abandoned_pool_does_not_capture_the_next_one() @test
+{
+	WorkerPool slot;
+	slot.init(1)!!;
+
+	// Run work through it and join, so the worker is parked on `work_ready`
+	// inside the state rather than caught mid-task.
+	int first;
+	slot.push(&collision_testutil::slot_worker, &first);
+	slot.join();
+	test::@check(first == 1, "the first pool ran its work: %d", first);
+
+	// The longjmp: `destroy` is skipped and the handle is gone with the frame.
+	WorkerPool abandoned = slot;
+	slot = { };
+
+	// The next world lands on the same memory and builds its own pool there.
+	slot.init(1)!!;
+	defer
+	{
+		slot.destroy();
+		abandoned.destroy();
+	}
+
+	int second;
+	slot.push(&collision_testutil::slot_worker, &second);
+	slot.join(); // Hangs here when the stale worker shares this pool's state
+	test::@check(second == 1, "the second pool ran its own work: %d", second);
+}
