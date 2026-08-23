@@ -305,6 +305,24 @@ fn void test_transform_matches_eight_corners() @test
 		test::@check((got_back.min - want_back.min).length() < slack_back, "inverse min %s, wanted %s", got_back.min, want_back.min);
 		test::@check((got_back.max - want_back.max).length() < slack_back, "inverse max %s, wanted %s", got_back.max, want_back.max);
 
+		// And the matrix entry point, on the same transform. The 4×4 is built
+		// column by column out of the quaternion's *own* `rotate_vec3`, so it
+		// owes nothing to `Quaternionf.rows` — if the two disagree about what a
+		// quaternion means, this is where it shows.
+		Vec3 cx = rotation * (Vec3){ scale.x, 0, 0 };
+		Vec3 cy = rotation * (Vec3){ 0, scale.y, 0 };
+		Vec3 cz = rotation * (Vec3){ 0, 0, scale.z };
+		Matrix4f m = { .m = {
+			cx.x, cx.y, cx.z, 0,
+			cy.x, cy.y, cy.z, 0,
+			cz.x, cz.y, cz.z, 0,
+			translation.x, translation.y, translation.z, 1,
+		} };
+
+		Aabb3 by_matrix = box.transform_matrix(m);
+		test::@check((by_matrix.min - want.min).length() < slack, "matrix min %s, wanted %s", by_matrix.min, want.min);
+		test::@check((by_matrix.max - want.max).length() < slack, "matrix max %s, wanted %s", by_matrix.max, want.max);
+
 		checked++;
 	}
 

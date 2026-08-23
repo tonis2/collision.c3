@@ -133,6 +133,32 @@ fn Vec3[3] Quaternionf.rows(self)
 }
 
 <*
+ The bound of a box under a linear map, given that map's rows.
+
+ The whole of the arithmetic the three entry points below share, and the reason
+ they can share it: whatever produced the rows — a quaternion, a quaternion and
+ a scale, or the linear part of a 4×4 — the answer is the same two lines. The
+ centre goes through the map; the extent goes through its *absolute value*,
+ which is what keeps the result correct under a reflection as well as a
+ rotation.
+
+ `extent` is expected non-negative. The callers take it through `abs` because an
+ inverted box does reach this library, and the eight-corner code this replaced
+ repaired one implicitly by taking a min and a max.
+*>
+fn Aabb3 bound_from_rows(Vec3[3] rows, Vec3 centre, Vec3 extent, Vec3 translation) @local
+{
+	Vec3 c = (Vec3){ rows[0].dot(centre), rows[1].dot(centre), rows[2].dot(centre) } + translation;
+	Vec3 e = {
+		math::abs(rows[0]).dot(extent),
+		math::abs(rows[1]).dot(extent),
+		math::abs(rows[2]).dot(extent),
+	};
+
+	return { .min = c - e, .max = c + e };
+}
+
+<*
  A box in world space, given a local box and the transform that places it.
 
  	world = rotation * (local * scale) + translation
@@ -154,10 +180,12 @@ fn Vec3[3] Quaternionf.rows(self)
  times. `Rigidbody.get_transformed_aabb` runs this for every body every step,
  which is where it is felt.
 
- Exact for a negative or non-uniform scale, because `abs` is taken on the
- product of the row and the scale rather than on either alone, and exact for an
- inverted box, because the extent is taken through `abs` as well — the same
- repair the old min/max over corners performed implicitly.
+ The scale is folded into the centre and the extent rather than into the rows,
+ which is why `bound_from_rows` sees a pure rotation. That is exact for a
+ negative or non-uniform scale — the extent it receives has already been through
+ `abs`, so a mirrored axis widens the box instead of inverting it — and it is
+ exact for a box that arrives inverted, which is the same repair the old min/max
+ over corners performed implicitly.
 
  `skip_rotation` now does what its name says. It was accepted and ignored
  before; no caller in this library passed it.
@@ -175,16 +203,7 @@ fn Aabb3 Aabb3.transform(
 
 	if (skip_rotation) return { .min = centre + translation - extent, .max = centre + translation + extent };
 
-	Vec3[3] r = rotation.rows();
-
-	Vec3 world_centre = (Vec3){ r[0].dot(centre), r[1].dot(centre), r[2].dot(centre) } + translation;
-	Vec3 world_extent = {
-		math::abs(r[0]).dot(extent),
-		math::abs(r[1]).dot(extent),
-		math::abs(r[2]).dot(extent),
-	};
-
-	return { .min = world_centre - world_extent, .max = world_centre + world_extent };
+	return bound_from_rows(rotation.rows(), centre, extent, translation);
 }
 
 <*
@@ -210,25 +229,44 @@ fn Aabb3 Aabb3.inverse_transform(
 )
 {
 	Vec3 inv_scale = { 1.0f / scale.x, 1.0f / scale.y, 1.0f / scale.z };
-
-	Vec3 centre = self.center() - translation;
-	Vec3 extent = math::abs(self.extent());
-
 	Vec3[3] r = rotation.rows();
-	Vec3[3] t = {
-		{ r[0][0], r[1][0], r[2][0] },
-		{ r[0][1], r[1][1], r[2][1] },
-		{ r[0][2], r[1][2], r[2][2] },
+
+	// The rows of `inv_scale * transpose(r)` — the transpose because a
+	// quaternion's conjugate has the transpose of its matrix, and the scale
+	// folded into the rows because here it lands after the rotation rather than
+	// before it.
+	Vec3[3] rows = {
+		(Vec3){ r[0][0], r[1][0], r[2][0] } * inv_scale.x,
+		(Vec3){ r[0][1], r[1][1], r[2][1] } * inv_scale.y,
+		(Vec3){ r[0][2], r[1][2], r[2][2] } * inv_scale.z,
 	};
 
-	Vec3 local_centre = (Vec3){ t[0].dot(centre), t[1].dot(centre), t[2].dot(centre) } * inv_scale;
-	Vec3 local_extent = (Vec3){
-		math::abs(t[0]).dot(extent),
-		math::abs(t[1]).dot(extent),
-		math::abs(t[2]).dot(extent),
-	} * math::abs(inv_scale);
+	return bound_from_rows(rows, self.center() - translation, math::abs(self.extent()), (Vec3){ 0, 0, 0 });
+}
 
-	return { .min = local_centre - local_extent, .max = local_centre + local_extent };
+<*
+ A box in world space, given a local box and the 4×4 that places it.
+
+ The same closed form as `transform`, entered from the other end. A renderer
+ usually has the node's world matrix already composed and would have to take it
+ apart to call the TRS form, so this reads the linear part's rows straight off
+ it instead. Column-major, translation at `m[12..14]`.
+
+ Exact for any affine matrix — rotation, non-uniform scale, reflection, shear —
+ which is what lets frustum culling, a ray broad phase and a shadow-map fit all
+ share one function. It is *not* correct for a projective matrix: the
+ perspective row is ignored rather than divided through, so do not hand it one.
+*>
+fn Aabb3 Aabb3.transform_matrix(&self, Matrix4f m)
+{
+	float[<16>] v = m.m;
+	Vec3[3] rows = {
+		{ v[0], v[4], v[8]  },
+		{ v[1], v[5], v[9]  },
+		{ v[2], v[6], v[10] },
+	};
+
+	return bound_from_rows(rows, self.center(), math::abs(self.extent()), (Vec3){ v[12], v[13], v[14] });
 }
 
 fn Aabb3 Aabb3.child_bounds(self, uint index)
