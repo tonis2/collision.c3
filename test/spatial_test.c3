@@ -169,7 +169,10 @@ fn void test_spatial_hash_update_wide_body() @test
 	// Regression: with the old hash two cells of one body's own range could
 	// share a bucket (e.g. (0,1,0) and (0,0,23)); update() then removed both
 	// copies of the id and the body vanished from a cell it still occupied.
-	SpatialHash3D spatial_map = { .cell_size = 1.0 };
+	// `large_cells` pinned high on purpose: at the default threshold a body
+	// spanning 48 cells goes into the large bucket and never reaches the cell
+	// diff this test exists to cover. The bucket has its own tests below.
+	SpatialHash3D spatial_map = { .cell_size = 1.0, .large_cells = 4096 };
 	defer spatial_map.free();
 
 	// Wide body spanning cells x 0, y 0..1, z 0..23
@@ -216,4 +219,90 @@ fn void test_spatial_hash_nearby_objects_cell_size() @test
 		if (id == 7) count++;
 	};
 	test::@check(count == 1);
+}
+
+// A body too big for the grid goes into the bucket, is in no cell at all, and
+// still pairs with what it overlaps. This is the level-floor case: 20x1x20 at
+// the default cell size is 181 cells, and 254x4x254 — the box that used to be
+// refused outright — is 49,152.
+fn void test_spatial_hash_large_body_pairs_without_cells() @test
+{
+	SpatialHash3D spatial_map = { .cell_size = 2.0 };
+	defer spatial_map.free();
+
+	Aabb3 ground = { { -127, -2, -127 }, { 127, 2, 127 } };
+	spatial_map.insert(ground, 0);
+	test::@check(spatial_map.large.len() == 1, "the ground is in the bucket");
+	test::@check(spatial_map.table.len() == 0, "and in no cell");
+
+	// One body on it, one well above it.
+	spatial_map.insert({ { -0.5, 1.5, -0.5 }, { 0.5, 2.5, 0.5 } }, 1);
+	spatial_map.insert({ { -0.5, 40.0, -0.5 }, { 0.5, 41.0, 0.5 } }, 2);
+
+	sz pairs = 0;
+	bool found = false;
+	spatial_map.@get_pairs(; Pair pair)
+	{
+		pairs++;
+		if (pair.a == 0 && pair.b == 1) found = true;
+	};
+	test::@check(found, "the ground pairs with what rests on it");
+	test::@check(pairs == 1, "and with nothing else, got %d", pairs);
+}
+
+// The bucket is not a leak: a large body removed stops producing pairs, and one
+// that crosses the threshold in either direction ends up in exactly one place.
+fn void test_spatial_hash_large_body_transitions() @test
+{
+	SpatialHash3D spatial_map = { .cell_size = 1.0 };
+	defer spatial_map.free();
+
+	Aabb3 big   = { { -20, -1, -20 }, { 20, 1, 20 } };
+	Aabb3 small = { { -0.4, -0.4, -0.4 }, { 0.4, 0.4, 0.4 } };
+
+	spatial_map.insert(big, 0);
+	test::@check(spatial_map.large.len() == 1);
+
+	// Big to small: out of the bucket and into the cells.
+	spatial_map.update(big, small, 0);
+	test::@check(spatial_map.large.len() == 0, "left the bucket");
+	test::@check(spatial_map.table.len() > 0, "and reached the grid");
+
+	// Small to big: back out of the cells and into the bucket, with no id left
+	// behind — a stale cell entry is a pair against a body that is not there.
+	spatial_map.update(small, big, 0);
+	test::@check(spatial_map.large.len() == 1, "back in the bucket");
+	test::@check(spatial_map.table.len() == 0, "and out of every cell");
+
+	spatial_map.remove(big, 0);
+	test::@check(spatial_map.large.len() == 0, "removed");
+
+	spatial_map.insert(small, 1);
+	sz pairs = 0;
+	spatial_map.@get_pairs(; Pair pair) { pairs++; };
+	test::@check(pairs == 0, "a removed large body pairs with nothing, got %d", pairs);
+}
+
+// A large body is in no cell, so the point query has to know about the bucket
+// or it answers "nothing here" while standing on a floor.
+fn void test_spatial_hash_nearby_finds_large_bodies() @test
+{
+	SpatialHash3D spatial_map = { .cell_size = 2.0 };
+	defer spatial_map.free();
+
+	spatial_map.insert({ { -50, -1, -50 }, { 50, 0, 50 } }, 3);
+
+	sz count = 0;
+	spatial_map.@get_nearby_objects({ 12.0, 0.5, -7.0 } ; sz id)
+	{
+		if (id == 3) count++;
+	};
+	test::@check(count == 1, "the floor is nearby, got %d", count);
+
+	count = 0;
+	spatial_map.@get_nearby_objects({ 12.0, 40.0, -7.0 } ; sz id)
+	{
+		count++;
+	};
+	test::@check(count == 0, "and 40 units up it is not, got %d", count);
 }

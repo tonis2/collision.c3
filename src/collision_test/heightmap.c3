@@ -255,7 +255,20 @@ fn Aabb3 Heightmap.get_aabb(&self) @dynamic
 	};
 }
 
-fn ShapeType Heightmap.get_type(&self) @dynamic => ShapeType.CONVEX; // Treat as convex for type checking
+<*
+ **`HEIGHTFIELD`, and it used to say `CONVEX`.**
+
+ It said convex so that the shape would pass a type check, and the cost of that
+ was silent: `furthest_point` below returns one of the four corners of the whole
+ map, so a body handed to GJK against a heightfield settles onto the plane through
+ those corners — the terrain, flattened, with nothing anywhere reporting an error.
+ `plan.md` §18.4e has the measurement.
+
+ Answering honestly is what lets the narrow phase route the pair to
+ `PhysicsWorld.test_heightfield_collision` instead, which queries the triangles
+ under the other body and collides those.
+*>
+fn ShapeType Heightmap.get_type(&self) @dynamic => ShapeType.HEIGHTFIELD;
 
 // ============================================================================
 // Ray Intersection
@@ -477,9 +490,16 @@ fn void Heightmap.query_triangles(&self, Aabb3 query_box, List {TriangleVerts}* 
 			Vec3 v01 = { wx0, h01, wz1 };
 			Vec3 v11 = { wx1, h11, wz1 };
 
-			// Two triangles per cell
-			triangles.push({ v00, v10, v01 });
-			triangles.push({ v10, v11, v01 });
+			// **Two triangles per cell, wound so the face normal points up.**
+			// They used to be `{v00, v10, v01}` and `{v10, v11, v01}`, whose
+			// cross product is `x cross z` — straight down. Nothing noticed
+			// while this function only ever fed a debug draw; the moment it fed
+			// a contact it meant the ground was a one-sided surface facing the
+			// wrong way, and a body landing on it was pushed *through*. It also
+			// disagreed with `get_normal` two hundred lines up, which has always
+			// answered `{-dx, 1, -dz}`.
+			triangles.push({ v00, v01, v10 });
+			triangles.push({ v10, v01, v11 });
 		}
 	}
 }

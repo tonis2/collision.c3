@@ -14,6 +14,17 @@ enum ShapeType
 	BOX,
 	CONVEX,
 	TRIANGLE,
+	<*
+	 A `Heightmap`. **Not a GJK shape, and this is what says so.**
+
+	 Its `furthest_point` answers with one of the four corners of the whole map,
+	 which under GJK is a body resting on the plane through them rather than on
+	 the ground. The narrow phase reads this type and routes the pair to
+	 `PhysicsWorld.test_heightfield_collision`, which queries the triangles under
+	 the other body and collides those — the same per-contact construction the
+	 mesh BVH uses, over a grid instead of a tree.
+	*>
+	HEIGHTFIELD,
 	COMPOUND
 }
 

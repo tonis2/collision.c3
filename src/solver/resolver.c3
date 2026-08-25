@@ -975,6 +975,19 @@ fn bool Rigidbody.has_compound(&self)
 	return self.collider.get_type() == ShapeType.COMPOUND;
 }
 
+<*
+ Whether this body's collider is terrain.
+
+ Asked before `has_mesh_bvh` in the pair sort, and the order is not arbitrary: a
+ heightfield is not a `Mesh` and has no BVH, so the two can never both be true —
+ but a pair of *two* heightfields would otherwise fall through to GJK, which is
+ the case this type exists to stop happening quietly.
+*>
+fn bool Rigidbody.has_heightfield(&self)
+{
+	return self.collider.get_type() == ShapeType.HEIGHTFIELD;
+}
+
 // Worker function for parallel collision testing
 fn int collision_test_worker(void* arg) @local
 {
@@ -1018,6 +1031,26 @@ fn int bvh_collision_test_worker(void* arg) @local
 
 		Collision[] slots = task.results[i * MAX_CONTACTS_PER_PAIR : MAX_CONTACTS_PER_PAIR];
 		task.counts[i] = world.test_bvh_collision(body_a, body_b, pair, slots);
+	}
+	return 0;
+}
+
+// The same, over terrain. A separate worker rather than a branch inside the one
+// above, because the pairs are sorted before they are dispatched and a sort that
+// produced a mixed list would be paying for the branch on every triangle.
+fn int heightfield_collision_test_worker(void* arg) @local
+{
+	CollisionTask* task = (CollisionTask*)arg;
+	PhysicsWorld* world = task.world;
+
+	for (sz i = 0; i < task.count; i++)
+	{
+		Pair pair = task.pairs[i];
+		Rigidbody* body_a = world.find_body(pair.a)!!;
+		Rigidbody* body_b = world.find_body(pair.b)!!;
+
+		Collision[] slots = task.results[i * MAX_CONTACTS_PER_PAIR : MAX_CONTACTS_PER_PAIR];
+		task.counts[i] = world.test_heightfield_collision(body_a, body_b, pair, slots);
 	}
 	return 0;
 }
@@ -1599,9 +1632,11 @@ fn void PhysicsWorld.run_substep(&self, float time, uint step_count)
 		// Separate pairs by collision type
 		List {Pair} convex_pairs;
 		List {Pair} bvh_pairs;
+		List {Pair} field_pairs;
 		List {Pair} compound_pairs;
 		defer convex_pairs.free();
 		defer bvh_pairs.free();
+		defer field_pairs.free();
 		defer compound_pairs.free();
 
 		for (sz i = 0; i < num_pairs; i++)
@@ -1610,7 +1645,15 @@ fn void PhysicsWorld.run_substep(&self, float time, uint step_count)
 			Rigidbody* body_a = self.find_body(pair.a)!!;
 			Rigidbody* body_b = self.find_body(pair.b)!!;
 
-			if (body_a.has_mesh_bvh() || body_b.has_mesh_bvh())
+			// **Terrain first.** A heightfield has no BVH and is not compound, so
+			// the order only matters for the pair that is two heightfields — and
+			// that pair falling through to GJK is the silent flattening this type
+			// was added to stop.
+			if (body_a.has_heightfield() || body_b.has_heightfield())
+			{
+				field_pairs.push(pair);
+			}
+			else if (body_a.has_mesh_bvh() || body_b.has_mesh_bvh())
 			{
 				bvh_pairs.push(pair);
 			}
@@ -1629,6 +1672,10 @@ fn void PhysicsWorld.run_substep(&self, float time, uint step_count)
 
 		// Process BVH pairs in parallel
 		self.dispatch_collision_tasks(bvh_pairs.array_view(), &bvh_collision_test_worker);
+
+		// And terrain pairs, the same way and for the same reason: the work is a
+		// few hundred triangles per contact and none of it touches shared state.
+		self.dispatch_collision_tasks(field_pairs.array_view(), &heightfield_collision_test_worker);
 
 		foreach (pair : compound_pairs)
 		{
@@ -2620,6 +2667,219 @@ fn bool test_capsule_triangle_collision(
 }
 
 <*
+ What a triangle is being tested against, worked out once for a whole surface.
+
+ **The specialisation is per body and the triangles are per contact**, so the
+ sphere and capsule world positions are computed here rather than once per
+ triangle. On a heightfield query that is a few hundred triangles a step, and the
+ quaternion multiplies would otherwise be paid for every one of them.
+
+ It is a struct and not five arguments because two callers now build the same
+ thing — the mesh BVH and the heightfield — and two copies of "which of these
+ shapes gets the fast path" is exactly how they would come to disagree.
+*>
+struct TriangleProbe
+{
+	// The body the triangles are being tested against, and its pair.
+	Rigidbody* other;
+	Pair pair;
+	// Whether the *surface* is `pair.a`. Decides which way round the contact
+	// normal and the two contact points go.
+	bool surface_is_a;
+	bool use_sphere;
+	bool use_capsule;
+	Vec3 sphere_center;
+	Vec3 capsule_p0;
+	Vec3 capsule_p1;
+	float world_radius;
+}
+
+<*
+ Work out how one body should be tested against triangles.
+
+ The sphere and capsule paths need a uniform scale: their world radius is one
+ number, and a body squashed on one axis has no single radius to use. Anything
+ else — a box, a hull, a non-uniformly scaled sphere — takes the GJK/EPA path,
+ which reads the collider through its own support function and does not care.
+
+ @param other_body : `The body being tested against the surface.`
+ @param surface_is_a : `Whether the surface is pair.a — see the field.`
+*>
+fn TriangleProbe triangle_probe(Rigidbody* other_body, Pair pair, bool surface_is_a)
+{
+	TriangleProbe probe = { .other = other_body, .pair = pair, .surface_is_a = surface_is_a };
+
+	ShapeType other_type = other_body.collider.get_type();
+	Vec3 other_scale = other_body.collider.scale;
+	bool uniform_scale = math::abs(other_scale.x - other_scale.y) < UNIFORM_SCALE_TOL
+		&& math::abs(other_scale.y - other_scale.z) < UNIFORM_SCALE_TOL;
+
+	probe.use_sphere  = uniform_scale && other_type == SPHERE;
+	probe.use_capsule = uniform_scale && other_type == CAPSULE;
+
+	if (probe.use_sphere)
+	{
+		Sphere* sphere = (Sphere*)other_body.collider.shape;
+		probe.sphere_center = other_body.collider.rotation * (sphere.center * other_scale)
+			+ other_body.collider.translation;
+		probe.world_radius = sphere.radius * other_scale.x;
+	}
+	else if (probe.use_capsule)
+	{
+		Capsule* capsule = (Capsule*)other_body.collider.shape;
+		// Capsule axis endpoints in local space: cap-sphere centers at ±height/2
+		float half = capsule.height * 0.5f;
+		Vec3 local_p0 = { 0, -half, 0 };
+		Vec3 local_p1 = { 0, half, 0 };
+		probe.capsule_p0 = other_body.collider.rotation * (local_p0 * other_scale)
+			+ other_body.collider.translation;
+		probe.capsule_p1 = other_body.collider.rotation * (local_p1 * other_scale)
+			+ other_body.collider.translation;
+		probe.world_radius = math::max(capsule.radius_top, capsule.radius_bottom) * other_scale.x;
+	}
+
+	return probe;
+}
+
+<*
+ One world-space triangle against one body, folded into the manifold.
+
+ **The whole of what a one-sided surface means is in here**, and it is why this
+ is shared rather than written twice: a mesh and a heightfield are the same
+ surface as far as a contact is concerned, and the rule that a body which has
+ crossed the plane must be pushed back out along the face normal rather than
+ ejected through it is the kind of rule that gets fixed in one copy.
+
+ @param probe : `Built by triangle_probe for the body these triangles are being tested against.`
+ @param count : `Contacts already in out_contacts.`
+ @return `The new count.`
+*>
+fn sz PhysicsWorld.triangle_contacts(
+	&self, TriangleProbe* probe, Vec3 v0, Vec3 v1, Vec3 v2, Collision[] out_contacts, sz count
+)
+{
+	Rigidbody* other_body = probe.other;
+	Pair pair = probe.pair;
+	bool surface_is_a = probe.surface_is_a;
+
+	Aabb3 tri_aabb = { .min = math::min(v0, math::min(v1, v2)), .max = math::max(v0, math::max(v1, v2)) };
+	if (!tri_aabb.collides(other_body.transformed_aabb)) return count;
+
+	// Face normal of the (one-sided) surface; requires consistent winding
+	Vec3 tri_normal = (v1 - v0).cross(v2 - v0).normalize();
+
+	if (probe.use_sphere || probe.use_capsule)
+	{
+		Vec3 n;
+		Vec3[2] contact;
+		float depth;
+
+		bool hit;
+		if (probe.use_sphere)
+		{
+			hit = test_sphere_triangle_collision(
+				probe.sphere_center, probe.world_radius, v0, v1, v2, tri_normal, &n, &contact, &depth
+			);
+		}
+		else
+		{
+			hit = test_capsule_triangle_collision(
+				probe.capsule_p0, probe.capsule_p1, probe.world_radius,
+				v0, v1, v2, tri_normal, &n, &contact, &depth
+			);
+		}
+
+		if (hit)
+		{
+			Collision c = { .a = pair.a, .b = pair.b, .depth = depth };
+			if (surface_is_a)
+			{
+				c.normal = n;
+				c.contact = contact;
+			}
+			else
+			{
+				c.normal = -n;
+				c.contact = { contact[1], contact[0] };
+			}
+			count = insert_contact_sorted(out_contacts, count, c);
+		}
+		return count;
+	}
+
+	// GJK/EPA fallback for other shape types — triangle already in world space
+	TriangleShape tri_shape = { .v = { v0, v1, v2 } };
+
+	CollisionInfo info;
+	if (surface_is_a)
+	{
+		info = collision::check_convex_collision(&tri_shape, &other_body.collider, epa: true);
+	}
+	else
+	{
+		info = collision::check_convex_collision(&other_body.collider, &tri_shape, epa: true);
+	}
+
+	if (!info.collided || info.depth <= 0) return count;
+
+	// One-sided surface: contacts must push the other body out along the face
+	// normal. EPA resolving through the back side means the body crossed the
+	// surface this step — rebuild the contact against the triangle's plane
+	// instead of ejecting the body through it.
+	Vec3 push_dir = surface_is_a ? info.normal : -info.normal;
+	if (push_dir.dot(tri_normal) < 0)
+	{
+		Vec3 deep = other_body.collider.furthest_point(-tri_normal);
+		float plane_depth = (v0 - deep).dot(tri_normal);
+		if (plane_depth > 0)
+		{
+			Vec3 on_plane = deep + tri_normal * plane_depth;
+			Collision c = { .a = pair.a, .b = pair.b, .depth = plane_depth };
+			if (surface_is_a)
+			{
+				c.normal = tri_normal;
+				c.contact = { on_plane, deep };
+			}
+			else
+			{
+				c.normal = -tri_normal;
+				c.contact = { deep, on_plane };
+			}
+			count = insert_contact_sorted(out_contacts, count, c);
+		}
+		return count;
+	}
+
+	return insert_contact_sorted(
+		out_contacts,
+		count,
+		{
+			.a = pair.a,
+			.b = pair.b,
+			.normal = info.normal,
+			.contact = info.contact_points,
+			.depth = info.depth,
+		}
+	);
+}
+
+<*
+ Clamp a triangle manifold's depths and mark all but the deepest.
+
+ Extreme correction forces come out of a body that has sunk into a surface — the
+ deepest contact is vertex-expanded later and the rest of the manifold is already
+ spread across triangles, so only the first one needs it.
+*>
+fn void settle_triangle_manifold(Collision[] out_contacts, sz count)
+{
+	for (sz i = 0; i < count; i++)
+	{
+		out_contacts[i].depth = math::min(out_contacts[i].depth, CLAMPED_DEPTH_MAX);
+		out_contacts[i].skip_expand = i > 0;
+	}
+}
+
+<*
  Test a mesh-BVH pair and collect a contact manifold: up to MAX_CONTACTS_PER_PAIR
  deduplicated contacts across the overlapped triangles, deepest first.
  Thread-safe — writes only into the caller-provided out_contacts.
@@ -2630,22 +2890,9 @@ fn sz PhysicsWorld.test_bvh_collision(&self, Rigidbody* body_a, Rigidbody* body_
 {
 	bool a_has_bvh = body_a.has_mesh_bvh();
 
-	Rigidbody* mesh_body;
-	Rigidbody* other_body;
-	bool mesh_is_a;
-
-	if (a_has_bvh)
-	{
-		mesh_body = body_a;
-		other_body = body_b;
-		mesh_is_a = true;
-	}
-	else
-	{
-		mesh_body = body_b;
-		other_body = body_a;
-		mesh_is_a = false;
-	}
+	Rigidbody* mesh_body  = a_has_bvh ? body_a : body_b;
+	Rigidbody* other_body = a_has_bvh ? body_b : body_a;
+	bool mesh_is_a        = a_has_bvh;
 
 	Mesh* mesh = (Mesh*)mesh_body.collider.shape;
 
@@ -2656,39 +2903,7 @@ fn sz PhysicsWorld.test_bvh_collision(&self, Rigidbody* body_a, Rigidbody* body_
 
 	Aabb3 local_aabb = other_body.transformed_aabb.inverse_transform(mesh_translation, mesh_scale, mesh_rotation);
 
-	// Check if we can use specialized collision tests (sphere/capsule vs triangle)
-	ShapeType other_type = other_body.collider.get_type();
-	Vec3 other_scale = other_body.collider.scale;
-	bool uniform_scale = math::abs(other_scale.x - other_scale.y) < UNIFORM_SCALE_TOL
-		&& math::abs(other_scale.y - other_scale.z) < UNIFORM_SCALE_TOL;
-
-	bool use_sphere = uniform_scale && other_type == SPHERE;
-	bool use_capsule = uniform_scale && other_type == CAPSULE;
-	bool use_specialized = use_sphere || use_capsule;
-
-	Vec3 sphere_center;
-	Vec3 capsule_p0;
-	Vec3 capsule_p1;
-	float world_radius = 0;
-
-	if (use_sphere)
-	{
-		Sphere* sphere = (Sphere*)other_body.collider.shape;
-		sphere_center = other_body.collider.rotation * (sphere.center * other_scale) + other_body.collider.translation;
-		world_radius = sphere.radius * other_scale.x;
-	}
-	else if (use_capsule)
-	{
-		Capsule* capsule = (Capsule*)other_body.collider.shape;
-		// Capsule axis endpoints in local space: cap-sphere centers at ±height/2
-		float half = capsule.height * 0.5f;
-		Vec3 local_p0 = { 0, -half, 0 };
-		Vec3 local_p1 = { 0, half, 0 };
-		capsule_p0 = other_body.collider.rotation * (local_p0 * other_scale) + other_body.collider.translation;
-		capsule_p1 = other_body.collider.rotation * (local_p1 * other_scale) + other_body.collider.translation;
-		world_radius = math::max(capsule.radius_top, capsule.radius_bottom) * other_scale.x;
-	}
-
+	TriangleProbe probe = triangle_probe(other_body, pair, mesh_is_a);
 	sz contact_count = 0;
 
 	mesh.bvh.@foreach_triangle(local_aabb; TriangleVerts tri)
@@ -2698,137 +2913,84 @@ fn sz PhysicsWorld.test_bvh_collision(&self, Rigidbody* body_a, Rigidbody* body_
 		Vec3 v1 = mesh_rotation * (tri[1] * mesh_scale) + mesh_translation;
 		Vec3 v2 = mesh_rotation * (tri[2] * mesh_scale) + mesh_translation;
 
-		Aabb3 tri_aabb = { .min = math::min(v0, math::min(v1, v2)), .max = math::max(v0, math::max(v1, v2)) };
+		contact_count = self.triangle_contacts(&probe, v0, v1, v2, out_contacts, contact_count);
+	};
 
-		if (tri_aabb.collides(other_body.transformed_aabb))
+	settle_triangle_manifold(out_contacts, contact_count);
+	return contact_count;
+}
+
+<*
+ Test a heightfield pair the same way, over the triangles under the other body.
+
+ **This is `plan.md` §18.4e's construction and §20.4's ordering argument.**
+ §18.4e was right that a `Heightmap` cannot be a GJK shape: its `furthest_point`
+ answers with one of the four corners of the whole map, so a body resting on it
+ rests on the plane through them. What it concluded from that was that the work
+ was per-contact rather than per-shape and belonged later — and the class of
+ thing it called "smaller and later", a dynamic body that has to rest on terrain,
+ turned up in the very next scene as thirty-nine crates.
+
+ What was missing was never the geometry. `query_triangles` was already written,
+ `ShapeType.TRIANGLE` already existed, and `test_bvh_collision` already had a
+ one-sided triangle path with the sphere and capsule specialisations on it. The
+ missing piece was a `ShapeType` and a dispatch that routes these pairs here
+ instead of to GJK, which is what this function is.
+
+ **The cost of not having had it, in one level:** a corridor floor of thirteen
+ invisible box colliders and sixty-eight more for the kerbs, which is 81 static
+ bodies standing in for one terrain shape — and a path that had to be dead flat
+ at y = 0 for its whole length, because a flat corridor is the only shape a chain
+ of axis-aligned boxes can be the floor of.
+
+ The query box is the other body's AABB brought into the field's own space, so a
+ rotated or scaled heightfield works: `query_triangles` walks a grid and the grid
+ is the field's, while the contacts are built in world space like every other
+ manifold.
+
+ Thread-safe — writes only into the caller-provided out_contacts, and the
+ triangle list is on the temp pool of whichever thread is running.
+
+ @require out_contacts.len >= MAX_CONTACTS_PER_PAIR : `Output buffer too small`
+*>
+fn sz PhysicsWorld.test_heightfield_collision(
+	&self, Rigidbody* body_a, Rigidbody* body_b, Pair pair, Collision[] out_contacts
+)
+{
+	bool a_is_field = body_a.has_heightfield();
+
+	Rigidbody* field_body = a_is_field ? body_a : body_b;
+	Rigidbody* other_body = a_is_field ? body_b : body_a;
+
+	Heightmap* field = (Heightmap*)field_body.collider.shape;
+
+	Vec3 field_translation = field_body.collider.translation;
+	Vec3 field_scale = field_body.collider.scale;
+	QuaternionValue field_rotation = field_body.collider.rotation;
+
+	Aabb3 local_aabb = other_body.transformed_aabb.inverse_transform(
+		field_translation, field_scale, field_rotation
+	);
+
+	TriangleProbe probe = triangle_probe(other_body, pair, a_is_field);
+	sz contact_count = 0;
+
+	@pool()
+	{
+		List {TriangleVerts} triangles;
+		triangles.init(tmem);
+		field.query_triangles(local_aabb, &triangles);
+
+		foreach (tri : triangles)
 		{
-			// Face normal of the (one-sided) mesh surface; requires consistent winding
-			Vec3 tri_normal = (v1 - v0).cross(v2 - v0).normalize();
+			Vec3 v0 = field_rotation * (tri[0] * field_scale) + field_translation;
+			Vec3 v1 = field_rotation * (tri[1] * field_scale) + field_translation;
+			Vec3 v2 = field_rotation * (tri[2] * field_scale) + field_translation;
 
-			if (use_specialized)
-			{
-				Vec3 n;
-				Vec3[2] contact;
-				float depth;
-
-				bool hit;
-				if (use_sphere)
-				{
-					hit = test_sphere_triangle_collision(
-						sphere_center,
-						world_radius,
-						v0,
-						v1,
-						v2,
-						tri_normal,
-						&n,
-						&contact,
-						&depth
-					);
-				}
-				else
-				{
-					hit = test_capsule_triangle_collision(
-						capsule_p0,
-						capsule_p1,
-						world_radius,
-						v0,
-						v1,
-						v2,
-						tri_normal,
-						&n,
-						&contact,
-						&depth
-					);
-				}
-
-				if (hit)
-				{
-					Collision c = { .a = pair.a, .b = pair.b, .depth = depth };
-					if (mesh_is_a)
-					{
-						c.normal = n;
-						c.contact = contact;
-					}
-					else
-					{
-						c.normal = -n;
-						c.contact = { contact[1], contact[0] };
-					}
-					contact_count = insert_contact_sorted(out_contacts, contact_count, c);
-				}
-			}
-			else
-			{
-				// GJK/EPA fallback for other shape types — triangle already in world space
-				TriangleShape tri_shape = { .v = { v0, v1, v2 } };
-
-				CollisionInfo info;
-				if (mesh_is_a)
-				{
-					info = collision::check_convex_collision(&tri_shape, &other_body.collider, epa: true);
-				}
-				else
-				{
-					info = collision::check_convex_collision(&other_body.collider, &tri_shape, epa: true);
-				}
-
-				if (info.collided && info.depth > 0)
-				{
-					// One-sided surface: contacts must push the other body out
-					// along the face normal. EPA resolving through the back side
-					// means the body crossed the surface this step — rebuild the
-					// contact against the triangle's plane instead of ejecting
-					// the body through the mesh.
-					Vec3 push_dir = mesh_is_a ? info.normal : -info.normal;
-					if (push_dir.dot(tri_normal) < 0)
-					{
-						Vec3 deep = other_body.collider.furthest_point(-tri_normal);
-						float plane_depth = (v0 - deep).dot(tri_normal);
-						if (plane_depth > 0)
-						{
-							Vec3 on_plane = deep + tri_normal * plane_depth;
-							Collision c = { .a = pair.a, .b = pair.b, .depth = plane_depth };
-							if (mesh_is_a)
-							{
-								c.normal = tri_normal;
-								c.contact = { on_plane, deep };
-							}
-							else
-							{
-								c.normal = -tri_normal;
-								c.contact = { deep, on_plane };
-							}
-							contact_count = insert_contact_sorted(out_contacts, contact_count, c);
-						}
-					}
-					else
-					{
-						contact_count = insert_contact_sorted(
-							out_contacts,
-							contact_count,
-							{
-								.a = pair.a,
-								.b = pair.b,
-								.normal = info.normal,
-								.contact = info.contact_points,
-								.depth = info.depth,
-							}
-						);
-					}
-				}
-			}
+			contact_count = self.triangle_contacts(&probe, v0, v1, v2, out_contacts, contact_count);
 		}
 	};
 
-	// Clamp depth to prevent extreme correction forces from BVH triangle
-	// collisions. Only the deepest contact is vertex-expanded later — the
-	// rest of the manifold is already spread across triangles.
-	for (sz i = 0; i < contact_count; i++)
-	{
-		out_contacts[i].depth = math::min(out_contacts[i].depth, CLAMPED_DEPTH_MAX);
-		out_contacts[i].skip_expand = i > 0;
-	}
-
+	settle_triangle_manifold(out_contacts, contact_count);
 	return contact_count;
 }
