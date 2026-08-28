@@ -115,6 +115,14 @@ struct SoftBody
 	List {SoftCollisionConstraint} collision_constraints;
 	List {ParticlePin} pins;
 
+	// Scratch for the volume constraint's per-particle gradients. Owned here
+	// rather than declared local to `solve_volume_constraint` because that runs
+	// on a WORKER THREAD: an uninitialised C3 list seats itself on the temp
+	// allocator on its first push, and a thread with no `@pool_init` has none —
+	// the process aborts inside the solver. Seating it on the body's own
+	// allocator also takes an allocate-and-free out of every substep.
+	List {Vec3} volume_gradients;
+
 	// Per-body properties
 	Material material;
 	float gravity_factor;
@@ -157,6 +165,7 @@ fn void SoftBody.free(&self)
 	self.bending_constraints.free();
 	self.collision_constraints.free();
 	self.pins.free();
+	self.volume_gradients.free();
 }
 
 <*
@@ -194,6 +203,7 @@ fn void SoftBody.init(&self, Allocator allocator, sz particles = 16)
 	self.bending_constraints.init(allocator, 1);
 	self.collision_constraints.init(allocator, slots);
 	self.pins.init(allocator, 1);
+	self.volume_gradients.init(allocator, slots);
 }
 
 <*
@@ -717,13 +727,12 @@ fn void SoftBody.solve_volume_constraint(&self, VolumeConstraint* c, float dt)
 	sz n = self.positions.len();
 	float total_grad_sq = 0;
 
-	// For each triangle, compute area-weighted normal contribution
-	List {Vec3} gradients;
-	defer gradients.free();
-
+	// For each triangle, compute area-weighted normal contribution. The scratch
+	// is the body's own — see `volume_gradients`.
+	self.volume_gradients.clear();
 	for (sz i = 0; i < n; i++)
 	{
-		gradients.push({ 0, 0, 0 });
+		self.volume_gradients.push({ 0, 0, 0 });
 	}
 
 	foreach (tri : self.triangles)
@@ -737,15 +746,15 @@ fn void SoftBody.solve_volume_constraint(&self, VolumeConstraint* c, float dt)
 		Vec3 g1 = v2.cross(v0) / 6.0;
 		Vec3 g2 = v0.cross(v1) / 6.0;
 
-		gradients[tri.x] += g0;
-		gradients[tri.y] += g1;
-		gradients[tri.z] += g2;
+		self.volume_gradients[tri.x] += g0;
+		self.volume_gradients[tri.y] += g1;
+		self.volume_gradients[tri.z] += g2;
 	}
 
 	for (sz i = 0; i < n; i++)
 	{
 		float w = self.inverse_masses[i];
-		total_grad_sq += w * gradients[i].dot(gradients[i]);
+		total_grad_sq += w * self.volume_gradients[i].dot(self.volume_gradients[i]);
 	}
 
 	if (total_grad_sq < 1e-10) return;
@@ -759,7 +768,7 @@ fn void SoftBody.solve_volume_constraint(&self, VolumeConstraint* c, float dt)
 		float w = self.inverse_masses[i];
 		if (w > 0)
 		{
-			self.positions[i] += gradients[i] * (w * delta_lambda);
+			self.positions[i] += self.volume_gradients[i] * (w * delta_lambda);
 		}
 	}
 }
@@ -1166,9 +1175,22 @@ fn void SoftBody.generate_rigidbody_collisions(&self, Rigidbody* body)
 				sz idx = indices[v];
 				Vec3 p = self.positions[idx];
 
-				// Check if this vertex is on the penetrating side
+				// How far this vertex is INSIDE the body, along the axis that
+				// separates them. `check_convex_collision(a, b)` answers with the
+				// normal that `a` escapes along NEGATED — the rigid path reads it
+				// as `apply_positional_correction(a, -normal, ..)` — so from the
+				// triangle's side it points into the body, and a vertex that has
+				// sunk in is at a POSITIVE projection past the contact point.
+				//
+				// Reversed, this selected the vertices that were already clear and
+				// left every penetrating one unconstrained, and the constraints it
+				// did make were no-ops: `solve_collision_constraint` measures
+				// d = (p - contact_point) . normal, which for proj < 0 comes out
+				// positive and trips its own `d >= 0` early return. Contacts were
+				// generated every frame and none of them ever pushed, so a soft
+				// body fell through a rigid one at a perfectly constant rate.
 				float proj = (p - info.contact_points[1]).dot(info.normal);
-				if (proj < 0)
+				if (proj > 0)
 				{
 					self.collision_constraints.push(
 						{
