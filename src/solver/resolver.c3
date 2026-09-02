@@ -636,16 +636,22 @@ fn bool PhysicsWorld.remove_body(&self, sz id)
 }
 
 <*
- Set the target position/rotation for a kinematic body. Must be called each frame
- before run_step(), with dt matching the frame delta. Computes velocity from the
- delta so dynamic bodies that collide with this kinematic get correct
- restitution/friction responses.
+ Set the target position/rotation for a kinematic body or a trigger. Must be
+ called each frame before run_step(), with dt matching the frame delta. Computes
+ velocity from the delta so dynamic bodies that collide with this kinematic get
+ correct restitution/friction responses.
+
+ A trigger is moved by the same door, but nothing integrates it and nothing
+ bounces off it, so the velocity derivation is skipped — what it needs is the
+ `collider.translation` write and the spatial hash update, which is what makes a
+ *moved* trigger overlap things. Without that update a trigger's AABB is baked
+ wherever it was added and a moving trigger fires against nothing, forever.
  @require dt > 0 : `dt must be positive`
 *>
 fn void PhysicsWorld.set_kinematic_target(&self, sz id, Vec3 position, QuaternionValue rotation, float dt = 1.0f / 60.0f)
 {
 	Rigidbody* body = self.find_body(id)!!;
-	if (!body.is_kinematic) return;
+	if (!body.is_kinematic && !body.is_trigger) return;
 
 	// Save previous state (for velocity derivation in constraint solver)
 	body.prev_position = body.collider.translation;
@@ -655,13 +661,16 @@ fn void PhysicsWorld.set_kinematic_target(&self, sz id, Vec3 position, Quaternio
 	body.collider.translation = position;
 	body.collider.rotation = rotation;
 
-	// Derive velocity from delta — used by restitution/friction in the constraint solver
-	float inv_dt = 1.0f / dt;
-	body.linear_velocity = (position - body.prev_position) * inv_dt;
+	if (!body.is_trigger)
+	{
+		// Derive velocity from delta — used by restitution/friction in the constraint solver
+		float inv_dt = 1.0f / dt;
+		body.linear_velocity = (position - body.prev_position) * inv_dt;
 
-	QuaternionValue dq = rotation * body.prev_rotation.conjugate();
-	if (dq.l < 0) dq = -dq;
-	body.angular_velocity = dq.v.xyz * (2.0f * inv_dt);
+		QuaternionValue dq = rotation * body.prev_rotation.conjugate();
+		if (dq.l < 0) dq = -dq;
+		body.angular_velocity = dq.v.xyz * (2.0f * inv_dt);
+	}
 
 	// Update spatial hash
 	Aabb3 new_aabb = body.get_transformed_aabb();
