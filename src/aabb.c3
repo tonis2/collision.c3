@@ -88,6 +88,12 @@ fn void Aabb3.expand_by_aabb(&self, Aabb3 box)
 	self.expand_min(box.min);
 }
 
+// The box pushed out by `by` on every side, in the box's own units.
+fn Aabb3 Aabb3.grow(self, float by)
+{
+	return { .min = self.min - { by, by, by }, .max = self.max + { by, by, by } };
+}
+
 fn Aabb3 Aabb3.scale(self, Vec3 scale) @operator(*)
 {
 	Vec3 center    = self.center();
