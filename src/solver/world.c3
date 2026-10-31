@@ -26,6 +26,10 @@ const float CCD_BACKOFF @private = 0.99f; // Fraction of ccd_radius a clamped bo
 const float MIN_RESTITUTION @private = 0.01f; // Below this a contact is treated as inelastic
 const sz SERIAL_CONSTRAINT_LIMIT @private = 16; // At most this many constraints solve inline
 const sz PHASE_TASKS_PER_WORKER @private = 2; // Fewer bodies than workers * this run predict/derive inline
+const float STICK_FRACTION @private = 0.98f; // A pair using less of its friction cone than this is held, not sliding
+// Relative speed (units/s, and rad/s) below which a touching pair counts as resting
+// for its friction anchor. Above a stack's contact jitter (~0.25), below a knock.
+const float ANCHOR_REST_SPEED @private = 1.0f;
 
 alias CollisionFilter = HashMap {Pair, bool};
 alias RigidBodyMap = LinkedHashMap {sz, Rigidbody};
@@ -81,6 +85,21 @@ struct IslandSolveTask
 	uint iterations; // Solver iterations
 }
 
+<*
+ Body b's pose in body a's frame while static friction holds the pair. Friction
+ pulls each contact back to where this pose puts it, so slip a substep leaves
+ uncorrected is corrected by the next one instead of accumulating into creep.
+ Re-taken from the current pose whenever the pair slides, loses its load, is
+ knocked apart, or involves a shape that rolls (see update_friction_anchors).
+*>
+struct FrictionAnchor
+{
+	QuaternionValue rotation;
+	Vec3 translation;
+}
+
+alias FrictionAnchorMap = HashMap {Pair, FrictionAnchor};
+
 enum XpbdConstraintType : char
 {
 	CONTACT_NORMAL,
@@ -108,6 +127,12 @@ struct XpbdConstraint
 	float lambda_tangent1;
 	float lambda_tangent2;
 	float lambda_normal;
+	// Where static friction holds b's contact point (`r_b_local`), in body_a's
+	// local frame: the pair's friction anchor applied to it (see FrictionAnchor).
+	Vec3 friction_anchor;
+	// Contacts in the manifold that starts here (solved normals first, then
+	// friction); 0 on the manifold's later members.
+	ushort manifold_len;
 	// Restitution
 	float restitution;
 	float pre_solve_relative_vel_n; // Normal relative velocity before solve (for restitution)
@@ -124,6 +149,7 @@ struct Collision
 	Vec3[2] contact;
 	float depth;
 	bool skip_expand; // Contact is already part of a manifold — don't vertex-expand it
+	ushort manifold_len; // Set by generate_manifold: contacts in the manifold starting here, 0 on its later members
 }
 
 enum TriggerEventType : char
@@ -261,6 +287,11 @@ struct PhysicsWorld
 	List {ContactEvent} contact_events;
 	ContactOverlapSet active_contacts; // Currently contacting body pairs
 	ContactOverlapSet contacts_next;
+
+	// Static-friction anchors per touching pair, double-buffered: a substep reads
+	// `friction_anchors` and writes the survivors to `anchors_next`.
+	FrictionAnchorMap friction_anchors;
+	FrictionAnchorMap anchors_next;
 
 	// Soft body system (XPBD)
 	SoftBodyList soft_bodies;
@@ -409,6 +440,8 @@ fn void PhysicsWorld.seat_storage(&self)
 	@seat(self.triggers_next, a);
 	@seat(self.active_contacts, a);
 	@seat(self.contacts_next, a);
+	@seat(self.friction_anchors, a);
+	@seat(self.anchors_next, a);
 	@seat(self.candidate_pairs, a);
 	@seat(self.dormant_pairs, a);
 	@seat(self.convex_pairs, a);
@@ -488,6 +521,8 @@ fn void PhysicsWorld.free(&self)
 	self.contact_events.free();
 	self.active_contacts.free();
 	self.contacts_next.free();
+	self.friction_anchors.free();
+	self.anchors_next.free();
 	self.candidate_pairs.free();
 	self.dormant_pairs.free();
 	self.convex_pairs.free();
@@ -706,6 +741,14 @@ fn bool PhysicsWorld.remove_body(&self, sz id)
 	{
 		self.contact_events.push({ .body_a = pair.a, .body_b = pair.b, .type = ContactEventType.END });
 	};
+
+	self.anchors_next.clear();
+	self.friction_anchors.@each(; Pair pair, FrictionAnchor anchor)
+	{
+		if (pair.a != id && pair.b != id) self.anchors_next.set(pair, anchor);
+	};
+	@swap(self.friction_anchors, self.anchors_next);
+	self.anchors_next.clear();
 
 	// Backwards, so removing one does not skip the next.
 	for (sz i = self.joints.len(); i > 0; i--)

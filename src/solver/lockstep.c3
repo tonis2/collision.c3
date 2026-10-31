@@ -83,6 +83,14 @@ struct SoftBodySnapshot
 	List {Vec3} velocities;
 }
 
+struct PairAnchor
+{
+	Pair pair;
+	FrictionAnchor anchor;
+}
+
+fn int pair_anchor_cmp(PairAnchor x, PairAnchor y) @local => pair_id_cmp(x.pair, y.pair);
+
 struct WorldSnapshot
 {
 	List {RigidbodySnapshot} bodies;
@@ -92,6 +100,9 @@ struct WorldSnapshot
 	// for event replay to match.
 	List {Pair} active_triggers;
 	List {Pair} active_contacts;
+	// Where static friction holds each touching pair: the next step solves
+	// friction against these, so a rollback without them diverges.
+	List {PairAnchor} friction_anchors;
 }
 
 fn void WorldSnapshot.free(&self)
@@ -105,6 +116,7 @@ fn void WorldSnapshot.free(&self)
 	self.soft_bodies.free();
 	self.active_triggers.free();
 	self.active_contacts.free();
+	self.friction_anchors.free();
 }
 
 <*
@@ -125,6 +137,7 @@ fn WorldSnapshot PhysicsWorld.snapshot(&self, Allocator allocator = mem)
 	snap.soft_bodies.init(allocator, math::max(self.soft_bodies.len(), (sz)1));
 	snap.active_triggers.init(allocator, 1);
 	snap.active_contacts.init(allocator, 1);
+	snap.friction_anchors.init(allocator, 1);
 
 	self.@each_body(; Rigidbody* body)
 	{
@@ -160,9 +173,14 @@ fn WorldSnapshot PhysicsWorld.snapshot(&self, Allocator allocator = mem)
 	{
 		snap.active_contacts.push(pair);
 	};
+	self.friction_anchors.@each(; Pair pair, FrictionAnchor anchor)
+	{
+		snap.friction_anchors.push({ pair, anchor });
+	};
 	// Canonical order, so snapshots themselves are comparable across peers
 	if (snap.active_triggers.len() > 1) sort::quicksort(snap.active_triggers.array_view(), &pair_id_cmp);
 	if (snap.active_contacts.len() > 1) sort::quicksort(snap.active_contacts.array_view(), &pair_id_cmp);
+	if (snap.friction_anchors.len() > 1) sort::quicksort(snap.friction_anchors.array_view(), &pair_anchor_cmp);
 
 	return snap;
 }
@@ -214,6 +232,8 @@ fn void? PhysicsWorld.restore(&self, WorldSnapshot* snap)
 	foreach (pair : snap.active_triggers) self.active_triggers.set(pair, true);
 	self.active_contacts.clear();
 	foreach (pair : snap.active_contacts) self.active_contacts.set(pair, true);
+	self.friction_anchors.clear();
+	foreach (entry : snap.friction_anchors) self.friction_anchors.set(entry.pair, entry.anchor);
 
 	// Frame-transient outputs from the pre-restore timeline are stale
 	self.trigger_events.clear();

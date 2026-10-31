@@ -221,6 +221,9 @@ fn Vec3 rotate_by_rows(Vec3[3] rows, Vec3 v) @private @inline
 *>
 fn void PhysicsWorld.generate_manifold(&self, Collision* collision)
 {
+	// A contact the solver treats on its own unless expanded below
+	collision.manifold_len = 1;
+
 	// Secondary contacts of a mesh/compound manifold are already spread out
 	if (collision.skip_expand)
 	{
@@ -279,6 +282,7 @@ fn void PhysicsWorld.generate_manifold(&self, Collision* collision)
 	Vec3 translation = incident.collider.translation;
 
 	// Always include original EPA contact
+	sz first = self.collisions.len();
 	self.collisions.push(*collision);
 
 	foreach (local_v : local_verts)
@@ -305,6 +309,10 @@ fn void PhysicsWorld.generate_manifold(&self, Collision* collision)
 		}
 		self.collisions.push(new_c);
 	}
+
+	// One manifold: all the points share the normal, so the solver pushes them
+	// all out before any of them applies friction (see solve_manifold).
+	self.collisions[first].manifold_len = (ushort)(self.collisions.len() - first);
 }
 
 <*

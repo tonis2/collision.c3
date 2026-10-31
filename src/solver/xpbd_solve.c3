@@ -84,16 +84,16 @@ fn void solve_tangent_friction(
 	if (math::abs(displacement) <= EPSILON) return;
 	float w = pair_inverse_mass(a, c.r_a, b, c.r_b, tangent);
 	if (w <= WEIGHT_EPSILON) return;
-	float dl = -displacement / w;
-	float new_l = math::clamp(*lambda_t + dl, -max_friction, max_friction);
-	dl = new_l - *lambda_t;
+	float new_l = math::clamp(*lambda_t - displacement / w, -max_friction, max_friction);
+	float dl = new_l - *lambda_t;
 	*lambda_t = new_l;
 	apply_pair_correction(a, b, -tangent, c.r_a, c.r_b, dl);
 }
 
-// Non-penetration plus friction. Contact arms are re-derived from the local-space
-// arms because earlier constraints in the sweep may have moved the bodies.
-fn void solve_contact_constraint(XpbdConstraint* c) @private
+// Non-penetration. Contact arms are re-derived from the local-space arms because
+// earlier constraints in the sweep may have moved the bodies. Returns whether the
+// contact was penetrating, i.e. pushed, in this sweep.
+fn bool solve_contact_normal(XpbdConstraint* c) @private
 {
 	Rigidbody* a = c.body_a;
 	Rigidbody* b = c.body_b;
@@ -106,13 +106,13 @@ fn void solve_contact_constraint(XpbdConstraint* c) @private
 	// Positive separation = apart, negative = penetrating
 	float separation = (pb - pa).dot(c.normal);
 	float penetration = c.c_value - separation;
-	if (penetration <= 0) return;
+	if (penetration <= 0) return false;
 
 	c.r_a = cur_r_a;
 	c.r_b = cur_r_b;
 
 	float w_sum = pair_inverse_mass(a, c.r_a, b, c.r_b, c.normal);
-	if (w_sum < WEIGHT_EPSILON) return;
+	if (w_sum < WEIGHT_EPSILON) return false;
 
 	// Constraint C = -penetration (non-penetration: C >= 0); the contact can only push.
 	float previous = c.lambda;
@@ -121,18 +121,72 @@ fn void solve_contact_constraint(XpbdConstraint* c) @private
 	c.lambda_normal = c.lambda;
 
 	apply_pair_correction(a, b, c.normal, c.r_a, c.r_b, delta_lambda);
+	return true;
+}
 
-	if (c.friction > 0 && c.lambda_normal > EPSILON)
+<*
+ Static friction: pull b's contact point back to where the pair's friction
+ anchor holds it (`friction_anchor`, in a's frame), within the friction cone.
+ The arms are re-derived: the normal pushes since they were last taken have
+ rotated the bodies, and a stale arm measures slip at the wrong point.
+*>
+fn void solve_contact_friction(XpbdConstraint* c, float max_friction) @private
+{
+	if (max_friction <= EPSILON) return;
+	Rigidbody* a = c.body_a;
+	Rigidbody* b = c.body_b;
+
+	c.r_a = a.collider.rotation * c.r_a_local;
+	c.r_b = b.collider.rotation * c.r_b_local;
+	Vec3 held = a.collider.translation + a.collider.rotation * c.friction_anchor;
+	Vec3 slip = held - (b.collider.translation + c.r_b);
+
+	solve_tangent_friction(a, b, c, c.tangent1, &c.lambda_tangent1, slip.dot(c.tangent1), max_friction);
+	solve_tangent_friction(a, b, c, c.tangent2, &c.lambda_tangent2, slip.dot(c.tangent2), max_friction);
+}
+
+<*
+ One manifold: every point's normal first, then friction. Solving each point's
+ friction straight after its own normal lets the later points' pushes rotate the
+ body and re-slip the earlier ones, which nothing corrects — a box creeps across
+ a flat floor. The normal load is pooled over the points that carry any, since
+ the first push of a sweep takes most of it and would starve the rest.
+
+ Friction runs on the loaded points pushed in this sweep, as it always has: with
+ more than one iteration, re-running it on every loaded point each iteration
+ costs a rotation (and an inertia rebuild) per point for no visible gain.
+*>
+fn void solve_manifold(XpbdConstraint*[] run) @private
+{
+	// A lone contact (every terrain and mesh contact): no load to pool
+	if (run.len == 1)
 	{
-		Vec3 prev_r_a = a.prev_rotation * c.r_a_local;
-		Vec3 prev_r_b = b.prev_rotation * c.r_b_local;
-		Vec3 disp_a = (a.collider.translation + cur_r_a) - (a.prev_position + prev_r_a);
-		Vec3 disp_b = (b.collider.translation + cur_r_b) - (b.prev_position + prev_r_b);
-		Vec3 rel_disp = disp_a - disp_b;
-		float max_friction = c.friction * c.lambda_normal;
+		XpbdConstraint* c = run[0];
+		if (solve_contact_normal(c) && c.lambda_normal > EPSILON) solve_contact_friction(c, c.friction * c.lambda_normal);
+		return;
+	}
 
-		solve_tangent_friction(a, b, c, c.tangent1, &c.lambda_tangent1, rel_disp.dot(c.tangent1), max_friction);
-		solve_tangent_friction(a, b, c, c.tangent2, &c.lambda_tangent2, rel_disp.dot(c.tangent2), max_friction);
+	float load = 0;
+	int touching = 0;
+	ulong pushed = 0; // Bit k: run[k] carries load and was pushed in this sweep (manifolds are under 64 points)
+	foreach (k, c : run)
+	{
+		bool hit = solve_contact_normal(c);
+		if (c.lambda_normal > EPSILON)
+		{
+			load += c.lambda_normal;
+			touching++;
+			if (hit && k < 64) pushed |= 1UL << k;
+		}
+	}
+	if (pushed == 0) return;
+
+	// A point pushed by next to nothing carries no load of its own; given a share
+	// of the pool its friction would act where the body barely touches.
+	float share = load / (float)touching;
+	foreach (k, c : run)
+	{
+		if (k < 64 && pushed & (1UL << k)) solve_contact_friction(c, c.friction * share);
 	}
 }
 
@@ -188,17 +242,29 @@ fn void solve_joint_angular(XpbdConstraint* c, uint iteration, uint total_iterat
 	if (!b.is_static) apply_angular_rotation(b, accel_b * delta_lambda);
 }
 
-// XPBD constraint solver — position-level corrections
-fn void solve_xpbd_constraint(XpbdConstraint* c, uint iteration, uint total_iterations) @private
+<*
+ One Gauss-Seidel sweep: contacts a manifold at a time, joints one by one. The
+ constraints of a manifold are adjacent, which bucketing preserves.
+*>
+fn void solve_constraint_sweep(XpbdConstraint*[] cs, uint iteration, uint total_iterations) @private
 {
-	switch (c.type)
+	sz i = 0;
+	while (i < cs.len)
 	{
-		case CONTACT_NORMAL:
-			solve_contact_constraint(c);
-		case JOINT_POSITION:
-			solve_joint_position(c, iteration, total_iterations);
-		case JOINT_ANGULAR:
-			solve_joint_angular(c, iteration, total_iterations);
+		XpbdConstraint* c = cs[i];
+		switch (c.type)
+		{
+			case CONTACT_NORMAL:
+				sz n = math::min(math::max((sz)c.manifold_len, (sz)1), cs.len - i);
+				solve_manifold(cs[i:n]);
+				i += n;
+			case JOINT_POSITION:
+				solve_joint_position(c, iteration, total_iterations);
+				i++;
+			case JOINT_ANGULAR:
+				solve_joint_angular(c, iteration, total_iterations);
+				i++;
+		}
 	}
 }
 
@@ -412,10 +478,7 @@ fn int island_solve_worker(void* arg) @private
 
 	for (uint iter = 0; iter < task.iterations; iter++)
 	{
-		for (sz i = 0; i < task.count; i++)
-		{
-			solve_xpbd_constraint(task.constraints[i], iter, task.iterations);
-		}
+		solve_constraint_sweep(task.constraints[:task.count], iter, task.iterations);
 	}
 	return 0;
 }
@@ -491,6 +554,7 @@ fn void PhysicsWorld.run_substep(&self, float time, uint step_count)
 	self.expand_manifolds();
 	self.build_constraints(time);
 	self.xpbd_solve_constraints(step_count);
+	self.update_friction_anchors(time);
 	self.collisions.clear();
 	self.solve_soft_bodies(time);
 	self.xpbd_derive_and_update(time);
@@ -691,12 +755,58 @@ fn void PhysicsWorld.expand_manifolds(&self)
 	self.manifold_scratch.clear();
 }
 
-// One XPBD constraint per contact, then one per joint axis.
+// Body b's pose in body a's frame.
+fn FrictionAnchor relative_pose(Vec3 a_at, QuaternionValue a_rot, Vec3 b_at, QuaternionValue b_rot) @private
+{
+	QuaternionValue to_a = a_rot.conjugate();
+	return { .rotation = to_a * b_rot, .translation = to_a * (b_at - a_at) };
+}
+
+// Shapes whose contact point travels over them as they move: an anchor would hold
+// a rolling ball's old contact point and brake it, so theirs is re-taken every substep.
+fn bool Rigidbody.rolls(&self)
+{
+	switch (self.collider.get_type())
+	{
+		case SPHERE:
+		case CAPSULE:
+		case CYLINDER:
+			return true;
+		default:
+			return false;
+	}
+}
+
+<*
+ One XPBD constraint per contact, then one per joint axis.
+
+ A pair's contacts are adjacent (pairs are narrow-phased in sorted order), so
+ its bodies and its friction anchor are looked up once per pair. A pair without
+ an anchor is held where it was at the start of the substep, which is plain
+ per-substep static friction. The anchor used is carried into `anchors_next`;
+ `update_friction_anchors` replaces it unless the pair stayed at rest.
+*>
 fn void PhysicsWorld.build_constraints(&self, float time)
 {
-	foreach (&collision : self.collisions)
+	self.anchors_next.clear();
+	Collision[] collisions = self.collisions.array_view();
+	sz i = 0;
+	while (i < collisions.len)
 	{
-		collision.create_xpbd_constraint(self);
+		Pair pair = { collisions[i].a, collisions[i].b };
+		sz end = i + 1;
+		while (end < collisions.len && collisions[end].a == pair.a && collisions[end].b == pair.b) end++;
+
+		Rigidbody* a = self.find_body(pair.a)!!;
+		Rigidbody* b = self.find_body(pair.b)!!;
+		bool anchored = !a.rolls() && !b.rolls();
+
+		FrictionAnchor? kept = anchored ? self.friction_anchors.get(pair) : NOT_FOUND~;
+		FrictionAnchor anchor = kept ?? relative_pose(a.prev_position, a.prev_rotation, b.prev_position, b.prev_rotation);
+		if (anchored) self.anchors_next.set(pair, anchor);
+
+		for (sz k = i; k < end; k++) collisions[k].create_xpbd_constraint(self, a, b, anchor);
+		i = end;
 	}
 
 	foreach (&joint : self.joints)
@@ -955,12 +1065,11 @@ fn void PhysicsWorld.xpbd_solve_constraints(&self, uint step_count)
 	// Tiny workloads aren't worth the grouping and thread pool overhead
 	if (constraint_count <= SERIAL_CONSTRAINT_LIMIT)
 	{
+		XpbdConstraint*[SERIAL_CONSTRAINT_LIMIT] serial;
+		foreach (i, &constraint : self.constraints) serial[i] = constraint;
 		for (uint i = 0; i < step_count; i++)
 		{
-			foreach (&constraint : self.constraints)
-			{
-				solve_xpbd_constraint(constraint, i, step_count);
-			}
+			solve_constraint_sweep(serial[:constraint_count], i, step_count);
 		}
 		return;
 	}
@@ -1212,10 +1321,8 @@ fn float combine_values(float a, float b, PhysicsCombine mode) @private
 	}
 }
 
-fn void Collision.create_xpbd_constraint(&collision, PhysicsWorld* world)
+fn void Collision.create_xpbd_constraint(&collision, PhysicsWorld* world, Rigidbody* a, Rigidbody* b, FrictionAnchor anchor)
 {
-	Rigidbody* a = world.find_body(collision.a)!!;
-	Rigidbody* b = world.find_body(collision.b)!!;
 	Vec3 normal = collision.normal.normalize();
 
 	// Combine material properties (higher-priority combine mode wins)
@@ -1258,6 +1365,70 @@ fn void Collision.create_xpbd_constraint(&collision, PhysicsWorld* world)
 			.tangent2 = tangent_2,
 			.restitution = restitution,
 			.pre_solve_relative_vel_n = rel_vel_n,
+			.friction_anchor = anchor.translation + anchor.rotation * rB_local,
+			.manifold_len = collision.manifold_len,
 		}
 	);
+}
+
+<*
+ Carry each pair's friction anchor into the next substep only while static
+ friction held a pair at rest: one that carried no load, used up its friction
+ cone, or whose bodies moved apart faster than ANCHOR_REST_SPEED this substep is
+ re-anchored at its current pose. Then `anchors_next` becomes the live set;
+ pairs no longer in contact were never written to it and drop out.
+
+ The cone is judged for the pair as a whole. Within a sweep the first point of a
+ manifold corrects most of the slip and clamps at its share of the load while
+ the pair is still well inside its total, so a per-point test would re-anchor a
+ resting box every substep.
+
+ The speed test keeps anchors to resting contact. A pair knocked apart (a crate
+ spawned overlapping its support, say) would otherwise be pulled back towards
+ the pose it was knocked out of, which turns the separation into a spin.
+*>
+fn void PhysicsWorld.update_friction_anchors(&self, float dt)
+{
+	float rest_step = ANCHOR_REST_SPEED * dt; // Relative motion per substep still counted as rest
+
+	XpbdConstraint[] cs = self.constraints.array_view();
+	sz i = 0;
+	while (i < cs.len)
+	{
+		XpbdConstraint* c = &cs[i];
+		if (c.type != CONTACT_NORMAL)
+		{
+			i++;
+			continue;
+		}
+
+		Rigidbody* a = c.body_a;
+		Rigidbody* b = c.body_b;
+		float used = 0;
+		float cone = 0;
+		while (i < cs.len && cs[i].type == CONTACT_NORMAL && cs[i].body_a == a && cs[i].body_b == b)
+		{
+			XpbdConstraint* p = &cs[i];
+			used += math::sqrt(p.lambda_tangent1 * p.lambda_tangent1 + p.lambda_tangent2 * p.lambda_tangent2);
+			cone += p.friction * p.lambda_normal;
+			i++;
+		}
+
+		if (a.rolls() || b.rolls()) continue;
+
+		FrictionAnchor now = relative_pose(a.collider.translation, a.collider.rotation, b.collider.translation, b.collider.rotation);
+		bool held = cone > EPSILON && used < STICK_FRACTION * cone;
+		if (held)
+		{
+			FrictionAnchor before = relative_pose(a.prev_position, a.prev_rotation, b.prev_position, b.prev_rotation);
+			QuaternionValue turn = now.rotation * before.rotation.conjugate();
+			// |xyz| of a unit quaternion is sin(angle / 2): twice it is the angle, near rest
+			float angle = 2.0f * turn.v.xyz.length();
+			held = (now.translation - before.translation).length() <= rest_step && angle <= rest_step;
+		}
+		if (!held) self.anchors_next.set({ a.id, b.id }, now);
+	}
+
+	@swap(self.friction_anchors, self.anchors_next);
+	self.anchors_next.clear();
 }

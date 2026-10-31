@@ -49,12 +49,17 @@ fn void EdgeArray.add_if_new(&self, Pair pair)
 }
 
 <*
- The face on three polytope vertices, oriented away from the origin.
+ The face on three polytope vertices, oriented away from `interior`, a point
+ inside the polytope.
+
+ Not away from the origin: for shapes that touch exactly the origin lies on a
+ face, the sign of `a·n` is noise, and an inward face sends the expansion the
+ wrong way — two touching boxes then report a full box width of depth.
 
  `active` is false for a triangle with no area: its normal would be NaN, which
  survives every `<` comparison, so callers drop such faces instead.
 *>
-fn Face SupportArray.create_face(&self, sz a_index, sz b_index, sz c_index)
+fn Face SupportArray.create_face(&self, sz a_index, sz b_index, sz c_index, Vec3 interior)
 {
 	Vec3 a = self.get(a_index).point;
 	Vec3 b = self.get(b_index).point;
@@ -70,14 +75,10 @@ fn Face SupportArray.create_face(&self, sz a_index, sz b_index, sz c_index)
 	}
 
 	Vec3 normal = cross * (1.0f / math::sqrt(area_sq));
-	float distance = a.dot(normal);
+	if (normal.dot(a - interior) < 0) normal = -normal;
 
-	// Point away from the origin so `distance` is the origin-to-plane distance.
-	if (distance < 0)
-	{
-		normal = -normal;
-		distance = -distance;
-	}
+	// The origin is inside the polytope, so this is >= 0 up to rounding.
+	float distance = math::max(a.dot(normal), 0.0f);
 
 	return { .a = a_index, .b = b_index, .c = c_index, .distance = distance, .normal = normal, .active = true };
 }
@@ -87,7 +88,7 @@ fn Face SupportArray.create_face(&self, sz a_index, sz b_index, sz c_index)
 
  @return `false if the polytope could not be closed — a degenerate face or a full array. The caller must stop.`
 *>
-fn bool SupportArray.reconstruct(&self, FaceArray* faces, Vec3 new_point)
+fn bool SupportArray.reconstruct(&self, FaceArray* faces, Vec3 new_point, Vec3 interior)
 {
 	EdgeArray edges;
 
@@ -109,7 +110,7 @@ fn bool SupportArray.reconstruct(&self, FaceArray* faces, Vec3 new_point)
 	{
 		if (faces.len() >= EPA_MAX_FACES) return false;
 
-		Face new_face = self.create_face(edge.a, edge.b, self.len() - 1);
+		Face new_face = self.create_face(edge.a, edge.b, self.len() - 1, interior);
 		// A face that cannot be built is a hole, which invalidates every later comparison.
 		if (!new_face.active) return false;
 
@@ -157,12 +158,15 @@ fn bool epa_core(CollisionInfo* info, CollisionShape shape_1, CollisionShape sha
 
 	foreach (item : info.simplex) vertices.push(item);
 
+	// The seed tetrahedron's centroid stays inside the polytope as it grows.
+	Vec3 interior = (vertices[0].point + vertices[1].point + vertices[2].point + vertices[3].point) * 0.25f;
+
 	FaceArray faces;
 	Face[4] seed = {
-		vertices.create_face(0, 1, 2),
-		vertices.create_face(0, 3, 1),
-		vertices.create_face(0, 2, 3),
-		vertices.create_face(1, 3, 2),
+		vertices.create_face(0, 1, 2, interior),
+		vertices.create_face(0, 3, 1, interior),
+		vertices.create_face(0, 2, 3, interior),
+		vertices.create_face(1, 3, 2, interior),
 	};
 
 	// All four or none: a seed tetrahedron missing a face is already an open polytope.
@@ -217,7 +221,7 @@ fn bool epa_core(CollisionInfo* info, CollisionShape shape_1, CollisionShape sha
 		if (vertices.len() >= EPA_MAX_VERTICES) break;
 		vertices.push(support_point);
 
-		if (!vertices.reconstruct(&faces, support_point.point)) break;
+		if (!vertices.reconstruct(&faces, support_point.point, interior)) break;
 
 		closest_face_index = faces.array_view().get_closest();
 		if (closest_face_index >= faces.len()) break;

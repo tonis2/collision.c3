@@ -23,7 +23,7 @@
 		},
 		"zip": {
 			"type": "prepare",
-			"exec": ["zip -r collision.c3l ./src manifest.json"]
+			"exec": ["zip -r collision.c3l ./src manifest.json ./README.md"]
 		}
 	},
 	"output": "./build"
