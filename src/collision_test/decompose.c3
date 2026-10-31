@@ -1,324 +1,94 @@
 module collision;
-import std::math, std::collections::list, std::io;
+import std::math, std::collections::list;
 
-alias Cells = List {List {Vec3}};
+// Vertices closer to a cutting plane than this are on it, not on either side.
+const double CLIP_EPSILON @local = 1e-6;
 
+// A cut must leave at least this many vertices (a tetrahedron) on each side, and
+// vertices within this distance of the plane count as on neither.
+const int MIN_VERTICES_PER_SIDE @local = 4;
+const double SIDE_EPSILON @local = 0.001;
 
-// Border edge for cap surface generation
-struct BorderEdge @local
+// Triangles whose normal is shorter than this have no usable cut direction.
+const float MIN_NORMAL_LENGTH @local = 0.001f;
+
+// At most this many triangles are sampled for candidate cut planes per part.
+const sz CUT_SAMPLE_TRIANGLES @local = 50;
+
+// Candidate cuts examined per part = plane_candidates * this.
+const int CANDIDATES_PER_PLANE_SETTING @local = 3;
+
+// Parts below this fraction of the mesh diagonal are dropped as slivers; larger
+// ones still keep thin surfaces such as floors.
+const double MIN_HULL_DIAGONAL_FRACTION @local = 0.005;
+
+// Page size of the arena that holds the parts being split.
+const sz ARENA_PAGE_SIZE @local = 64 * 1024;
+
+// Hollow shapes need many splits to separate their walls.
+const int MAX_SPLIT_DEPTH @local = 8;
+
+// -1, 0 or +1: which side of a plane a signed distance falls on.
+fn int side_of(double d, double eps) @local => d > eps ? 1 : (d < -eps ? -1 : 0);
+
+// Split one triangle by a plane, sending its pieces to the two meshes.
+// Vertices on the plane go to both sides.
+fn void clip_triangle(Mesh* mesh, Triangle tri, Plane plane, Mesh* pos_mesh, Mesh* neg_mesh) @local
 {
-	Vec3 p0;
-	Vec3 p1;
-}
+	TriangleVerts verts = tri.verts(mesh.vertices.array_view());
 
-// Find index of point in list, or -1 if not found
-fn sz find_point_index(List {Vec3}* points, Vec3 p, float eps) @local
-{
-	foreach (i, existing : *points)
+	double[3] dists;
+	int[3] sides;
+	int pos_count = 0;
+	int neg_count = 0;
+	for (int i = 0; i < 3; i++)
 	{
-		Vec3 diff = existing - p;
-		if (diff.dot(diff) < eps * eps)
-		{
-			return (sz)i;
-		}
-	}
-	return -1;
-}
-
-// Find root with path compression (iterative)
-fn sz find_root_iterative(sz[] parent, sz x) @local
-{
-	sz root = x;
-	// Find root
-	while (parent[root] != root)
-	{
-		root = parent[root];
-	}
-	// Path compression
-	while (parent[x] != root)
-	{
-		sz next = parent[x];
-		parent[x] = root;
-		x = next;
-	}
-	return root;
-}
-
-// Count connected loops in border edge graph using union-find
-fn sz count_border_loops(List {BorderEdge}* border, List {Vec3}* points) @local
-{
-	if (points.len() == 0) return 0;
-
-	// Union-find parent array
-	sz[] parent = mem::new_array(sz, points.len());
-	defer mem::free(parent);
-
-	for (sz i = 0; i < points.len(); i++)
-	{
-		parent[i] = (sz)i;
+		dists[i] = plane.distance(verts[i]);
+		sides[i] = side_of(dists[i], CLIP_EPSILON);
+		if (sides[i] > 0) pos_count++;
+		if (sides[i] < 0) neg_count++;
 	}
 
-	// Union edges
-	const float EPS = 0.0001f;
-	foreach (edge : *border)
-	{
-		sz i0 = find_point_index(points, edge.p0, EPS);
-		sz i1 = find_point_index(points, edge.p1, EPS);
-		if (i0 >= 0 && i1 >= 0)
-		{
-			sz r0 = find_root_iterative(parent, i0);
-			sz r1 = find_root_iterative(parent, i1);
-			if (r0 != r1)
-			{
-				parent[r0] = r1;
-			}
-		}
-	}
-
-	// Count unique roots
-	sz num_loops = 0;
-	for (sz i = 0; i < points.len(); i++)
-	{
-		if (find_root_iterative(parent, (sz)i) == (sz)i)
-		{
-			num_loops++;
-		}
-	}
-
-	return num_loops;
-}
-
-// Add cap surface triangles using fan triangulation from centroid
-// Skips cap generation if border has multiple disconnected loops (holes)
-fn void add_cap_surface(List {BorderEdge}* border, Plane plane, Mesh* mesh, bool flip_winding) @local
-{
-	if (border.len() < 3) return;
-
-	// Collect unique border points
-	List {Vec3} border_points;
-	defer border_points.free();
-
-	const float MERGE_DIST = 0.0001f;
-
-	foreach (edge : *border)
-	{
-		// Add p0 if not already present
-		if (find_point_index(&border_points, edge.p0, MERGE_DIST) < 0)
-		{
-			border_points.push(edge.p0);
-		}
-		// Add p1 if not already present
-		if (find_point_index(&border_points, edge.p1, MERGE_DIST) < 0)
-		{
-			border_points.push(edge.p1);
-		}
-	}
-
-	if (border_points.len() < 3) return;
-
-	// For complex meshes, skip expensive loop counting if we have many border points
-	// Simple heuristic: if cut has many edges, it's likely complex (circular, etc)
-	if (border.len() > 50)
-	{
-		// Too many edges - skip cap generation (likely circular cut or complex shape)
-		return;
-	}
-
-	// Check for multiple disconnected loops (indicates hole in cut surface)
-	// If we have multiple loops, skip cap generation to avoid filling holes
-	sz num_loops = count_border_loops(border, &border_points);
-	if (num_loops > 1)
-	{
-		// Multiple loops detected - this is a polygon with holes
-		// Skip cap generation to preserve the hole
-		return;
-	}
-
-	// Compute centroid
-	Vec3 centroid = { 0, 0, 0 };
-	foreach (p : border_points)
-	{
-		centroid += p;
-	}
-	centroid /= (float)border_points.len();
-
-	// Sort border points by angle around centroid (in the plane)
-	// First, find two perpendicular vectors in the plane
-	Vec3 n = plane.normal;
-	Vec3 up = { 0, 1, 0 };
-	if (math::abs(n.dot(up)) > 0.9f)
-	{
-		up = { 1, 0, 0 };
-	}
-	Vec3 u = n.cross(up).normalize();
-	Vec3 v = n.cross(u);
-
-	// Compute angles and sort
-	float[] angles = mem::new_array(float, border_points.len());
-	defer mem::free(angles);
-
-	for (sz i = 0; i < border_points.len(); i++)
-	{
-		Vec3 d = border_points[i] - centroid;
-		angles[i] = (float)math::atan2(d.dot(v), d.dot(u));
-	}
-
-	// Simple bubble sort by angle (border usually has few points)
-	for (sz i = 0; i < border_points.len() - 1; i++)
-	{
-		for (sz j = 0; j < border_points.len() - 1 - i; j++)
-		{
-			if (angles[j] > angles[j + 1])
-			{
-				float tmp_a = angles[j];
-				angles[j] = angles[j + 1];
-				angles[j + 1] = tmp_a;
-
-				Vec3 tmp_p = border_points[j];
-				border_points[j] = border_points[j + 1];
-				border_points[j + 1] = tmp_p;
-			}
-		}
-	}
-
-	// Create fan triangles from centroid
-	for (sz i = 0; i < border_points.len(); i++)
-	{
-		sz j = (i + 1) % border_points.len();
-		Vec3 p0 = border_points[i];
-		Vec3 p1 = border_points[j];
-
-		if (flip_winding)
-		{
-			mesh.add_triangle(centroid, p1, p0);
-		}
-		else
-		{
-			mesh.add_triangle(centroid, p0, p1);
-		}
-	}
-}
-
-// MeshClipper functions - properly splits triangles at plane intersection
-fn void clip_triangle(
-	Mesh* mesh,
-	Triangle tri,
-	Plane plane,
-	Mesh* pos_mesh,
-	Mesh* neg_mesh,
-	List {BorderEdge}* border
-) @local
-{
-	Vec3 v0 = mesh.vertices[tri.x];
-	Vec3 v1 = mesh.vertices[tri.y];
-	Vec3 v2 = mesh.vertices[tri.z];
-
-	double d0 = plane.distance(v0);
-	double d1 = plane.distance(v1);
-	double d2 = plane.distance(v2);
-
-	const double EPS = 1e-6;
-
-	// Classify vertices
-	int s0 = d0 > EPS ? 1 : (d0 < -EPS ? -1 : 0);
-	int s1 = d1 > EPS ? 1 : (d1 < -EPS ? -1 : 0);
-	int s2 = d2 > EPS ? 1 : (d2 < -EPS ? -1 : 0);
-
-	int pos_count = (s0 == 1 ? 1 : 0) + (s1 == 1 ? 1 : 0) + (s2 == 1 ? 1 : 0);
-	int neg_count = (s0 == -1 ? 1 : 0) + (s1 == -1 ? 1 : 0) + (s2 == -1 ? 1 : 0);
-
-	// All on positive side
 	if (neg_count == 0)
 	{
-		pos_mesh.add_triangle(v0, v1, v2);
+		pos_mesh.add_triangle(verts[0], verts[1], verts[2]);
 		return;
 	}
-
-	// All on negative side
 	if (pos_count == 0)
 	{
-		neg_mesh.add_triangle(v0, v1, v2);
+		neg_mesh.add_triangle(verts[0], verts[1], verts[2]);
 		return;
 	}
 
-	// Triangle crosses the plane - need to split
-	// Collect positive and negative vertices, and border intersection points
-	Vec3[4] pos_verts;
-	Vec3[4] neg_verts;
-	Vec3[2] intersections;
-	int pos_idx = 0;
-	int neg_idx = 0;
-	int int_idx = 0;
-
-	// Process each edge
-	Vec3[3] verts = { v0, v1, v2 };
-	double[3] dists = { d0, d1, d2 };
-	int[3] sides = { s0, s1, s2 };
+	// The triangle crosses the plane: walk its edges, keeping each vertex on its
+	// side(s) and adding the intersection point to both where an edge crosses.
+	Vec3[4] pos_poly;
+	Vec3[4] neg_poly;
+	int pos_n = 0;
+	int neg_n = 0;
 
 	for (int i = 0; i < 3; i++)
 	{
 		int j = (i + 1) % 3;
-		Vec3 vi = verts[i];
-		Vec3 vj = verts[j];
-		int si = sides[i];
-		int sj = sides[j];
+		if (sides[i] >= 0) pos_poly[pos_n++] = verts[i];
+		if (sides[i] <= 0) neg_poly[neg_n++] = verts[i];
 
-		// Add current vertex to appropriate side
-		if (si >= 0)
+		if (sides[i] * sides[j] < 0)
 		{
-			pos_verts[pos_idx++] = vi;
-		}
-		if (si <= 0)
-		{
-			neg_verts[neg_idx++] = vi;
-		}
-
-		// If edge crosses plane, add intersection point to both sides
-		if ((si > 0 && sj < 0) || (si < 0 && sj > 0))
-		{
-			Vec3 intersection = intersect_edge(vi, vj, dists[i], dists[j]);
-			pos_verts[pos_idx++] = intersection;
-			neg_verts[neg_idx++] = intersection;
-			if (int_idx < 2)
-			{
-				intersections[int_idx++] = intersection;
-			}
+			Vec3 crossing = intersect_edge(verts[i], verts[j], dists[i], dists[j]);
+			pos_poly[pos_n++] = crossing;
+			neg_poly[neg_n++] = crossing;
 		}
 	}
 
-	// Collect border edge for cap surface generation
-	if (int_idx == 2 && border != null)
-	{
-		border.push({ .p0 = intersections[0], .p1 = intersections[1] });
-	}
-
-	// Build triangles from collected vertices
-	if (pos_idx >= 3)
-	{
-		pos_mesh.add_triangle(pos_verts[0], pos_verts[1], pos_verts[2]);
-		if (pos_idx == 4)
-		{
-			pos_mesh.add_triangle(pos_verts[0], pos_verts[2], pos_verts[3]);
-		}
-	}
-
-	if (neg_idx >= 3)
-	{
-		neg_mesh.add_triangle(neg_verts[0], neg_verts[1], neg_verts[2]);
-		if (neg_idx == 4)
-		{
-			neg_mesh.add_triangle(neg_verts[0], neg_verts[2], neg_verts[3]);
-		}
-	}
+	pos_mesh.add_fan(pos_poly[:pos_n]);
+	neg_mesh.add_fan(neg_poly[:neg_n]);
 }
 
+// No cap surfaces: collision only needs the vertices, not watertight pieces.
 fn void clip_mesh(Mesh* mesh, Plane plane, Mesh* pos_mesh, Mesh* neg_mesh) @local
 {
-	foreach (tri : mesh.triangles)
-	{
-		clip_triangle(mesh, tri, plane, pos_mesh, neg_mesh, null);
-	}
-	// Note: No cap surfaces - for collision we only need vertices, not watertight meshes
+	foreach (tri : mesh.triangles) clip_triangle(mesh, tri, plane, pos_mesh, neg_mesh);
 }
 
 // ============================================================================
@@ -370,324 +140,182 @@ const CoacdParameters COACD_SLOW = {
 };
 
 // ----------------------------------------------------------------------------
-// Internal structures for CoACD
+// Cut search
 // ----------------------------------------------------------------------------
 
-// Part in the decomposition queue
-struct CoacdPart @local
+// Balance of a cut: larger-side / smaller-side vertex count (lower is better),
+// or float::max when either side has too few vertices to form a hull.
+fn float score_cut(Mesh* mesh, Plane cut) @local
 {
-	Mesh mesh;
-	float concavity;
-}
-
-fn void CoacdPart.free(&self)
-{
-	self.mesh.free();
-}
-
-// Cutting plane defined by normal and distance from origin
-struct CutPlane @local
-{
-	Vec3 normal;
-	float d; // Distance from origin (plane equation: normal.dot(p) = d)
-}
-
-// ----------------------------------------------------------------------------
-// Concavity Metrics (CoACD Paper)
-// Uses Rv (volume-based radius) as primary metric for speed
-// Rv = k * (3 * |V_hull - V_mesh| / (4 * PI))^(1/3)
-// ----------------------------------------------------------------------------
-
-// Compute Rv: radius of sphere with equivalent volume difference
-fn float compute_rv(Mesh* mesh, Mesh* hull, float k) @local
-{
-	double mesh_vol = math::abs(mesh.get_volume());
-	double hull_vol = math::abs(hull.get_volume());
-	double vol_diff = math::abs(hull_vol - mesh_vol);
-
-	if (vol_diff < 1e-10) return 0;
-
-	double rv = math::pow(3.0 * vol_diff / (4.0 * math::PI), 1.0 / 3.0);
-	return (float)(rv * k);
-}
-
-// Compute Rv for merged hulls (used in cut evaluation)
-// v1, v2 = volumes of two parts, v_combined = volume of combined hull
-fn float compute_rv_merged(double v1, double v2, double v_combined, float k) @local
-{
-	double vol_diff = math::abs(v1 + v2 - v_combined);
-	if (vol_diff < 1e-10) return 0;
-
-	double rv = math::pow(3.0 * vol_diff / (4.0 * math::PI), 1.0 / 3.0);
-	return (float)(rv * k);
-}
-
-// Compute concavity as normalized Rv (scale-invariant)
-fn float compute_concavity(Mesh* mesh, Mesh* hull, float k, float diagonal) @local
-{
-	float rv = compute_rv(mesh, hull, k);
-	// Normalize by mesh diagonal for scale invariance
-	return rv / math::max(diagonal, 0.001f);
-}
-
-// ----------------------------------------------------------------------------
-// Cutting Plane Generation and Evaluation
-// Uses triangle normals for cutting planes (works well for hollow shapes)
-// ----------------------------------------------------------------------------
-
-// Split mesh by a cutting plane
-fn void split_mesh_by_plane(Mesh* mesh, CutPlane cut, Mesh* pos_mesh, Mesh* neg_mesh) @local
-{
-	Plane plane = create_plane(cut.normal, cut.d);
-	clip_mesh(mesh, plane, pos_mesh, neg_mesh);
-}
-
-// Count vertices on each side of a cutting plane
-fn bool count_vertices_on_sides(Mesh* mesh, CutPlane cut, int* pos_count, int* neg_count) @local
-{
-	*pos_count = 0;
-	*neg_count = 0;
+	int pos_count = 0;
+	int neg_count = 0;
 
 	foreach (v : mesh.vertices)
 	{
-		float dist = cut.normal.dot(v) - cut.d;
-		if (dist > 0.001f)
-		{
-			(*pos_count)++;
-		}
-		else if (dist < -0.001f)
-		{
-			(*neg_count)++;
-		}
+		int side = side_of(cut.distance(v), SIDE_EPSILON);
+		if (side > 0) pos_count++;
+		if (side < 0) neg_count++;
 	}
 
-	return *pos_count >= 4 && *neg_count >= 4;
-}
-
-// Score a cut by balance ratio (lower = more balanced = better)
-fn float score_cut(Mesh* mesh, CutPlane cut) @local
-{
-	int pos_count, neg_count;
-	if (!count_vertices_on_sides(mesh, cut, &pos_count, &neg_count))
-	{
-		return float::max;
-	}
+	if (pos_count < MIN_VERTICES_PER_SIDE || neg_count < MIN_VERTICES_PER_SIDE) return float::max;
 	return (float)math::max(pos_count, neg_count) / (float)math::min(pos_count, neg_count);
 }
 
-// ----------------------------------------------------------------------------
-// Best Cut Search using Triangle Normals
-// This is the key for hollow shapes - uses mesh geometry to find good cuts
-// ----------------------------------------------------------------------------
-
-// Find the best cutting plane by examining triangle normals
-// For hollow shapes, inner faces have normals pointing inward - using those
-// as cutting planes will cut through the hollow space properly
-fn CutPlane find_best_cut(Mesh* mesh, Aabb3 bounds, CoacdParameters* params, float diagonal) @local
+// Find the best cutting plane among the planes of large triangles. For hollow
+// shapes the inner faces point into the cavity, so cutting along them separates
+// the walls. Falls back to the middle of the longest bounding-box axis.
+fn Plane find_best_cut(Mesh* mesh, Aabb3 bounds, CoacdParameters* params) @local
 {
-	if (mesh.triangles.len() == 0)
-	{
-		// Fallback: center cut on X axis
-		return { .normal = { 1, 0, 0 }, .d = (bounds.min.x + bounds.max.x) * 0.5f };
-	}
-
 	Vec3[] verts = mesh.vertices.array_view();
-
-	// Collect candidate planes from triangles with significant area
-	// We sample triangles to get diverse cutting directions
-	CutPlane best_cut = { .normal = { 1, 0, 0 }, .d = 0 };
+	Plane best_cut;
 	float best_score = float::max;
 
-	// Calculate total mesh area for threshold
-	double total_area = 0;
-	foreach (tri : mesh.triangles)
+	if (!mesh.triangles.is_empty())
 	{
-		total_area += tri.get_area(verts);
-	}
-	double min_area = total_area / (double)mesh.triangles.len() * 0.5; // At least half of average
+		double total_area = 0;
+		foreach (tri : mesh.triangles) total_area += tri.get_area(verts);
+		double min_area = total_area / (double)mesh.triangles.len() * 0.5; // At least half the average
 
-	// Sample stride - don't check every triangle for large meshes
-	sz stride = math::max((sz)1, mesh.triangles.len() / (sz)50);
-	int candidates_checked = 0;
-	int max_candidates = params.plane_candidates * 3;
+		sz stride = math::max((sz)1, mesh.triangles.len() / CUT_SAMPLE_TRIANGLES);
+		int candidates_checked = 0;
+		int max_candidates = params.plane_candidates * CANDIDATES_PER_PLANE_SETTING;
 
-	for (sz i = 0; i < mesh.triangles.len() && candidates_checked < max_candidates; i += stride)
-	{
-		Triangle tri = mesh.triangles[i];
-		double area = tri.get_area(verts);
-
-		// Skip small triangles
-		if (area < min_area) continue;
-
-		Vec3 normal = tri.get_normal(verts);
-		if (normal.length() < 0.001f) continue;
-
-		normal = normal.normalize();
-		Vec3 center = tri.get_center(verts);
-		float d = normal.dot(center);
-
-		CutPlane cut = { .normal = normal, .d = d };
-		float score = score_cut(mesh, cut);
-
-		candidates_checked++;
-
-		if (score < best_score)
+		for (sz i = 0; i < mesh.triangles.len() && candidates_checked < max_candidates; i += stride)
 		{
-			best_score = score;
-			best_cut = cut;
-		}
+			Triangle tri = mesh.triangles[i];
+			if (tri.get_area(verts) < min_area) continue;
 
-		// Also try the negated normal (opposite direction)
-		CutPlane cut_neg = { .normal = -normal, .d = -d };
-		float score_neg = score_cut(mesh, cut_neg);
-		if (score_neg < best_score)
-		{
-			best_score = score_neg;
-			best_cut = cut_neg;
+			Vec3 normal = tri.get_normal(verts);
+			if (normal.length() < MIN_NORMAL_LENGTH) continue;
+
+			normal = normal.normalize();
+			double d = normal.dot(tri.get_center(verts));
+			candidates_checked++;
+
+			// Both orientations of the plane: the sides swap, the balance may not.
+			Plane[2] orientations = { { normal, d }, { -normal, -d } };
+			foreach (cut : orientations)
+			{
+				float score = score_cut(mesh, cut);
+				if (score < best_score)
+				{
+					best_score = score;
+					best_cut = cut;
+				}
+			}
 		}
 	}
 
-	// If no good triangle-based cut found, fallback to axis-aligned
 	if (best_score >= float::max)
 	{
-		Vec3 size = bounds.size();
-		// Choose longest axis
-		if (size.x >= size.y && size.x >= size.z)
-		{
-			best_cut = { .normal = { 1, 0, 0 }, .d = (bounds.min.x + bounds.max.x) * 0.5f };
-		}
-		else if (size.y >= size.z)
-		{
-			best_cut = { .normal = { 0, 1, 0 }, .d = (bounds.min.y + bounds.max.y) * 0.5f };
-		}
-		else
-		{
-			best_cut = { .normal = { 0, 0, 1 }, .d = (bounds.min.z + bounds.max.z) * 0.5f };
-		}
+		sz axis = bounds.longest_axis();
+		Vec3 normal = { 0, 0, 0 };
+		normal[axis] = 1;
+		best_cut = { normal, bounds.center()[axis] };
 	}
 
 	return best_cut;
 }
 
-
 // ----------------------------------------------------------------------------
-// Main Decomposition Function
-// Uses is_convex() check - keeps splitting until pieces become convex
-// This is the key for hollow shapes!
+// Decomposition: keep splitting until the pieces are convex (or deep enough).
 // ----------------------------------------------------------------------------
 
-// Part in queue with depth tracking
+// Part in the decomposition queue with depth tracking. Its mesh is scratch on the
+// arena of `decompose_parts`.
 struct DecompPart @local
 {
 	Mesh mesh;
 	int depth;
 }
 
-fn void DecompPart.free(&self)
+// Take ownership of `hull` into `result` if it is a real solid at least
+// `min_diagonal` across; otherwise free it.
+fn void push_hull(List {Mesh}* result, Mesh hull, double min_diagonal) @local
 {
-	self.mesh.free();
+	if (hull.vertices.len() >= 4 && hull.get_aabb().size().length() >= min_diagonal)
+	{
+		result.push(hull);
+	}
+	else
+	{
+		hull.free();
+	}
 }
 
+<*
+ Decompose `mesh` into convex hulls. The input is not modified (the work runs on
+ a validated, welded copy), so its vertices, triangles and BVH stay valid.
+
+ The returned list and hulls are on the heap; free them with `MeshList.release`.
+ All intermediate parts live on an arena that is released on return.
+
+ @param [&in] mesh
+*>
 fn List {Mesh} coacd_decompose(Mesh* mesh, CoacdParameters params = COACD_MEDIUM)
 {
 	List {Mesh} result;
+	result.init(mem);
+	if (mesh.vertices.len() < 4 || mesh.triangles.len() < 2) return result;
 
-	if (mesh.vertices.len() < 4 || mesh.triangles.len() < 2)
+	decompose_parts(mesh, &params, &result);
+	return result;
+}
+
+<*
+ Splitting runs on its own arena rather than the temp allocator: the parts pile up
+ over the run, and once the temp page is nearly full every nested `@pool` (in
+ `remesh`, `quickhull`) would allocate and fill a fresh page of its own.
+*>
+fn void decompose_parts(Mesh* mesh, CoacdParameters* params, List {Mesh}* result) @local
+{
+	DynamicArenaAllocator arena;
+	arena.init(mem, ARENA_PAGE_SIZE);
+	defer arena.free();
+
+	Mesh work;
+	work.init(&arena, mesh.vertices.len(), mesh.triangles.len());
+	work.vertices.push_all(mesh.vertices.array_view());
+	work.triangles.push_all(mesh.triangles.array_view());
+	work.validate();
+	work.remesh();
+
+	if (work.is_convex())
 	{
-		return result;
+		push_hull(result, quickhull(work.vertices.array_view()), 0);
+		return;
 	}
 
-	// Validate and clean up mesh
-	mesh.validate();
-	mesh.remesh();
+	Aabb3 bounds = work.get_aabb();
+	double min_hull_diagonal = bounds.size().length() * MIN_HULL_DIAGONAL_FRACTION;
 
-	// If already convex, return hull directly
-	if (mesh.is_convex())
-	{
-		Mesh hull = quickhull(mesh.vertices.array_view());
-		if (hull.vertices.len() >= 4)
-		{
-			result.push(hull);
-		}
-		else
-		{
-			// A hull too small to keep is still a hull to give back — the other
-			// three call sites in this file already say so.
-			hull.free();
-		}
-		return result;
-	}
-
-	Aabb3 bounds = mesh.get_aabb();
-	float diagonal = bounds.size().length();
-
-	// Minimal filtering - only remove truly tiny pieces (0.5% of diagonal)
-	// This prevents degenerate corner pieces while keeping thin surfaces like floors
-	double min_hull_diagonal = diagonal * 0.005;
-
-	// Working queue
+	// FIFO queue walked by `head`; consumed slots are never revisited.
 	List {DecompPart} queue;
-	defer
-	{
-		foreach (&part : queue)
-		{
-			part.free();
-		}
-		queue.free();
-	}
+	queue.init(&arena);
+	queue.push({ .mesh = work, .depth = 0 });
 
-	// Create initial part
-	Mesh mesh_copy;
-	mesh_copy.vertices.push_all(mesh.vertices.array_view());
-	mesh_copy.triangles.push_all(mesh.triangles.array_view());
-
-	queue.push({ .mesh = mesh_copy, .depth = 0 });
-
-	int max_depth = 8; // Need more splits to properly separate hollow box walls
+	sz head = 0;
 	int iteration = 0;
 
-	while (queue.len() > 0 && result.len() < params.max_hulls && iteration < params.max_iterations)
+	while (head < queue.len() && result.len() < params.max_hulls && iteration < params.max_iterations)
 	{
 		iteration++;
 
-		// Get first part from queue
-		DecompPart part = queue[0];
-		queue.remove_at(0);
+		DecompPart part = queue[head++];
 
-		// If convex or max depth, add to results
-		if (part.depth >= max_depth || part.mesh.is_convex())
+		if (part.depth >= MAX_SPLIT_DEPTH || part.mesh.is_convex())
 		{
-			Mesh hull = quickhull(part.mesh.vertices.array_view());
-			if (hull.vertices.len() >= 4)
-			{
-				double hull_diag = hull.get_aabb().size().length();
-				if (hull_diag >= min_hull_diagonal)
-				{
-					result.push(hull);
-				}
-				else
-				{
-					hull.free();
-				}
-			}
-			else
-			{
-				hull.free();
-			}
-			part.free();
+			push_hull(result, quickhull(part.mesh.vertices.array_view()), min_hull_diagonal);
 			continue;
 		}
 
-		// Find best cutting plane using triangle normals
-		Aabb3 part_bounds = part.mesh.get_aabb();
-		CutPlane best_cut = find_best_cut(&part.mesh, part_bounds, &params, diagonal);
+		Plane cut = find_best_cut(&part.mesh, part.mesh.get_aabb(), params);
 
-		// Apply the cut
 		Mesh pos_mesh;
 		Mesh neg_mesh;
-		split_mesh_by_plane(&part.mesh, best_cut, &pos_mesh, &neg_mesh);
-
-		// Clean up split meshes - weld duplicate vertices
+		pos_mesh.init(&arena);
+		neg_mesh.init(&arena);
+		clip_mesh(&part.mesh, cut, &pos_mesh, &neg_mesh);
 		pos_mesh.remesh();
 		neg_mesh.remesh();
 
@@ -696,85 +324,20 @@ fn List {Mesh} coacd_decompose(Mesh* mesh, CoacdParameters params = COACD_MEDIUM
 
 		if (!pos_valid && !neg_valid)
 		{
-			// Can't split further - add hull to results
-			Mesh hull = quickhull(part.mesh.vertices.array_view());
-			if (hull.vertices.len() >= 4)
-			{
-				double hull_diag = hull.get_aabb().size().length();
-				if (hull_diag >= min_hull_diagonal)
-				{
-					result.push(hull);
-				}
-				else
-				{
-					hull.free();
-				}
-			}
-			else
-			{
-				hull.free();
-			}
-			part.free();
-			pos_mesh.free();
-			neg_mesh.free();
+			// Can't split further: keep the part as one hull.
+			push_hull(result, quickhull(part.mesh.vertices.array_view()), min_hull_diagonal);
 			continue;
 		}
 
 		int new_depth = part.depth + 1;
-
-		// Add valid parts to queue for further processing
-		if (pos_valid)
-		{
-			queue.push({ .mesh = pos_mesh, .depth = new_depth });
-		}
-		else
-		{
-			pos_mesh.free();
-		}
-
-		if (neg_valid)
-		{
-			queue.push({ .mesh = neg_mesh, .depth = new_depth });
-		}
-		else
-		{
-			neg_mesh.free();
-		}
-
-		part.free();
+		if (pos_valid) queue.push({ .mesh = pos_mesh, .depth = new_depth });
+		if (neg_valid) queue.push({ .mesh = neg_mesh, .depth = new_depth });
 	}
 
-	// Process remaining queue items
-	foreach (&part : queue)
+	// Whatever is still queued becomes a hull each, up to the limit.
+	for (sz i = head; i < queue.len(); i++)
 	{
 		if (result.len() >= params.max_hulls) break;
-
-		Mesh hull = quickhull(part.mesh.vertices.array_view());
-		if (hull.vertices.len() >= 4)
-		{
-			double hull_diag = hull.get_aabb().size().length();
-			if (hull_diag >= min_hull_diagonal)
-			{
-				result.push(hull);
-			}
-			else
-			{
-				hull.free();
-			}
-		}
-		else
-		{
-			hull.free();
-		}
-		part.mesh.free();
-		part.mesh = { };
+		push_hull(result, quickhull(queue[i].mesh.vertices.array_view()), min_hull_diagonal);
 	}
-
-	return result;
-}
-
-// Convenience wrapper
-fn List {Mesh} decompose(Mesh* mesh, CoacdParameters params = COACD_MEDIUM)
-{
-	return coacd_decompose(mesh, params);
 }

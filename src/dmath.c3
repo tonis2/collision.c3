@@ -266,3 +266,23 @@ fn float pow(float base, float exponent)
 	if (base == 0) return 0.0f;
 	return (float)exp2_d((double)exponent * log2_d((double)base));
 }
+
+<*
+ Unit-axis rotation of `angle` radians as a quaternion, built with the
+ deterministic `sincos` (never libm).
+*>
+fn QuaternionValue quat_from_axis_angle(float[<3>] unit_axis, float angle)
+{
+	float[<2>] sc = sincos(angle * 0.5f);
+	return { ...(unit_axis * sc[0]), sc[1] };
+}
+
+<*
+ Rotate `v` about a unit axis by `angle` radians (Rodrigues' formula), with the
+ deterministic `sincos`.
+*>
+fn float[<3>] rotate_about_axis(float[<3>] v, float[<3>] unit_axis, float angle)
+{
+	float[<2>] sc = sincos(angle);
+	return v * sc[1] + unit_axis.cross(v) * sc[0] + unit_axis * (unit_axis.dot(v) * (1.0f - sc[1]));
+}

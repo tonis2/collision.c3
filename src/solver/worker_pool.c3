@@ -34,30 +34,9 @@ struct WorkItem @local
 <*
  Everything the workers touch, in one heap block they co-own.
 
- **This is deliberately not inlined into `WorkerPool`, and the reason is a
- hang.** A worker holds a pointer to this block for its whole life, so the
- block has to outlive the pool handle rather than share its storage. When the
- state lived in the handle, a `PhysicsWorld` that was never freed left its
- workers parked on a mutex inside the *caller's stack frame*; the next world
- built in that frame initialized its own pool over the same bytes, and the
- stale worker woke up sharing another pool's queue, its counters and its
- condition variables. Two workers then serviced a queue accounted for one and
- `join()` never saw it drain.
-
- That is not a hypothetical. C3's test runner `longjmp`s out of a failing
- check, which skips every `defer` and so skips `PhysicsWorld.free`, so *any*
- red physics check left a worker behind — and the next physics check in the
- same binary hung instead of running. A hang reports nothing and blames
- nobody, which is a far worse failure than the leak it was hiding.
-
- With the state on the heap, a pool that never reaches `destroy` leaks one
- block and one parked thread and touches nothing else. The leak is still a
- bug; it is just a bug that stays where it was made.
-
- The same indirection makes the handle safe to move. `create_world` returns a
- `PhysicsWorld` by value, and copying a handle now copies a pointer rather
- than a set of pthread objects the workers are already blocked on. Ownership
- is still single — the moved-from handle must not be destroyed as well.
+ Not inlined into `WorkerPool`: workers hold a pointer to this block for their whole
+ life, so it must outlive the handle (and a pool that is never destroyed must not
+ leave workers parked on a dead stack frame). It also makes the handle safe to move.
 *>
 struct PoolState @local
 {
@@ -82,9 +61,7 @@ struct WorkerPool
 
 fn sz WorkerPool.workers(&self)
 {
-	// Zero before init, which is what the bare `threads.len` answered before
-	// the state moved off the handle — the solver divides by this and reads it
-	// on paths that run before `run_step` has lazily initialized anything.
+	// Zero before init: the solver reads this before `run_step` has initialized anything.
 	if (self.state == null) return 0;
 	return self.state.threads.len;
 }
@@ -222,8 +199,7 @@ fn void WorkerPool.destroy(&self)
 	pool.space_free.destroy();
 	if (pool.threads.ptr != null) mem::free(pool.threads.ptr);
 	if (pool.queue.ptr != null) mem::free(pool.queue.ptr);
-	// Last, and only after every worker has been joined: nothing may be
-	// dereferencing this block once it goes back to the allocator.
+	// Last: every worker has been joined, so nothing dereferences this block any more.
 	mem::free(pool);
 	*self = { };
 }

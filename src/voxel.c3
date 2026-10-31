@@ -6,11 +6,9 @@ import std::math;
 // ============================================================================
 // Solid voxelization and distance fields through the inside of a mesh
 //
-// Turns a closed triangle mesh into the set of cells that are *inside* it, then
-// measures distance through that set rather than across open space. Two points
-// on either side of a gap are far apart here even when a straight line between
-// them is short, which is the property that separates limbs, keeps a flow field
-// from routing through a wall, and stops influence leaking between rooms.
+// Turns a closed triangle mesh into the cells inside it, then measures distance
+// through those cells rather than across open space, so limbs stay separate and
+// influence cannot leak through a gap.
 //
 //     VoxelGrid grid = create_voxel_grid(vertices, triangles);
 //     defer grid.free();
@@ -19,47 +17,42 @@ import std::math;
 //     grid.distance_from_segment(start, end, field);
 //     float d = grid.sample(field, point);
 //
-// Resolution is set on the model's longest side, not on its triangle count, so
-// a 200k-triangle scan and a 1k-triangle proxy of the same shape produce the
-// same grid and cost the same to solve. What resolution buys is the thinnest
-// feature that survives: anything narrower than a cell may not fill, and a
-// passage that does not fill is one no path travels down.
+// Resolution is set on the model's longest side, not its triangle count. Features
+// thinner than a cell may not fill, and a passage that does not fill is one no
+// path travels.
 // ============================================================================
 
 // Cells along the model's longest side.
 const uint DEFAULT_VOXEL_RESOLUTION = 48;
 
-// Empty cells kept around the model on every side. Two is what makes the sweeps
-// safe: no interior cell can sit on the grid boundary, so stepping to any of a
-// cell's 26 neighbours stays in range and inside the same row, and the inner
-// loop needs no bounds test at all.
+// Empty cells kept around the model on every side. Two guarantees every interior
+// cell has all 26 neighbours in range, so the sweeps need no bounds test.
 const int VOXEL_PAD = 2;
 
-// How far a marching ray steps past a surface before looking for the next one,
-// as a fraction of a cell. Two surfaces closer together than this merge into one
-// crossing and the parity inverts for the rest of that line.
+// How far a marching ray steps past a surface before looking for the next, as a
+// fraction of a cell. Surfaces closer than this merge and invert the parity.
 const float VOXEL_CROSSING_STEP = 0.02;
 
-// Crossings counted along one line before it is abandoned. A closed mesh gives a
-// handful; finding out costs a ray cast each.
+// Crossings counted along one line before it is abandoned. A closed mesh gives a handful.
 const usz MAX_VOXEL_CROSSINGS = 64;
 
-// The distance reported for a cell no path reached. Compare against it before
-// adding anything to a value read out of a field.
+// Distance reported for a cell no path reached. Compare before adding to a field value.
 const float VOXEL_UNREACHED = float::max;
 
-// Sweeps run before a field is accepted as it stands. Each pass propagates
-// distance along the scan order and back, so a path that doubles back needs one
-// pair per reversal. The loop stops as soon as a pass changes nothing.
+// Fractions of a cell the grid origin is shifted by, per axis — different on
+// each so no axis lines up with round-number geometry.
+const Vec3 VOXEL_ORIGIN_JITTER = { 0.0137f, 0.0219f, 0.0311f };
+
+// Of the three axis directions, how many must find a voxel inside for it to count.
+const char VOXEL_VOTES_NEEDED = 2;
+
+// Cap on chamfer sweeps; a path that doubles back needs one forward/backward pair per
+// reversal. The loop stops early once a pass changes nothing.
 const usz MAX_VOXEL_SWEEPS = 12;
 
-// Which cells of a box around the mesh are inside it, and how they connect.
-//
-// `index` and `cells` are two directions of one mapping: `index` answers "is
-// this voxel inside, and where is it in the compact list", `cells` answers
-// "which voxel is this entry". Fields are sized by `cells`, so solving costs
-// interior volume rather than bounding-box volume — on a limbed shape that is a
-// fifth of the box.
+// Which cells of a box around the mesh are inside it. `index` and `cells` are the two
+// directions of one mapping; fields are sized by `cells`, so solving costs interior
+// volume rather than bounding-box volume.
 struct VoxelGrid
 {
 	Vec3 origin;   // the centre of voxel (0, 0, 0)
@@ -68,11 +61,42 @@ struct VoxelGrid
 
 	int[] index;   // voxel index -> entry in `cells`, or -1 outside the mesh
 	int[] cells;   // entry -> voxel index, ascending
+	ChamferStencil stencil; // neighbour offsets and step lengths, fixed by the grid's shape
+}
+
+// The 3x3x3 neighbourhood in scan order. Slots before the centre (13) are the neighbours
+// a forward sweep has already visited; slots after it, a backward sweep.
+const usz STENCIL_SIZE = 27;
+const usz STENCIL_CENTRE = 13;
+
+struct ChamferStencil
+{
+	int[STENCIL_SIZE] offset; // voxel-index step to each neighbour
+	float[STENCIL_SIZE] cost; // true distance to it
+}
+
+fn ChamferStencil make_chamfer_stencil(int nx, int ny, float cell) @local
+{
+	ChamferStencil stencil;
+	usz slot = 0;
+	for (int dz = -1; dz <= 1; dz++)
+	{
+		for (int dy = -1; dy <= 1; dy++)
+		{
+			for (int dx = -1; dx <= 1; dx++)
+			{
+				stencil.offset[slot] = dz * nx * ny + dy * nx + dx;
+				stencil.cost[slot] = cell * math::sqrt((float)(dx * dx + dy * dy + dz * dz));
+				slot++;
+			}
+		}
+	}
+	return stencil;
 }
 
 // False for a mesh that is open everywhere, flat, or smaller than one cell.
 // Callers should treat that as "no grid" rather than as an error.
-fn bool VoxelGrid.usable(self) => self.cells.len > 0;
+fn bool VoxelGrid.usable(&self) => self.cells.len > 0;
 
 fn void VoxelGrid.free(&self)
 {
@@ -81,9 +105,9 @@ fn void VoxelGrid.free(&self)
 	*self = {};
 }
 
-fn int VoxelGrid.at(self, int x, int y, int z) @inline => (z * self.ny + y) * self.nx + x;
+fn int VoxelGrid.at(&self, int x, int y, int z) @inline => (z * self.ny + y) * self.nx + x;
 
-fn Vec3 VoxelGrid.center(self, int voxel)
+fn Vec3 VoxelGrid.center(&self, int voxel)
 {
 	int x = voxel % self.nx;
 	int y = (voxel / self.nx) % self.ny;
@@ -96,58 +120,90 @@ fn Vec3 VoxelGrid.center(self, int voxel)
 }
 
 // Where an entry sits in space, for callers holding entries rather than voxels.
-fn Vec3 VoxelGrid.entry_center(self, int entry) => self.center(self.cells[entry]);
+fn Vec3 VoxelGrid.entry_center(&self, int entry) => self.center(self.cells[entry]);
 
-// Whether `point` is in solid material.
-//
-// The cheap half of what a solid voxelization is for: one lookup, no casts, no
-// BVH walk — worth building a grid for on its own if a shape is asked this
-// often enough. Accurate to half a cell, so it answers "is this in the body",
-// not "which side of that triangle"; anything nearer the surface than the cell
-// size is a coin flip by construction.
-//
-// A point outside the grid is outside the mesh. Tested rather than clamped, so
-// this is also safe on a grid that was never built.
-fn bool VoxelGrid.inside(self, Vec3 point)
+// `point` in grid units: voxel centres sit at whole numbers.
+fn Vec3 VoxelGrid.to_grid(&self, Vec3 point) @inline => (point - self.origin) / self.cell;
+
+// The voxel whose cell contains `point`, not clamped to the grid.
+fn int[<3>] VoxelGrid.voxel_of(&self, Vec3 point) @inline
 {
-	if (self.cells.len == 0) return false;
-
-	int x = (int)math::floor((point.x - self.origin.x) / self.cell + 0.5f);
-	int y = (int)math::floor((point.y - self.origin.y) / self.cell + 0.5f);
-	int z = (int)math::floor((point.z - self.origin.z) / self.cell + 0.5f);
-
-	if (x < 0 || y < 0 || z < 0) return false;
-	if (x >= self.nx || y >= self.ny || z >= self.nz) return false;
-
-	return self.index[self.at(x, y, z)] >= 0;
+	Vec3 g = self.to_grid(point);
+	return { (int)math::floor(g.x + 0.5f), (int)math::floor(g.y + 0.5f), (int)math::floor(g.z + 0.5f) };
 }
 
-// The entry nearest `point`, or -1 when the mesh is not close.
-//
-// The cell the point falls in first, then the shells around it: a point on the
-// surface sits exactly where the inside stops, so half of them land in a cell
-// the parity test called empty and have to reach in one step.
-//
-// `reach` is the last shell searched, in cells. The default finds a point that
-// is essentially already on the surface, which is what mapping a mesh's own
-// vertices needs. Raise it to pull a point that is genuinely in mid-air onto
-// the nearest body — but the wider the search, the more likely the answer is
-// some *other* part of the model, so a caller that widens it should have a
-// reason to believe the point belongs to the shape at all.
-//
-// @param reach : `Shells to search outward, in cells. Cost grows with its cube.`
-fn int VoxelGrid.nearest_cell(&self, Vec3 point, int reach = VOXEL_PAD)
+// Lower voxel of the 2x2x2 block around `point`, and the position inside it
+// (0..1 per axis), both clamped to the grid.
+fn int[<3>] VoxelGrid.block_of(&self, Vec3 point, Vec3* frac) @inline
 {
-	int x = (int)math::floor((point.x - self.origin.x) / self.cell + 0.5f);
-	int y = (int)math::floor((point.y - self.origin.y) / self.cell + 0.5f);
-	int z = (int)math::floor((point.z - self.origin.z) / self.cell + 0.5f);
+	Vec3 g = self.to_grid(point);
+	int[<3>] base = {
+		math::clamp((int)math::floor(g.x), 0, self.nx - 2),
+		math::clamp((int)math::floor(g.y), 0, self.ny - 2),
+		math::clamp((int)math::floor(g.z), 0, self.nz - 2),
+	};
+	*frac = {
+		math::clamp(g.x - (float)base[0], 0.0f, 1.0f),
+		math::clamp(g.y - (float)base[1], 0.0f, 1.0f),
+		math::clamp(g.z - (float)base[2], 0.0f, 1.0f),
+	};
+	return base;
+}
 
-	x = math::clamp(x, 0, self.nx - 1);
-	y = math::clamp(y, 0, self.ny - 1);
-	z = math::clamp(z, 0, self.nz - 1);
+// The entries at the eight corners around `point` that lie inside the mesh,
+// with their trilinear weights; returns how many. Corners with no weight are
+// skipped, so a point exactly on a voxel centre reads one entry.
+fn usz VoxelGrid.corners(&self, Vec3 point, int[8]* entry, float[8]* weight)
+{
+	Vec3 f;
+	int[<3>] base = self.block_of(point, &f);
 
+	usz count = 0;
+	for (int cz = 0; cz < 2; cz++)
+	{
+		float wz = cz == 1 ? f.z : 1.0f - f.z;
+		for (int cy = 0; cy < 2; cy++)
+		{
+			float wy = cy == 1 ? f.y : 1.0f - f.y;
+			for (int cx = 0; cx < 2; cx++)
+			{
+				float w = wz * wy * (cx == 1 ? f.x : 1.0f - f.x);
+				if (w <= 0.0f) continue;
+
+				int e = self.index[self.at(base[0] + cx, base[1] + cy, base[2] + cz)];
+				if (e < 0) continue;
+
+				(*entry)[count] = e;
+				(*weight)[count] = w;
+				count++;
+			}
+		}
+	}
+	return count;
+}
+
+<*
+ Shell search shared by the `nearest_*` queries: the cell `point` falls in, then
+ rings of cells out to `reach`; returns the entry nearest `point` in the first ring
+ holding an acceptable one, or -1.
+
+ `@accept(entry, ok)` sets `*ok`. It is an out-parameter because `return` in a macro
+ body would leave the caller and `continue` would bind to the caller's loop.
+*>
+macro int VoxelGrid.@nearest_where(&self, Vec3 point, int reach; @accept(entry, ok))
+{
+	int[<3>] c = self.voxel_of(point);
+	int x = math::clamp(c[0], 0, self.nx - 1);
+	int y = math::clamp(c[1], 0, self.ny - 1);
+	int z = math::clamp(c[2], 0, self.nz - 1);
+
+	bool accepted = false;
 	int direct = self.index[self.at(x, y, z)];
-	if (direct >= 0) return direct;
+	if (direct >= 0)
+	{
+		@accept(direct, &accepted);
+		if (accepted) return direct;
+	}
 
 	int best = -1;
 	float nearest = float::max;
@@ -160,11 +216,8 @@ fn int VoxelGrid.nearest_cell(&self, Vec3 point, int reach = VOXEL_PAD)
 			{
 				for (int cx = math::max(x - radius, 0); cx <= math::min(x + radius, self.nx - 1); cx++)
 				{
-					// Only the new shell: everything inside this radius was
-					// looked at last time round and found empty, or the loop
-					// would already have returned. Without this the search
-					// re-reads its own box every step and costs a fourth power
-					// of the reach rather than a cube.
+					// Only the new shell: the inside was already searched and found empty. Keeps the
+					// cost a cube of the reach rather than a fourth power.
 					if (math::abs(cx - x) < radius &&
 						math::abs(cy - y) < radius &&
 						math::abs(cz - z) < radius) continue;
@@ -172,6 +225,8 @@ fn int VoxelGrid.nearest_cell(&self, Vec3 point, int reach = VOXEL_PAD)
 					int voxel = self.at(cx, cy, cz);
 					int entry = self.index[voxel];
 					if (entry < 0) continue;
+					@accept(entry, &accepted);
+					if (!accepted) continue;
 
 					float distance = (self.center(voxel) - point).length();
 					if (distance < nearest)
@@ -188,21 +243,40 @@ fn int VoxelGrid.nearest_cell(&self, Vec3 point, int reach = VOXEL_PAD)
 	return -1;
 }
 
-// The entry nearest `point` that `field` has actually been solved for, or -1
-// when no shell out to `reach` holds one.
+// Whether `point` is in solid material: one lookup, no casts. Accurate to half a cell;
+// nearer the surface than that is a coin flip. A point outside the grid is outside
+// the mesh, so this is safe on a grid that was never built.
+fn bool VoxelGrid.inside(&self, Vec3 point)
+{
+	if (self.cells.len == 0) return false;
+
+	int[<3>] v = self.voxel_of(point);
+
+	if (v[0] < 0 || v[1] < 0 || v[2] < 0) return false;
+	if (v[0] >= self.nx || v[1] >= self.ny || v[2] >= self.nz) return false;
+
+	return self.index[self.at(v[0], v[1], v[2])] >= 0;
+}
+
+// The entry nearest `point`, or -1 when the mesh is not close.
 //
-// `nearest_cell` asks where the mesh is; this asks where the mesh *this field
-// reached* is, which is a different question wherever the interior comes apart.
-// A grid built from a shape with a spine thinner than a cell — an antenna, a
-// whisker, a wire — voxelizes that spine as islands with no face shared with
-// the body, and a flood seeded anywhere on the body never enters them. Points
-// mapped into such an island are inside the mesh, and are still cut off from
-// everything a field has to say. This is how a caller borrows an answer from
-// the nearest part of the body the field did reach, rather than falling back on
-// straight lines and letting whatever is nearest through the air answer instead.
+// The point's own cell is tried first, then the shells around it: a point on the
+// surface often lands in a cell the parity test called empty. A wider `reach` pulls
+// mid-air points onto the body but raises the odds of hitting some other part.
 //
-// The same shell search as `nearest_cell`, with the same warning: the wider the
-// reach, the likelier the answer belongs to some other part of the model.
+// @param reach : `Shells to search outward, in cells. Cost grows with its cube.`
+fn int VoxelGrid.nearest_cell(&self, Vec3 point, int reach = VOXEL_PAD)
+{
+	return self.@nearest_where(point, reach; int entry, bool* ok)
+	{
+		*ok = true;
+	};
+}
+
+// The entry nearest `point` that `field` has actually been solved for, or -1 when no
+// shell out to `reach` holds one. Differs from `nearest_cell` where the interior comes
+// apart: a spine thinner than a cell voxelizes as islands that a flood seeded on the
+// body never enters. Same shell search, same warning about wide reach.
 //
 // @param field : `Solved by distance_from_segment. Entries at VOXEL_UNREACHED are treated as absent.`
 // @param reach : `Shells to search outward, in cells. Cost grows with its cube.`
@@ -210,55 +284,14 @@ fn int VoxelGrid.nearest_solved(&self, float[] field, Vec3 point, int reach = VO
 {
 	if (field.len != self.cells.len) return -1;
 
-	int x = (int)math::floor((point.x - self.origin.x) / self.cell + 0.5f);
-	int y = (int)math::floor((point.y - self.origin.y) / self.cell + 0.5f);
-	int z = (int)math::floor((point.z - self.origin.z) / self.cell + 0.5f);
-
-	x = math::clamp(x, 0, self.nx - 1);
-	y = math::clamp(y, 0, self.ny - 1);
-	z = math::clamp(z, 0, self.nz - 1);
-
-	int direct = self.index[self.at(x, y, z)];
-	if (direct >= 0 && field[direct] < VOXEL_UNREACHED) return direct;
-
-	int best = -1;
-	float nearest = float::max;
-
-	for (int radius = 1; radius <= reach; radius++)
+	return self.@nearest_where(point, reach; int entry, bool* ok)
 	{
-		for (int cz = math::max(z - radius, 0); cz <= math::min(z + radius, self.nz - 1); cz++)
-		{
-			for (int cy = math::max(y - radius, 0); cy <= math::min(y + radius, self.ny - 1); cy++)
-			{
-				for (int cx = math::max(x - radius, 0); cx <= math::min(x + radius, self.nx - 1); cx++)
-				{
-					// Only the new shell — see `nearest_cell`.
-					if (math::abs(cx - x) < radius &&
-						math::abs(cy - y) < radius &&
-						math::abs(cz - z) < radius) continue;
-
-					int voxel = self.at(cx, cy, cz);
-					int entry = self.index[voxel];
-					if (entry < 0 || field[entry] >= VOXEL_UNREACHED) continue;
-
-					float distance = (self.center(voxel) - point).length();
-					if (distance < nearest)
-					{
-						nearest = distance;
-						best = entry;
-					}
-				}
-			}
-		}
-		if (best >= 0) return best;
-	}
-
-	return -1;
+		*ok = field[entry] < VOXEL_UNREACHED;
+	};
 }
 
-// One entry per point, for callers that query the same set repeatedly — the
-// shell search above is not cheap enough to repeat per frame. The caller owns
-// the returned array.
+// One entry per point, for callers that query the same set repeatedly (the shell
+// search is too slow to repeat per frame). The caller owns the returned array.
 fn int[] VoxelGrid.map_points(&self, Vec3[] points)
 {
 	int[] entries = mem::new_array(int, (sz)points.len);
@@ -268,33 +301,38 @@ fn int[] VoxelGrid.map_points(&self, Vec3[] points)
 
 // Voxelize the inside of a closed triangle mesh.
 //
-// Solid voxelization by parity: a line through a closed surface crosses it an
-// even number of times, and the spans between the first and second crossing,
-// the third and fourth, and so on, are inside. Crossings come from marching the
-// mesh's own BVH — a cast, a step past what it hit, another cast — so the test
-// is the same intersection routine everything else here uses.
+// By parity: a line through a closed surface crosses it an even number of times and
+// the spans between crossings 1-2, 3-4, ... are inside. Crossings come from marching
+// the mesh's BVH. Three axis directions vote and two of three wins, which tolerates
+// open, self-intersecting or flipped-face meshes where one direction is wrong.
 //
-// Three directions vote and two out of three wins. On a watertight mesh all
-// three agree and the vote costs only time; what it buys is the meshes that
-// turn up in practice — open, self-intersecting, or with a stray flipped face —
-// where one direction can be wrong for a whole line and the other two are not.
-//
-// The grid retains nothing once it is built — not the BVH, not the vertices —
-// so `shared_bvh` only has to stay alive for the length of this call. The caller
+// The grid retains nothing, so `shared_bvh` only has to outlive this call. The caller
 // owns the result.
-//
-// @param shared_bvh : `A BVH already built over these same two arrays, to march instead of building another. Null builds one here and frees it. One that does not match is ignored rather than trusted — see below.`
 fn VoxelGrid create_voxel_grid(
 	Vec3[] vertices,
 	Triangle[] triangles,
 	uint resolution = DEFAULT_VOXEL_RESOLUTION,
-	TriBVHNode* shared_bvh = null)
+	TriBVH* shared_bvh = null)
 {
 	if (vertices.len == 0 || triangles.len == 0 || resolution < 4) return {};
 
+	VoxelGrid frame = voxel_frame(vertices, triangles, resolution);
+	if (frame.cell <= 0.0f) return {};
+
+	usz total = (usz)frame.nx * (usz)frame.ny * (usz)frame.nz;
+	char[] votes = mem::new_array(char, (sz)total);
+	defer mem::free(votes);
+
+	vote_interior(&frame, vertices, triangles, shared_bvh, votes);
+	return compact_interior(frame, votes);
+}
+
+// Origin, cell size and dimensions for a mesh at `resolution`; `cell` is 0 when
+// the mesh has no extent. No cell data yet.
+fn VoxelGrid voxel_frame(Vec3[] vertices, Triangle[] triangles, uint resolution) @local
+{
 	// Measured over the triangles rather than the vertex array: an unreferenced
-	// vertex parked far away would otherwise stretch the grid over empty space
-	// and cost resolution everywhere that matters.
+	// vertex parked far away would otherwise stretch the grid over empty space.
 	Aabb3 bounds = NEW_AABB3;
 	foreach (triangle : triangles)
 	{
@@ -304,58 +342,57 @@ fn VoxelGrid create_voxel_grid(
 	}
 
 	Vec3 extent = bounds.size();
-	float longest = math::max(extent.x, math::max(extent.y, extent.z));
+	float longest = extent.max();
 	if (!(longest > 0.0f)) return {};
 
 	float cell = longest / (float)resolution;
 
-	// Sample lines run through cell centres, and a model built on round numbers
-	// puts its edges exactly there. A line through a shared edge is counted once
-	// instead of twice and inverts the parity for everything behind it — a
-	// fraction of a cell moves the lines off those coincidences.
+	// Sample lines run through cell centres, and round-number models put edges exactly
+	// there; a line through a shared edge counts once and inverts the parity behind it.
+	// The origin is nudged off those coincidences.
 	float margin = cell * (float)VOXEL_PAD;
-	Vec3 origin = {
-		bounds.min.x - margin + cell * 0.0137f,
-		bounds.min.y - margin + cell * 0.0219f,
-		bounds.min.z - margin + cell * 0.0311f,
+	Vec3 origin = bounds.min - margin + VOXEL_ORIGIN_JITTER * cell;
+
+	return {
+		.origin = origin,
+		.cell = cell,
+		.nx = (int)math::ceil(extent.x / cell) + 2 * VOXEL_PAD + 1,
+		.ny = (int)math::ceil(extent.y / cell) + 2 * VOXEL_PAD + 1,
+		.nz = (int)math::ceil(extent.z / cell) + 2 * VOXEL_PAD + 1,
 	};
+}
 
-	int[3] dims = {
-		(int)math::ceil(extent.x / cell) + 2 * VOXEL_PAD + 1,
-		(int)math::ceil(extent.y / cell) + 2 * VOXEL_PAD + 1,
-		(int)math::ceil(extent.z / cell) + 2 * VOXEL_PAD + 1,
-	};
-
-	usz total = (usz)dims[0] * (usz)dims[1] * (usz)dims[2];
-	char[] votes = mem::new_array(char, (sz)total);
-	defer mem::free(votes);
-
-	// A caller that already marches this mesh — anything holding a picker — has
-	// paid for a BVH over exactly these arrays, and building a second one here is
-	// the single most expensive thing this function does.
-	//
-	// Checked rather than trusted, and it is the pointers that are checked: a BVH
-	// over a *different* mesh would voxelize that mesh's interior into this
-	// mesh's grid, and the result is a plausible-looking grid describing the
-	// wrong body. That failure is silent and survives into everything fitted
-	// against it afterwards, so a mismatch falls back to building one — always
-	// correct, merely slower, and the one outcome that cannot corrupt a rig.
+// Count, per voxel, how many of the three axis directions found it inside.
+fn void vote_interior(
+	VoxelGrid* frame,
+	Vec3[] vertices,
+	Triangle[] triangles,
+	TriBVH* shared_bvh,
+	char[] votes) @local
+{
+	// Reuse a BVH the caller already built over exactly these arrays; building another is
+	// this function's most expensive step. The pointers are checked, not trusted: a BVH
+	// over a different mesh would silently voxelize the wrong body, so a mismatch falls
+	// back to building one.
 	bool own_bvh = shared_bvh == null
-		|| !shared_bvh.indexed
 		|| shared_bvh.vertices != vertices.ptr
 		|| shared_bvh.triangles != triangles.ptr;
 
-	TriBVHNode* bvh = own_bvh
-		? create_indexed_tri_bvh(vertices.ptr, triangles.ptr, (sz)triangles.len)
+	TriBVH* bvh = own_bvh
+		? create_tri_bvh(vertices.ptr, triangles.ptr, (sz)triangles.len)
 		: shared_bvh;
-	defer
-	{
-		if (own_bvh)
-		{
-			bvh.free_indexed();
-			mem::free(bvh);
-		}
-	}
+	defer if (own_bvh) bvh.free();
+
+	march_votes(frame, bvh, votes);
+}
+
+// Cast a line along each axis through every cell column and vote on the spans
+// between paired surface crossings.
+fn void march_votes(VoxelGrid* frame, TriBVH* bvh, char[] votes) @local
+{
+	int[3] dims = { frame.nx, frame.ny, frame.nz };
+	float cell = frame.cell;
+	Vec3 origin = frame.origin;
 
 	float step = cell * VOXEL_CROSSING_STEP;
 	float[MAX_VOXEL_CROSSINGS] crossings;
@@ -392,53 +429,49 @@ fn VoxelGrid create_voxel_grid(
 					travelled += step;
 				}
 
-				// An odd count means the surface did not close along this line —
-				// a hole, or two faces the step above merged. The unpaired last
-				// crossing is dropped rather than the whole line: the spans
-				// before it are still good, and the vote covers the rest.
+				// An odd count means the surface did not close along this line. The unpaired last
+				// crossing is dropped, not the whole line; the vote covers the rest.
 				usz pairs = found / 2;
 				for (usz p = 0; p < pairs; p++)
 				{
 					int lo = (int)math::ceil(crossings[p * 2] / cell - 0.5f);
 					int hi = (int)math::floor(crossings[p * 2 + 1] / cell - 0.5f);
 
-					// Clamped inside the padding rather than inside the grid,
-					// which is what guarantees every interior cell has all 26
-					// neighbours in range.
+					// Clamped inside the padding, so every interior cell keeps all 26 neighbours in range.
 					lo = math::max(lo, VOXEL_PAD - 1);
 					hi = math::min(hi, dims[axis] - VOXEL_PAD);
 
 					for (int k = lo; k <= hi; k++)
 					{
-						int[3] cell_index;
-						cell_index[axis] = k;
-						cell_index[u] = iu;
-						cell_index[v] = iv;
-						votes[(usz)((cell_index[2] * dims[1] + cell_index[1]) * dims[0] + cell_index[0])]++;
+						int[3] ci;
+						ci[axis] = k;
+						ci[u] = iu;
+						ci[v] = iv;
+						votes[(usz)frame.at(ci[0], ci[1], ci[2])]++;
 					}
 				}
 			}
 		}
 	}
+}
 
+// Keep the voxels two of three directions voted inside, as the compact
+// index/cells pair. Returns an unusable grid when nothing is inside.
+fn VoxelGrid compact_interior(VoxelGrid frame, char[] votes) @local
+{
 	usz interior = 0;
-	foreach (vote : votes) if (vote >= 2) interior++;
+	foreach (vote : votes) if (vote >= VOXEL_VOTES_NEEDED) interior++;
 	if (interior == 0) return {};
 
-	VoxelGrid grid = {
-		.origin = origin,
-		.cell = cell,
-		.nx = dims[0],
-		.ny = dims[1],
-		.nz = dims[2],
-		.index = mem::new_array(int, (sz)total),
-		.cells = mem::new_array(int, (sz)interior),
-	};
+	VoxelGrid grid = frame;
+	grid.index = mem::new_array(int, (sz)votes.len);
+	grid.cells = mem::new_array(int, (sz)interior);
+	grid.stencil = make_chamfer_stencil(grid.nx, grid.ny, grid.cell);
 
 	usz next = 0;
-	for (usz i = 0; i < total; i++)
+	for (usz i = 0; i < votes.len; i++)
 	{
-		if (votes[i] >= 2)
+		if (votes[i] >= VOXEL_VOTES_NEEDED)
 		{
 			grid.index[i] = (int)next;
 			grid.cells[next++] = (int)i;
@@ -464,22 +497,13 @@ fn void VoxelGrid.clear_field(&self, float[] field)
 	foreach (&distance : field) *distance = VOXEL_UNREACHED;
 }
 
-// Put a zero on every interior cell the segment passes through, and report how
-// many it found. Zero means the segment touches no inside at all, which the
-// caller usually wants to distinguish from "far away".
+// Put a zero on every interior cell the segment passes through and return how many;
+// zero means the segment touches no inside.
 //
-// **The cells it passes through, and only those, while there are any.** Reaching
-// outward is what a point on the surface needs — `nearest_cell` is built for
-// exactly that — and it is the wrong instinct here, because a seed is not an
-// approximation but a *zero*: a segment that reached two cells sideways for want
-// of one under itself declares whatever it landed on to be at no distance at
-// all. On a hand whose fingers stand a cell apart that is one finger holding
-// every other, and nothing later in the walk can argue with a zero.
-//
-// So the reach is a second pass and a third, taken only when the segment lies
-// outside the mesh altogether. That is a different situation — a joint dropped
-// in mid-air rather than a limb too thin to fill — and there an answer somewhere
-// beats no answer at all.
+// It seeds only the cells the segment passes through while there are any: a zero is
+// not an approximation, and reaching sideways would declare a neighbouring finger to
+// be at no distance. Reach (second and third pass) applies only when the segment lies
+// outside the mesh altogether.
 //
 // Pass the same point twice to seed a single position.
 fn usz VoxelGrid.seed_segment(&self, float[] field, Vec3 head, Vec3 tail)
@@ -506,40 +530,13 @@ fn usz VoxelGrid.seed_segment(&self, float[] field, Vec3 head, Vec3 tail)
 	return 0;
 }
 
-// Propagate the seeds through the interior.
-//
-// A chamfer transform rather than a queue: each pass walks the cells in scan
-// order relaxing against the 13 neighbours already visited, then back the other
-// way against the other 13. Two passes solve any path that only goes one way; a
-// path that doubles back needs one pair per reversal, and the loop stops when a
-// pass changes nothing.
-//
-// The 26-neighbour step lengths are the true diagonals, so a straight run is
-// overestimated by a few percent — the same few percent everywhere, which is
-// what matters when distances are compared to each other.
+// Propagate the seeds through the interior with a chamfer transform: each pass walks
+// the cells in scan order relaxing against the 13 neighbours already visited, then
+// back against the other 13. Stops when a pass changes nothing. Diagonal steps use true
+// lengths, so straight runs are overestimated by a few percent, uniformly.
 fn void VoxelGrid.solve_field(&self, float[] field)
 {
 	if (!self.usable() || field.len != self.cells.len) return;
-
-	// The 3x3x3 neighbourhood in scan order, centre included at 13 so the halves
-	// fall out of the index: everything before it is a neighbour a forward pass
-	// has already visited, everything after it one a backward pass has.
-	int plane = self.nx * self.ny;
-	int[27] offset;
-	float[27] cost;
-	usz slot = 0;
-	for (int dz = -1; dz <= 1; dz++)
-	{
-		for (int dy = -1; dy <= 1; dy++)
-		{
-			for (int dx = -1; dx <= 1; dx++)
-			{
-				offset[slot] = dz * plane + dy * self.nx + dx;
-				cost[slot] = self.cell * math::sqrt((float)(dx * dx + dy * dy + dz * dz));
-				slot++;
-			}
-		}
-	}
 
 	usz count = self.cells.len;
 	bool changed = true;
@@ -549,11 +546,11 @@ fn void VoxelGrid.solve_field(&self, float[] field)
 
 		for (usz i = 0; i < count; i++)
 		{
-			if (relax_voxel(self, field, i, &offset, &cost, 0, 13)) changed = true;
+			if (relax_voxel(self, field, i, 0, STENCIL_CENTRE)) changed = true;
 		}
 		for (usz i = count; i > 0; i--)
 		{
-			if (relax_voxel(self, field, i - 1, &offset, &cost, 14, 27)) changed = true;
+			if (relax_voxel(self, field, i - 1, STENCIL_CENTRE + 1, STENCIL_SIZE)) changed = true;
 		}
 	}
 }
@@ -570,25 +567,22 @@ fn bool VoxelGrid.distance_from_segment(&self, Vec3 head, Vec3 tail, float[] fie
 	return true;
 }
 
-// One cell against half of its neighbourhood. Split out of the sweep only so the
-// two directions cannot drift apart.
-//
-// No bounds test on the stepped index: the padding puts every interior cell at
-// least two cells from the edge of the grid, so all 26 steps land inside it.
-fn bool relax_voxel(VoxelGrid* grid, float[] field, usz entry, int[27]* offset, float[27]* cost, usz first, usz last) @local
+// One cell against half of its neighbourhood (shared by both sweep directions). No
+// bounds test: the padding keeps all 26 steps inside the grid.
+fn bool relax_voxel(VoxelGrid* grid, float[] field, usz entry, usz first, usz last) @local
 {
 	int voxel = grid.cells[entry];
 	float best = field[entry];
 
 	for (usz k = first; k < last; k++)
 	{
-		int neighbour = grid.index[voxel + (*offset)[k]];
+		int neighbour = grid.index[voxel + grid.stencil.offset[k]];
 		if (neighbour < 0) continue;
 
 		float distance = field[neighbour];
 		if (distance >= VOXEL_UNREACHED) continue;
 
-		distance += (*cost)[k];
+		distance += grid.stencil.cost[k];
 		if (distance < best) best = distance;
 	}
 
@@ -597,54 +591,25 @@ fn bool relax_voxel(VoxelGrid* grid, float[] field, usz entry, int[27]* offset, 
 	return true;
 }
 
-// Read a field at a point rather than at a cell.
-//
-// A straight lookup bands the result at the grid's own resolution — every point
-// in a cell gets the identical value. Interpolating over the eight cells around
-// the point smooths that out for eight lookups, skipping any corner that is
-// outside the mesh or that no path reached, so the average never leans on a cell
-// with no answer.
-//
-// `fallback` is an entry to fall back on when no corner is usable — pass the one
-// `nearest_cell` gave for this point, or -1 for none.
+// Read a field at a point by interpolating the eight cells around it, skipping corners
+// outside the mesh or never reached, so the result is not banded at cell resolution.
+// `fallback` is an entry to use when no corner is usable (e.g. from `nearest_cell`),
+// or -1 for none.
 fn float VoxelGrid.sample(&self, float[] field, Vec3 point, int fallback = -1)
 {
-	float gx = (point.x - self.origin.x) / self.cell;
-	float gy = (point.y - self.origin.y) / self.cell;
-	float gz = (point.z - self.origin.z) / self.cell;
-
-	int bx = math::clamp((int)math::floor(gx), 0, self.nx - 2);
-	int by = math::clamp((int)math::floor(gy), 0, self.ny - 2);
-	int bz = math::clamp((int)math::floor(gz), 0, self.nz - 2);
-
-	float fx = math::clamp(gx - (float)bx, 0.0f, 1.0f);
-	float fy = math::clamp(gy - (float)by, 0.0f, 1.0f);
-	float fz = math::clamp(gz - (float)bz, 0.0f, 1.0f);
+	int[8] entry;
+	float[8] weight;
+	usz count = self.corners(point, &entry, &weight);
 
 	float total = 0.0f;
 	float sum = 0.0f;
-
-	for (int cz = 0; cz < 2; cz++)
+	for (usz c = 0; c < count; c++)
 	{
-		float wz = cz == 1 ? fz : 1.0f - fz;
-		for (int cy = 0; cy < 2; cy++)
-		{
-			float wy = cy == 1 ? fy : 1.0f - fy;
-			for (int cx = 0; cx < 2; cx++)
-			{
-				float weight = wz * wy * (cx == 1 ? fx : 1.0f - fx);
-				if (weight <= 0.0f) continue;
+		float distance = field[entry[c]];
+		if (distance >= VOXEL_UNREACHED) continue;
 
-				int entry = self.index[self.at(bx + cx, by + cy, bz + cz)];
-				if (entry < 0) continue;
-
-				float distance = field[entry];
-				if (distance >= VOXEL_UNREACHED) continue;
-
-				sum += distance * weight;
-				total += weight;
-			}
-		}
+		sum += distance * weight[c];
+		total += weight[c];
 	}
 
 	if (total > 0.0f) return sum / total;
@@ -655,21 +620,12 @@ fn float VoxelGrid.sample(&self, float[] field, Vec3 point, int fallback = -1)
 // ============================================================================
 // Many sources at once
 //
-// The field above answers "how far is this cell from *that* source", and a
-// caller with sixty-five sources pays for sixty-five sweeps of the whole
-// interior to find out. Almost all of that work is thrown away: a hand's bone is
-// nowhere near a foot, and the answer for every cell in the leg is a large
-// number nobody reads.
-//
-// So this solves them together. Each cell keeps the nearest few sources rather
-// than one distance, the sweep relaxes those lists against each other, and one
-// pass over the grid answers for every source at once. What it will not tell you
-// is how far a cell is from a source that is not among its nearest few — which
-// is the trade, and it is a cheap one wherever the caller was going to keep only
-// a handful of influences anyway.
+// Solves every source in one pass instead of one sweep per source: each cell keeps
+// only its nearest few sources. The trade is that a source outside a cell's nearest
+// few is unknown there, which suits callers that keep a handful of influences anyway.
 //
 //     VoxelSource[] field = mem::new_array(VoxelSource, grid.cells.len * slots);
-//     grid.clear_sources(field, slots);
+//     grid.clear_sources(field);
 //     foreach (usz b, bone : bones) grid.seed_source(field, slots, (int)b, bone.head, bone.tail);
 //     grid.solve_sources(field, slots);
 // ============================================================================
@@ -677,26 +633,19 @@ fn float VoxelGrid.sample(&self, float[] field, Vec3 point, int fallback = -1)
 // An empty slot, and the id no source may use.
 const int NO_VOXEL_SOURCE = -1;
 
-// The most slots a cell may keep.
-//
-// Not a limit anything here needs — every loop below works off the slice it is
-// handed. It is a guard against the caller that means to keep four and passes
-// the source *count*: the field would be sized in gigabytes and the sweep would
-// spend its life shuffling lists nobody reads. Asking for more is refused rather
-// than attempted.
+// The most slots a cell may keep. A guard against passing the source count instead of
+// the slot count, which would size the field in gigabytes.
 const usz MAX_VOXEL_SOURCES = 16;
 
-// One source reaching one cell, and how far through the body it had to come.
-//
-// A cell's slots run ascending by distance with the empty ones last, so slot
-// zero is always the nearest source and a scan can stop at the first empty.
+// One source reaching one cell, and how far through the body it came. A cell's slots
+// run ascending by distance with empty ones last, so slot zero is the nearest.
 struct VoxelSource
 {
 	int source;
 	float distance;
 }
 
-fn void VoxelGrid.clear_sources(&self, VoxelSource[] field, usz slots)
+fn void VoxelGrid.clear_sources(&self, VoxelSource[] field)
 {
 	foreach (&slot : field) *slot = { .source = NO_VOXEL_SOURCE, .distance = VOXEL_UNREACHED };
 }
@@ -723,12 +672,8 @@ fn usz VoxelGrid.seed_source(&self, VoxelSource[] field, usz slots, int source, 
 			VoxelSource[] cell = field[(usz)entry * slots : slots];
 			offer_source(cell, source, 0.0f);
 
-			// Counted by asking the cell, not by whether the offer changed it. All
-			// the sources start at zero, so a bone landing on a cell another bone
-			// already reached is told nothing changed — and a caller reading that
-			// as "this bone touched no inside" would hand the bone straight-line
-			// weights over the whole mesh, which is the bleed the grid is here to
-			// prevent. What matters is whether the source is in the cell now.
+			// Counted by asking the cell, not by whether the offer changed it: a bone landing on a
+			// cell another bone already zeroed sees no change but still touched the inside.
 			if (cell[0].source != NO_VOXEL_SOURCE && cell[0].distance <= 0.0f)
 			{
 				for (usz k = 0; k < slots; k++)
@@ -743,38 +688,13 @@ fn usz VoxelGrid.seed_source(&self, VoxelSource[] field, usz slots, int source, 
 	return 0;
 }
 
-// Propagate every source through the interior at once.
-//
-// The chamfer sweep `solve_field` runs, with a list per cell instead of a
-// number: each pass walks the cells in scan order relaxing against the 13
-// neighbours already visited, then back the other way against the other 13, and
-// stops when a pass changes nothing.
-//
-// A source evicted from a cell's list stops spreading through that cell, which
-// is what makes this cost a few sweeps rather than one per source — and it is
-// also exactly the answer being asked for, since a source that is not among a
-// cell's nearest few is not among the answers the caller keeps.
+// Propagate every source through the interior at once: `solve_field`'s chamfer sweep
+// with a list per cell. A source evicted from a cell's list stops spreading there,
+// which keeps this to a few sweeps and matches the answer the caller keeps.
 fn void VoxelGrid.solve_sources(&self, VoxelSource[] field, usz slots)
 {
 	if (!self.usable() || slots == 0 || slots > MAX_VOXEL_SOURCES) return;
 	if (field.len != self.cells.len * slots) return;
-
-	int plane = self.nx * self.ny;
-	int[27] offset;
-	float[27] cost;
-	usz slot = 0;
-	for (int dz = -1; dz <= 1; dz++)
-	{
-		for (int dy = -1; dy <= 1; dy++)
-		{
-			for (int dx = -1; dx <= 1; dx++)
-			{
-				offset[slot] = dz * plane + dy * self.nx + dx;
-				cost[slot] = self.cell * math::sqrt((float)(dx * dx + dy * dy + dz * dz));
-				slot++;
-			}
-		}
-	}
 
 	usz count = self.cells.len;
 	bool changed = true;
@@ -784,24 +704,21 @@ fn void VoxelGrid.solve_sources(&self, VoxelSource[] field, usz slots)
 
 		for (usz i = 0; i < count; i++)
 		{
-			if (relax_sources(self, field, slots, i, &offset, &cost, 0, 13)) changed = true;
+			if (relax_sources(self, field, slots, i, 0, STENCIL_CENTRE)) changed = true;
 		}
 		for (usz i = count; i > 0; i--)
 		{
-			if (relax_sources(self, field, slots, i - 1, &offset, &cost, 14, 27)) changed = true;
+			if (relax_sources(self, field, slots, i - 1, STENCIL_CENTRE + 1, STENCIL_SIZE)) changed = true;
 		}
 	}
 }
 
-// One cell's list against half of its neighbourhood. Split out of the sweep only
-// so the two directions cannot drift apart, exactly as `relax_voxel` is.
+// One cell's list against half of its neighbourhood (shared by both sweep directions).
 fn bool relax_sources(
 	VoxelGrid* grid,
 	VoxelSource[] field,
 	usz slots,
 	usz entry,
-	int[27]* offset,
-	float[27]* cost,
 	usz first,
 	usz last) @local
 {
@@ -809,29 +726,26 @@ fn bool relax_sources(
 	VoxelSource[] here = field[entry * slots : slots];
 	bool moved = false;
 
-	// Once a list is full, nothing further than its worst entry can enter it — so
-	// a neighbour whose *nearest* source is already too far to fit has nothing to
-	// offer at all, and one compare settles all of its slots. Deep inside a body
-	// every list is full and almost every neighbour is turned away here, which is
-	// what keeps this near the cost of the single-source sweep rather than at
-	// `slots` times it.
+	// Once a list is full nothing further than its worst entry can enter it, so one compare
+	// against a neighbour's nearest source can reject all of its slots. Deep inside a body
+	// this keeps the cost near the single-source sweep.
 	bool full = here[slots - 1].source != NO_VOXEL_SOURCE;
 	float worst = here[slots - 1].distance;
 
 	for (usz k = first; k < last; k++)
 	{
-		int neighbour = grid.index[voxel + (*offset)[k]];
+		int neighbour = grid.index[voxel + grid.stencil.offset[k]];
 		if (neighbour < 0) continue;
 
 		VoxelSource[] there = field[(usz)neighbour * slots : slots];
 		if (there[0].source == NO_VOXEL_SOURCE) continue;
-		if (full && there[0].distance + (*cost)[k] >= worst) continue;
+		if (full && there[0].distance + grid.stencil.cost[k] >= worst) continue;
 
 		for (usz s = 0; s < slots; s++)
 		{
 			// Ascending with the empties last, so the first empty ends the list.
 			if (there[s].source == NO_VOXEL_SOURCE) break;
-			if (!offer_source(here, there[s].source, there[s].distance + (*cost)[k])) continue;
+			if (!offer_source(here, there[s].source, there[s].distance + grid.stencil.cost[k])) continue;
 
 			moved = true;
 			full = here[slots - 1].source != NO_VOXEL_SOURCE;
@@ -847,8 +761,7 @@ fn bool offer_source(VoxelSource[] cell, int source, float distance) @local
 {
 	usz slots = cell.len;
 
-	// Nothing to do if the list is full of nearer sources — the common case by
-	// far, and one compare settles it.
+	// Nothing to do if the list is full of nearer sources (the common case).
 	if (cell[slots - 1].source != NO_VOXEL_SOURCE && distance >= cell[slots - 1].distance) return false;
 
 	// Where it goes, and whether it is already in here somewhere.
@@ -869,8 +782,8 @@ fn bool offer_source(VoxelSource[] cell, int source, float distance) @local
 	}
 	if (at >= slots) return false;
 
-	// Shift down to `at`, stopping at the old copy of this source when there is
-	// one — which both removes it and leaves the list one shorter to write into.
+	// Shift down to `at`, stopping at the old copy of this source if present (which removes
+	// it and leaves room to write).
 	usz from = was < slots ? was : slots - 1;
 	for (usz s = from; s > at; s--) cell[s] = cell[s - 1];
 	cell[at] = { .source = source, .distance = distance };
@@ -893,72 +806,22 @@ fn float VoxelGrid.source_at(&self, VoxelSource[] field, usz slots, int entry, i
 }
 
 // The nearest cell to `point` that any source reached, or -1 within `reach`.
-//
-// `nearest_solved` for a many-source field: the same shell search, asking
-// whether a cell has an answer at all rather than whether it has one for a
-// particular source.
+// `nearest_solved` for a many-source field.
 fn int VoxelGrid.nearest_sourced(&self, VoxelSource[] field, usz slots, Vec3 point, int reach = VOXEL_PAD)
 {
 	if (slots == 0 || field.len != self.cells.len * slots) return -1;
 
-	int x = (int)math::floor((point.x - self.origin.x) / self.cell + 0.5f);
-	int y = (int)math::floor((point.y - self.origin.y) / self.cell + 0.5f);
-	int z = (int)math::floor((point.z - self.origin.z) / self.cell + 0.5f);
-
-	x = math::clamp(x, 0, self.nx - 1);
-	y = math::clamp(y, 0, self.ny - 1);
-	z = math::clamp(z, 0, self.nz - 1);
-
-	int direct = self.index[self.at(x, y, z)];
-	if (direct >= 0 && field[(usz)direct * slots].source != NO_VOXEL_SOURCE) return direct;
-
-	int best = -1;
-	float nearest = float::max;
-
-	for (int radius = 1; radius <= reach; radius++)
+	return self.@nearest_where(point, reach; int entry, bool* ok)
 	{
-		for (int cz = math::max(z - radius, 0); cz <= math::min(z + radius, self.nz - 1); cz++)
-		{
-			for (int cy = math::max(y - radius, 0); cy <= math::min(y + radius, self.ny - 1); cy++)
-			{
-				for (int cx = math::max(x - radius, 0); cx <= math::min(x + radius, self.nx - 1); cx++)
-				{
-					// Only the new shell — see `nearest_cell`.
-					if (math::abs(cx - x) < radius &&
-						math::abs(cy - y) < radius &&
-						math::abs(cz - z) < radius) continue;
-
-					int voxel = self.at(cx, cy, cz);
-					int entry = self.index[voxel];
-					if (entry < 0 || field[(usz)entry * slots].source == NO_VOXEL_SOURCE) continue;
-
-					float distance = (self.center(voxel) - point).length();
-					if (distance < nearest)
-					{
-						nearest = distance;
-						best = entry;
-					}
-				}
-			}
-		}
-		if (best >= 0) return best;
-	}
-
-	return -1;
+		*ok = field[(usz)entry * slots].source != NO_VOXEL_SOURCE;
+	};
 }
 
-// Read a many-source field at a point rather than at a cell, into `into`.
+// Read a many-source field at a point into `into`: `sample`'s interpolation for every
+// source at once, skipping corners outside the mesh or reached by no source.
 //
-// `sample`'s smoothing, for every source at once: the eight cells around the
-// point are averaged, skipping any that is outside the mesh or that a source
-// never reached, so the result is smooth rather than banded at the grid's own
-// resolution.
-//
-// **`home` decides which sources are asked about**, and the corners only decide
-// how far away they are. A source that reaches a corner but not the point's own
-// cell is by definition not among that cell's nearest, and admitting it here
-// would let a vertex be answered for a bone the cell it sits in has already
-// ruled out.
+// `home` decides which sources are asked about and the corners only how far away they
+// are, so a source ruled out for the point's own cell is never admitted via a corner.
 //
 // @param home : `The cell the point is in, from nearest_cell. Negative asks about nothing.`
 // @param into : `Filled with what each of home's sources reads here, ascending by distance and terminated by an empty slot when there is room. Sized by the caller; slots beyond its length are dropped.`
@@ -975,43 +838,11 @@ fn usz VoxelGrid.sample_sources(
 	if (home < 0 || slots == 0 || slots > MAX_VOXEL_SOURCES) return 0;
 	if (field.len != self.cells.len * slots) return 0;
 
-	float gx = (point.x - self.origin.x) / self.cell;
-	float gy = (point.y - self.origin.y) / self.cell;
-	float gz = (point.z - self.origin.z) / self.cell;
-
-	int bx = math::clamp((int)math::floor(gx), 0, self.nx - 2);
-	int by = math::clamp((int)math::floor(gy), 0, self.ny - 2);
-	int bz = math::clamp((int)math::floor(gz), 0, self.nz - 2);
-
-	float fx = math::clamp(gx - (float)bx, 0.0f, 1.0f);
-	float fy = math::clamp(gy - (float)by, 0.0f, 1.0f);
-	float fz = math::clamp(gz - (float)bz, 0.0f, 1.0f);
-
 	// The corners once, so the per-source loop below is eight array reads rather
 	// than eight index computations.
 	int[8] corner;
 	float[8] share;
-	usz corners = 0;
-	for (int cz = 0; cz < 2; cz++)
-	{
-		float wz = cz == 1 ? fz : 1.0f - fz;
-		for (int cy = 0; cy < 2; cy++)
-		{
-			float wy = cy == 1 ? fy : 1.0f - fy;
-			for (int cx = 0; cx < 2; cx++)
-			{
-				float weight = wz * wy * (cx == 1 ? fx : 1.0f - fx);
-				if (weight <= 0.0f) continue;
-
-				int entry = self.index[self.at(bx + cx, by + cy, bz + cz)];
-				if (entry < 0) continue;
-
-				corner[corners] = entry;
-				share[corners] = weight;
-				corners++;
-			}
-		}
-	}
+	usz corners = self.corners(point, &corner, &share);
 
 	VoxelSource[] here = field[(usz)home * slots : slots];
 	usz written = 0;

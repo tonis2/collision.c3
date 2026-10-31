@@ -2,6 +2,7 @@ module collision;
 
 import std::collections::list;
 import std::sort;
+import std::math;
 
 // Lockstep netcode support: bit-wise state hashing for desync detection and
 // world snapshot/restore for rollback. See determinism.md for the full
@@ -42,10 +43,8 @@ fn ulong PhysicsWorld.state_hash(&self)
 	ulong h = FNV_OFFSET_BASIS;
 
 	h = hash_u64(h, (ulong)self.bodies.len());
-	RigidBodyIterator iter = self.bodies.value_iter();
-	while (iter.next())
+	self.@each_body(; Rigidbody* body)
 	{
-		Rigidbody* body = iter.get()!!;
 		h = hash_u64(h, (ulong)body.id);
 		h = hash_vec3(h, body.collider.translation);
 		h = hash_quat(h, body.collider.rotation);
@@ -53,7 +52,7 @@ fn ulong PhysicsWorld.state_hash(&self)
 		h = hash_vec3(h, body.angular_velocity);
 		h = hash_f32(h, body.sleep_timer);
 		h = hash_u64(h, body.sleeping ? 1 : 0);
-	}
+	};
 
 	h = hash_u64(h, (ulong)self.soft_bodies.len());
 	foreach (&sb : self.soft_bodies)
@@ -113,27 +112,22 @@ fn void WorldSnapshot.free(&self)
  filters, colliders) is NOT captured: restore() requires the same body and
  soft-body set to still exist. Free the snapshot with WorldSnapshot.free().
 
- **Every list is seated on `allocator` before anything is pushed.** A snapshot
- is the one thing here most likely to be taken inside a frame scope and used
- outside one — that is what rollback netcode is — and a zero-valued list binds
- itself to the *temp* allocator on its first push, so the snapshot would be
- gone by the frame it exists to rewind to. Same reason `PhysicsWorld.init` and
- `SpatialHash3D.cell` say what they say.
+ Every list is seated on `allocator` before anything is pushed: a snapshot is
+ taken inside a frame scope and used outside it, and a zero-valued list would
+ bind to the temp allocator and be gone by the frame it exists to rewind to.
 
  @param allocator : `Owns every list in the snapshot; WorldSnapshot.free returns them to it.`
 *>
 fn WorldSnapshot PhysicsWorld.snapshot(&self, Allocator allocator = mem)
 {
 	WorldSnapshot snap;
-	snap.bodies.init(allocator, self.bodies.len() > 0 ? self.bodies.len() : 1);
-	snap.soft_bodies.init(allocator, self.soft_bodies.len() > 0 ? self.soft_bodies.len() : 1);
+	snap.bodies.init(allocator, math::max(self.bodies.len(), (sz)1));
+	snap.soft_bodies.init(allocator, math::max(self.soft_bodies.len(), (sz)1));
 	snap.active_triggers.init(allocator, 1);
 	snap.active_contacts.init(allocator, 1);
 
-	RigidBodyIterator iter = self.bodies.value_iter();
-	while (iter.next())
+	self.@each_body(; Rigidbody* body)
 	{
-		Rigidbody* body = iter.get()!!;
 		snap.bodies.push(
 			{
 				.id = body.id,
@@ -145,16 +139,14 @@ fn WorldSnapshot PhysicsWorld.snapshot(&self, Allocator allocator = mem)
 				.sleeping = body.sleeping,
 			}
 		);
-	}
+	};
 
 	foreach (&sb : self.soft_bodies)
 	{
 		SoftBodySnapshot s = { .id = sb.id };
-		// Seated for the same reason as the four above — these two are the
-		// nested pair, and the ones a `free` that walks only the outer list
-		// would miss.
-		s.positions.init(allocator, sb.positions.len() > 0 ? sb.positions.len() : 1);
-		s.velocities.init(allocator, sb.velocities.len() > 0 ? sb.velocities.len() : 1);
+		// The nested pair: seated too, since `free` must walk them explicitly.
+		s.positions.init(allocator, math::max(sb.positions.len(), (sz)1));
+		s.velocities.init(allocator, math::max(sb.velocities.len(), (sz)1));
 		s.positions.add_all(&sb.positions);
 		s.velocities.add_all(&sb.velocities);
 		snap.soft_bodies.push(s);
@@ -199,10 +191,9 @@ fn void? PhysicsWorld.restore(&self, WorldSnapshot* snap)
 		body.sleep_timer = s.sleep_timer;
 		body.sleeping = s.sleeping;
 
-		// Keep broad-phase state in sync with the restored transform
-		Aabb3 new_aabb = body.get_transformed_aabb();
-		self.spatial_map.update(body.transformed_aabb, new_aabb, body.id);
-		body.transformed_aabb = new_aabb;
+		// The inverse-inertia cache is keyed by rotation, so the restored rotation
+		// invalidates it by itself; only the broadphase needs syncing.
+		self.refresh_broadphase(body);
 	}
 
 	foreach (i, &s : snap.soft_bodies)
@@ -216,13 +207,8 @@ fn void? PhysicsWorld.restore(&self, WorldSnapshot* snap)
 		}
 	}
 
-	// Re-filled rather than replaced, so an empty world's zero-valued maps would
-	// bind themselves on the first `set` — the overlap sets outlive this call
-	// and cannot be left in the temp pool. `run_step` and `remove_body` seat
-	// theirs for the same reason.
-	if (self.allocator.ptr == null) self.allocator = mem;
-	if (!self.active_triggers.is_initialized()) self.active_triggers.init(self.allocator);
-	if (!self.active_contacts.is_initialized()) self.active_contacts.init(self.allocator);
+	// The overlap sets outlive this call, so they must not bind to the temp pool.
+	self.seat_storage();
 
 	self.active_triggers.clear();
 	foreach (pair : snap.active_triggers) self.active_triggers.set(pair, true);

@@ -306,3 +306,99 @@ fn void test_spatial_hash_nearby_finds_large_bodies() @test
 	};
 	test::@check(count == 0, "and 40 units up it is not, got %d", count);
 }
+
+// A pair that shares many cells is still reported exactly once.
+fn void test_spatial_hash_multi_cell_pair_reported_once() @test
+{
+	SpatialHash3D spatial_map = { .cell_size = 1.0 };
+	defer spatial_map.free();
+
+	// Both boxes span 3x3x3 cells and overlap in 2x2x2 of them.
+	spatial_map.insert({ { 0.1, 0.1, 0.1 }, { 2.9, 2.9, 2.9 } }, 7);
+	spatial_map.insert({ { 1.1, 1.1, 1.1 }, { 3.9, 3.9, 3.9 } }, 3);
+
+	sz pairs = 0;
+	spatial_map.@get_pairs(; Pair pair)
+	{
+		pairs++;
+		test::@check(pair.a == 3 && pair.b == 7, "pair is normalized a < b");
+	};
+	test::@check(pairs == 1, "one pair across eight shared cells, got %d", pairs);
+
+	// Repeated calls give the same answer (no state left behind).
+	pairs = 0;
+	spatial_map.@get_pairs(; Pair pair) { pairs++; };
+	test::@check(pairs == 1, "second call, got %d", pairs);
+}
+
+// Two static ids are never paired; static-dynamic and dynamic-dynamic still are.
+fn void test_spatial_hash_static_static_excluded() @test
+{
+	SpatialHash3D spatial_map = { .cell_size = 2.0 };
+	defer spatial_map.free();
+
+	Aabb3 box = { { 0, 0, 0 }, { 1, 1, 1 } };
+	spatial_map.insert(box, 0, true);
+	spatial_map.insert(box, 1, true);
+	spatial_map.insert(box, 2);
+	// Two large static bodies and a large dynamic one.
+	Aabb3 huge = { { -100, -100, -100 }, { 100, 100, 100 } };
+	spatial_map.insert(huge, 10, true);
+	spatial_map.insert(huge, 11, true);
+	spatial_map.insert(huge, 12);
+
+	bool[13][13] seen;
+	sz total = 0;
+	spatial_map.@get_pairs(; Pair pair)
+	{
+		test::@check(!seen[pair.a][pair.b], "pair %d,%d reported twice", pair.a, pair.b);
+		seen[pair.a][pair.b] = true;
+		total++;
+	};
+	test::@check(!seen[0][1], "small static pair");
+	test::@check(!seen[10][11], "large static pair");
+	test::@check(seen[0][2] && seen[1][2], "static with dynamic");
+	test::@check(seen[10][12] && seen[11][12], "large static with large dynamic");
+	test::@check(seen[0][12] && seen[2][12] && seen[2][10] && !seen[0][10], "small with large, minus static-static");
+
+	// The flag survives an update.
+	Aabb3 moved = { { 0.2, 0.2, 0.2 }, { 1.2, 1.2, 1.2 } };
+	spatial_map.update(box, moved, 0);
+	spatial_map.update(box, moved, 1);
+	bool paired = false;
+	spatial_map.@get_pairs(; Pair pair)
+	{
+		if (pair.a == 0 && pair.b == 1) paired = true;
+	};
+	test::@check(!paired, "update keeps the static flag");
+}
+
+// Same insertion order, same pair order — what the determinism tests rely on.
+fn void test_spatial_hash_pair_order_is_deterministic() @test
+{
+	Pair[64][2] runs;
+	sz[2] counts;
+
+	for (int run = 0; run < 2; run++)
+	{
+		SpatialHash3D spatial_map = { .cell_size = 1.5 };
+		for (sz i = 0; i < 40; i++)
+		{
+			float x = (float)(i % 5) * 0.9f;
+			float y = (float)((i / 5) % 4) * 0.9f;
+			float z = (float)(i / 20) * 0.9f;
+			spatial_map.insert({ { x, y, z }, { x + 1.2f, y + 1.2f, z + 1.2f } }, i);
+		}
+		spatial_map.@get_pairs(; Pair pair)
+		{
+			if (counts[run] < 64) runs[run][counts[run]] = pair;
+			counts[run]++;
+		};
+		spatial_map.free();
+	}
+	test::@check(counts[0] > 0 && counts[0] == counts[1], "pair counts %d vs %d", counts[0], counts[1]);
+	for (sz i = 0; i < 64 && i < counts[0]; i++)
+	{
+		test::@check(runs[0][i].a == runs[1][i].a && runs[0][i].b == runs[1][i].b, "pair %d differs", i);
+	}
+}

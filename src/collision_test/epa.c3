@@ -1,17 +1,13 @@
 <*
- EPA — the penetration depth and normal for two shapes GJK has already found to
- overlap, by expanding GJK's terminating simplex until its closest face stops
- moving.
- 
- **`FixedList.push` does not bounds check** — it is `entries[size++] = element`
- — so both arrays here are guarded at their capacity rather than trusted to
- stop. Overrunning them was a write past the end of a stack array.
+ EPA: the penetration depth and normal for two shapes GJK has found to overlap,
+ by expanding GJK's terminating simplex until its closest face stops moving.
 
- **An unreliable answer is reported as no collision at all.** For a resting
- contact that costs one substep of contact force, which the next substep puts
- back; there is no visible sink. Reporting a made-up normal instead costs the
- body its position, its velocity and, once a NaN is in the transform, every
- subsequent frame it appears in.
+ `FixedList.push` does not bounds check (`entries[size++] = element`), so both
+ arrays here are guarded at their capacity rather than trusted to stop.
+
+ An unreliable answer is reported as no collision at all. For a resting contact
+ that costs one substep of contact force, which the next substep restores;
+ reporting a made-up normal would instead risk NaNs in the body's transform.
 *>
 module collision;
 
@@ -19,8 +15,6 @@ import std::math;
 import std::collections::list;
 import std::collections::fixedlist;
 import std::collections::map;
-import std::io;
-import std::os;
 
 const sz EPA_MAX_VERTICES = 64;
 const sz EPA_MAX_FACES = 64;
@@ -31,12 +25,10 @@ alias SupportArray @private = FixedList {SupportPoint, EPA_MAX_VERTICES};
 
 const uint EPA_MAX_ITER = 32;
 const float EPA_TOLERANCE = 0.0001f;
-// Below this a triangle has no usable normal: the cross product of its edges is
-// shorter than the float noise in the vertices it was built from.
+// Below this a triangle has no usable normal (its edge cross product is float noise).
 const float EPA_MIN_FACE_AREA_SQ = 1e-12f;
 // Two support points closer than this are the same vertex of the Minkowski
-// difference. Both shapes are polyhedra, so the support function runs out of
-// new vertices to return — that is convergence, not a reason to keep going.
+// difference: polyhedra run out of new support vertices, which is convergence.
 const float EPA_VERTEX_MERGE_SQ = 1e-10f;
 
 fn void EdgeArray.add_if_new(&self, Pair pair)
@@ -59,10 +51,8 @@ fn void EdgeArray.add_if_new(&self, Pair pair)
 <*
  The face on three polytope vertices, oriented away from the origin.
 
- `active` is false for a triangle with no area. Such a face has no normal to
- speak of — `normalize()` on a zero-length cross product is a NaN in all three
- components, and a NaN normal survives every `<` test written against it — so it
- is flagged here and dropped by the callers rather than left to poison the walk.
+ `active` is false for a triangle with no area: its normal would be NaN, which
+ survives every `<` comparison, so callers drop such faces instead.
 *>
 fn Face SupportArray.create_face(&self, sz a_index, sz b_index, sz c_index)
 {
@@ -82,8 +72,7 @@ fn Face SupportArray.create_face(&self, sz a_index, sz b_index, sz c_index)
 	Vec3 normal = cross * (1.0f / math::sqrt(area_sq));
 	float distance = a.dot(normal);
 
-	// Point it away from the origin, which is what makes `distance` the
-	// origin-to-plane distance and lets `get_closest` compare faces at all.
+	// Point away from the origin so `distance` is the origin-to-plane distance.
 	if (distance < 0)
 	{
 		normal = -normal;
@@ -121,8 +110,7 @@ fn bool SupportArray.reconstruct(&self, FaceArray* faces, Vec3 new_point)
 		if (faces.len() >= EPA_MAX_FACES) return false;
 
 		Face new_face = self.create_face(edge.a, edge.b, self.len() - 1);
-		// A face that cannot be built is a hole, and a hole invalidates every
-		// distance comparison from here on. Say so instead of skipping it.
+		// A face that cannot be built is a hole, which invalidates every later comparison.
 		if (!new_face.active) return false;
 
 		faces.push(new_face);
@@ -138,8 +126,9 @@ fn bool SupportArray.reconstruct(&self, FaceArray* faces, Vec3 new_point)
  `float::max` and their normal is zero, and either would win a comparison
  written the other way round.
 *>
-fn uint Face[].get_closest(self, float min_distance = float::max)
+fn uint Face[].get_closest(self)
 {
+	float min_distance = float::max;
 	uint closest = (uint)self.len;
 
 	foreach (uint i, face : self)
@@ -156,19 +145,17 @@ fn uint Face[].get_closest(self, float min_distance = float::max)
 	return closest;
 }
 
-fn bool is_finite3(Vec3 v) @local => math::is_finite(v.x) && math::is_finite(v.y) && math::is_finite(v.z);
-
 <*
+ Fills `info.normal`, `depth` and `contact_points` from the simplex GJK ended on.
+
+ @return `false when no reliable answer was found (iteration/size limit, open polytope, non-finite result).`
  @require info.simplex.len() > 3 : `Simplex data must have enough points`
 *>
-fn void epa(CollisionInfo* info, CollisionShape shape_1, CollisionShape shape_2)
+fn bool epa_core(CollisionInfo* info, CollisionShape shape_1, CollisionShape shape_2) @local
 {
 	SupportArray vertices;
 
-	foreach (item : info.simplex)
-	{
-		vertices.push(item);
-	}
+	foreach (item : info.simplex) vertices.push(item);
 
 	FaceArray faces;
 	Face[4] seed = {
@@ -178,24 +165,15 @@ fn void epa(CollisionInfo* info, CollisionShape shape_1, CollisionShape shape_2)
 		vertices.create_face(1, 3, 2),
 	};
 
-	// All four or none: a seed tetrahedron missing a face is already the open
-	// polytope this whole function exists to avoid.
+	// All four or none: a seed tetrahedron missing a face is already an open polytope.
 	foreach (face : seed)
 	{
-		if (!face.active)
-		{
-			info.collided = false;
-			return;
-		}
+		if (!face.active) return false;
 	}
 	faces.push_all(&seed);
 
 	uint closest_face_index = faces.array_view().get_closest();
-	if (closest_face_index >= faces.len())
-	{
-		info.collided = false;
-		return;
-	}
+	if (closest_face_index >= faces.len()) return false;
 
 	Face closest_face = faces[closest_face_index];
 	bool converged = false;
@@ -218,9 +196,9 @@ fn void epa(CollisionInfo* info, CollisionShape shape_1, CollisionShape shape_2)
 			break;
 		}
 
-		// The support function of a polyhedron has finitely many answers. Once
-		// it repeats one the polytope cannot grow, and pushing the duplicate
-		// builds a zero-area face out of two copies of the same vertex.
+		// A polyhedron's support function has finitely many answers; once it
+		// repeats one the polytope cannot grow, and pushing the duplicate would
+		// build a zero-area face from two copies of the same vertex.
 		bool duplicate = false;
 		foreach (existing : vertices)
 		{
@@ -245,27 +223,15 @@ fn void epa(CollisionInfo* info, CollisionShape shape_1, CollisionShape shape_2)
 		if (closest_face_index >= faces.len()) break;
 	}
 
-	// Ran out of iterations, ran out of room, or opened a hole. Whatever the
-	// current closest face says, it is not an answer about these two shapes.
-	if (!converged)
-	{
-		info.collided = false;
-		return;
-	}
+	// Out of iterations, out of room, or an open polytope: not an answer about these shapes.
+	if (!converged) return false;
 
-	if (!is_finite3(closest_face.normal) || !math::is_finite(closest_face.distance) || closest_face.distance < 0)
-	{
-		info.collided = false;
-		return;
-	}
+	if (!is_finite3(closest_face.normal) || !math::is_finite(closest_face.distance) || closest_face.distance < 0) return false;
 
 	info.normal = closest_face.normal;
 	info.depth = closest_face.distance;
 
-	// The closest point on the face to the origin, which is along the normal
-	// *towards* the face. It read `-info.depth` before, mirroring the point
-	// through the origin and taking the barycentric of somewhere the triangle
-	// is not.
+	// The closest point on the face to the origin lies along the normal, towards the face.
 	Vec3 p = info.normal * info.depth;
 
 	SupportPoint a = vertices[closest_face.a];
@@ -274,24 +240,21 @@ fn void epa(CollisionInfo* info, CollisionShape shape_1, CollisionShape shape_2)
 
 	Vec3 bary = p.barycentric(a.point, b.point, c.point);
 
-	if (!is_finite3(bary))
-	{
-		// Degenerate triangle after all: put the contact at the face's own
-		// centroid rather than dividing by its area.
-		bary = { 1.0f / 3.0f, 1.0f / 3.0f, 1.0f / 3.0f };
-	}
-
-	Vec3[2] support_a = { a.a, a.b };
-	Vec3[2] support_b = { b.a, b.b };
-	Vec3[2] support_c = { c.a, c.b };
+	// Degenerate triangle after all: use the face centroid rather than dividing by its area.
+	if (!is_finite3(bary)) bary = { 1.0f / 3.0f, 1.0f / 3.0f, 1.0f / 3.0f };
 
 	info.contact_points = {
-		support_a[0] * bary.x + support_b[0] * bary.y + support_c[0] * bary.z,
-		support_a[1] * bary.x + support_b[1] * bary.y + support_c[1] * bary.z,
+		a.a * bary.x + b.a * bary.y + c.a * bary.z,
+		a.b * bary.x + b.b * bary.y + c.b * bary.z,
 	};
 
-	if (!is_finite3(info.contact_points[0]) || !is_finite3(info.contact_points[1]))
-	{
-		info.collided = false;
-	}
+	return is_finite3(info.contact_points[0]) && is_finite3(info.contact_points[1]);
+}
+
+<*
+ Runs EPA on a colliding `info`; clears `info.collided` when no reliable answer exists.
+*>
+fn void epa(CollisionInfo* info, CollisionShape shape_1, CollisionShape shape_2)
+{
+	if (!epa_core(info, shape_1, shape_2)) info.collided = false;
 }

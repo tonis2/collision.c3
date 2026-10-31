@@ -8,14 +8,27 @@ import std::io;
 
 import collision::dmath;
 
-// XPBD constraint types for soft bodies
+// Lengths below this are treated as zero: the direction they would define is noise.
+const float MIN_LENGTH @private = 1e-7f;
+const float VOLUME_EPS @private = 1e-7f; // Volume error treated as satisfied
+const float ANGLE_EPS @private = 1e-6f; // Dihedral error (radians) treated as satisfied
+const float GRAD_SQ_EPS @private = 1e-10f; // Weighted squared gradient below which a step is skipped
+const float FRICTION_SPEED_EPS @private = 1e-6f; // Tangential speed treated as zero
+const float W_TOTAL_EPS @private = 1e-10f; // Combined inverse mass below which a contact is skipped
+const float DEFAULT_BENDING_COMPLIANCE @private = 0.001f; // Bending is usually softer
+// Particle speed (model units/s) under which a body counts as at rest
+const float SLEEP_SPEED @private = 0.1f;
+const float SLEEP_SPEED_SQ @private = SLEEP_SPEED * SLEEP_SPEED;
+
+// XPBD constraint types for soft bodies. `lambda` is the accumulated Lagrange
+// multiplier; it restarts from zero every substep.
 struct DistanceConstraint
 {
 	sz p0; // Particle index 0
 	sz p1; // Particle index 1
 	float rest_length;
 	float compliance; // Inverse stiffness (0 = infinitely stiff)
-	float lambda; // Lagrange multiplier (warm-starting)
+	float lambda;
 }
 
 struct VolumeConstraint
@@ -44,7 +57,7 @@ struct TargetConstraint
 	sz particle; // Particle index
 	Vec3 target; // World-space goal
 	float compliance; // Inverse stiffness (0 = snap onto the target)
-	float lambda; // Lagrange multiplier (warm-starting)
+	float lambda;
 }
 
 // Cone limit: keeps (p_child - p_pivot) within max_angle of reference_dir.
@@ -57,7 +70,7 @@ struct SwingConstraint
 	Vec3 reference_dir; // Cone axis, world space (need not be normalized)
 	float max_angle; // Cone half-angle in radians; <= 0 pins the child to the axis
 	float compliance; // Inverse stiffness (0 = hard clamp)
-	float lambda; // Lagrange multiplier (warm-starting)
+	float lambda;
 }
 
 // Collision constraint generated per-frame during soft-rigid narrow phase
@@ -65,10 +78,10 @@ struct SoftCollisionConstraint
 {
 	sz particle; // Particle index
 	Vec3 normal; // Contact normal (pointing away from rigidbody)
-	float depth; // Penetration depth
 	Vec3 contact_point; // Contact point on rigidbody surface
 	sz rigidbody_id; // Rigidbody involved (0 = ground plane)
 	float friction; // Combined friction coefficient
+	Rigidbody* body; // Resolved from rigidbody_id at the start of each xpbd_solve; stale outside it
 }
 
 // Particle pinning: fix a particle to a world position or rigidbody
@@ -77,6 +90,7 @@ struct ParticlePin
 	sz particle; // Particle index
 	Vec3 local_offset; // Offset in rigidbody local space (or world pos if body_id == 0)
 	sz body_id; // 0 = world-space pin, otherwise rigidbody id
+	Rigidbody* body; // Resolved from body_id at the start of each xpbd_solve; stale outside it
 }
 
 alias SoftBodyList = List {SoftBody};
@@ -103,6 +117,9 @@ struct SoftBody
 	List {float} particle_damping;
 	List {float} particle_radius;
 
+	// pow(particle_damping[i], sub_dt), refreshed at the start of each solve.
+	List {float} damping_factors;
+
 	// Surface mesh connectivity
 	List {Triangle} triangles;
 
@@ -115,12 +132,9 @@ struct SoftBody
 	List {SoftCollisionConstraint} collision_constraints;
 	List {ParticlePin} pins;
 
-	// Scratch for the volume constraint's per-particle gradients. Owned here
-	// rather than declared local to `solve_volume_constraint` because that runs
-	// on a WORKER THREAD: an uninitialised C3 list seats itself on the temp
-	// allocator on its first push, and a thread with no `@pool_init` has none —
-	// the process aborts inside the solver. Seating it on the body's own
-	// allocator also takes an allocate-and-free out of every substep.
+	// Scratch for the volume constraint's per-particle gradients. Owned here, not
+	// local, because the solve runs on a worker thread with no temp allocator
+	// (an unseated list would abort there); it also saves an alloc per substep.
 	List {Vec3} volume_gradients;
 
 	// Per-body properties
@@ -132,12 +146,9 @@ struct SoftBody
 	uint substeps;
 	uint constraint_iterations;
 
-	// Apply pins before each substep's prediction as well as after its
-	// constraint sweep. Off by default: a pin the host moves between substeps
-	// otherwise only reaches the solver *after* this substep's constraints ran,
-	// so everything hanging off a moving pin trails it by one substep. Turning
-	// it on costs one extra pass over `pins` and changes nothing for a pin that
-	// does not move.
+	// Apply pins before each substep's prediction as well as after its constraint
+	// sweep. Off by default; without it, anything hanging off a pin the host
+	// moves between substeps trails it by one substep.
 	bool pins_first;
 
 	// AABB for broad phase
@@ -157,6 +168,7 @@ fn void SoftBody.free(&self)
 	self.inverse_masses.free();
 	self.particle_damping.free();
 	self.particle_radius.free();
+	self.damping_factors.free();
 	self.triangles.free();
 	self.distance_constraints.free();
 	self.target_constraints.free();
@@ -169,19 +181,12 @@ fn void SoftBody.free(&self)
 }
 
 <*
- Seat every list the body owns on `allocator`, including the ones that start
- empty and are filled later by the host — pins, targets, swings, and the
- per-substep collision constraints.
+ Seat every list the body owns on `allocator`, including the ones filled later
+ by the host (pins, targets, swings, per-substep collision constraints).
 
- **A `List` that is never given an allocator takes the *temp* allocator on its
- first push**, and a soft body routinely outlives the temp scope it was built
- in: the pool is released and the solver goes on reading it. It is also why a
- leak-tracked run says nothing about an unseated body — the tracking allocator
- replaces `mem`, and a temp-bound list never goes near it.
-
- Both constructors below call this. It exists as one function rather than two
- copies of the same fourteen lines because it once was two, and only one of
- them was fixed.
+ A `List` never given an allocator takes the *temp* allocator on its first push,
+ and a soft body routinely outlives the temp scope it was built in. Every
+ constructor calls this.
 
  @param allocator : `Owns every list in the body; SoftBody.free returns them to it.`
  @param particles : `Expected particle count, used as the initial capacity.`
@@ -195,6 +200,7 @@ fn void SoftBody.init(&self, Allocator allocator, sz particles = 16)
 	self.inverse_masses.init(allocator, slots);
 	self.particle_damping.init(allocator, slots);
 	self.particle_radius.init(allocator, slots);
+	self.damping_factors.init(allocator, 1);
 	self.triangles.init(allocator, 1);
 	self.distance_constraints.init(allocator, slots);
 	self.target_constraints.init(allocator, slots);
@@ -207,6 +213,41 @@ fn void SoftBody.init(&self, Allocator allocator, sz particles = 16)
 }
 
 <*
+ Solver defaults shared by every constructor. Call before `init`.
+*>
+fn void SoftBody.set_defaults(&self, sz id)
+{
+	self.id = id;
+	self.gravity_factor = 1.0;
+	self.damping = 0.99;
+	self.substeps = 4;
+	self.constraint_iterations = 8;
+	self.can_sleep = true;
+	self.material = { .static_friction = 0.5, .dynamic_friction = 0.3, .restitution = 0.2, };
+}
+
+<*
+ Append a particle at rest at `p`. `inv_mass` 0 makes it immovable.
+*>
+fn void SoftBody.add_particle(&self, Vec3 p, float inv_mass)
+{
+	self.positions.push(p);
+	self.prev_positions.push(p);
+	self.velocities.push({ 0, 0, 0 });
+	self.inverse_masses.push(inv_mass);
+}
+
+<*
+ Join particles `a` and `b` with a distance constraint whose rest length is
+ their current separation.
+*>
+fn void SoftBody.add_distance(&self, sz a, sz b, float compliance = 0.0)
+{
+	float rest_len = (self.positions[b] - self.positions[a]).length();
+	self.distance_constraints.push({ .p0 = a, .p1 = b, .rest_length = rest_len, .compliance = compliance, .lambda = 0, });
+}
+
+<*
  Create a soft body from a mesh with the given particle mass.
 
  @param allocator : `Owns every list in the body; SoftBody.free returns them to it.`
@@ -214,41 +255,17 @@ fn void SoftBody.init(&self, Allocator allocator, sz particles = 16)
 fn SoftBody create_softbody_from_mesh(Mesh* mesh, float total_mass, sz id, Allocator allocator = mem)
 {
 	SoftBody sb;
-	sb.id = id;
-	sb.gravity_factor = 1.0;
-	sb.damping = 0.99;
-	sb.substeps = 4;
-	sb.constraint_iterations = 8;
-	sb.can_sleep = true;
-	sb.material = { .static_friction = 0.5, .dynamic_friction = 0.3, .restitution = 0.2, };
-
+	sb.set_defaults(id);
 	sb.init(allocator, mesh.vertices.len());
 
-	sz num_particles = mesh.vertices.len();
-	float particle_mass = total_mass / (float)num_particles;
+	float particle_mass = total_mass / (float)mesh.vertices.len();
 	float inv_mass = particle_mass > 0 ? 1.0 / particle_mass : 0;
 
-	// Copy vertices as particles
-	foreach (v : mesh.vertices)
-	{
-		sb.positions.push(v);
-		sb.prev_positions.push(v);
-		sb.velocities.push({ 0, 0, 0 });
-		sb.inverse_masses.push(inv_mass);
-	}
+	foreach (v : mesh.vertices) sb.add_particle(v, inv_mass);
+	foreach (tri : mesh.triangles) sb.triangles.push(tri);
 
-	// Copy triangles
-	foreach (tri : mesh.triangles)
-	{
-		sb.triangles.push(tri);
-	}
-
-	// Extract unique edges from triangles as distance constraints
 	sb.extract_distance_constraints();
-
-	// Compute initial AABB
 	sb.aabb = sb.compute_aabb();
-
 	return sb;
 }
 
@@ -276,138 +293,95 @@ fn SoftBody create_softbody_from_mesh(Mesh* mesh, float total_mass, sz id, Alloc
 fn SoftBody create_particle_chain(Allocator allocator = mem, Vec3[] points, float[] inverse_masses, sz id)
 {
 	SoftBody sb;
-	sb.id = id;
-	sb.gravity_factor = 1.0;
-	sb.damping = 0.99;
-	sb.substeps = 4;
-	sb.constraint_iterations = 8;
-	sb.can_sleep = true;
-	sb.material = { .static_friction = 0.5, .dynamic_friction = 0.3, .restitution = 0.2, };
-
+	sb.set_defaults(id);
 	sb.init(allocator, points.len);
 
-	foreach (sz i, p : points)
-	{
-		sb.positions.push(p);
-		sb.prev_positions.push(p);
-		sb.velocities.push({ 0, 0, 0 });
-		sb.inverse_masses.push(inverse_masses[i]);
-	}
-
-	for (sz i = 1; i < points.len; i++)
-	{
-		float rest_len = (points[i] - points[i - 1]).length();
-		sb.distance_constraints.push(
-			{ .p0 = i - 1, .p1 = i, .rest_length = rest_len, .compliance = 0.0, // Default: rigid
-			.lambda = 0, }
-		);
-	}
+	foreach (sz i, p : points) sb.add_particle(p, inverse_masses[i]);
+	for (sz i = 1; i < points.len; i++) sb.add_distance(i - 1, i);
 
 	sb.aabb = sb.compute_aabb();
-
 	return sb;
+}
+
+<*
+ Calls `@body(a, b)` once for each of the triangle's three edges, as particle indices.
+*>
+macro void Triangle.@each_edge(self; @body(a, b))
+{
+	@body((sz)self.x, (sz)self.y);
+	@body((sz)self.y, (sz)self.z);
+	@body((sz)self.z, (sz)self.x);
 }
 
 fn void SoftBody.extract_distance_constraints(&self)
 {
+	// Pair hashes and compares order-independently, so (a, b) and (b, a) are one edge.
 	HashMap {Pair, bool} seen_edges;
 	defer seen_edges.free();
 
 	foreach (tri : self.triangles)
 	{
-		// Three edges per triangle
-		uint[<3>][3] edges = { { tri.x, tri.y, 0 }, { tri.y, tri.z, 0 }, { tri.z, tri.x, 0 }, };
-
-		for (sz e = 0; e < 3; e++)
+		tri.@each_edge(; sz a, sz b)
 		{
-			sz a = edges[e][0];
-			sz b = edges[e][1];
-			Pair key = { math::min(a, b), math::max(a, b) };
-
-			if (!seen_edges.has_key(key))
+			if (!seen_edges.has_key({ a, b }))
 			{
-				seen_edges.set(key, true);
-
-				Vec3 pa = self.positions[a];
-				Vec3 pb = self.positions[b];
-				float rest_len = (pb - pa).length();
-
-				self.distance_constraints.push(
-					{ .p0 = a, .p1 = b, .rest_length = rest_len, .compliance = 0.0, // Default: rigid
-					.lambda = 0, }
-				);
+				seen_edges.set({ a, b }, true);
+				self.add_distance(a, b);
 			}
-		}
+		};
 	}
 }
 
-// Build adjacency and create bending constraints from adjacent triangles
+// The (up to two) triangles on one edge.
+struct EdgeUse @local
+{
+	sz[2] tris;
+	sz count;
+}
+
+// Create bending constraints for every edge shared by exactly two triangles.
 fn void SoftBody.extract_bending_constraints(&self)
 {
-	// Map each edge to the triangles that share it
-	HashMap {Pair, sz[2]} edge_triangles;
-	HashMap {Pair, sz} edge_tri_count;
-	defer edge_triangles.free();
-	defer edge_tri_count.free();
+	HashMap {Pair, EdgeUse} edges;
+	defer edges.free();
 
 	for (sz ti = 0; ti < self.triangles.len(); ti++)
 	{
-		Triangle tri = self.triangles[ti];
-		uint[2][3] edges = { { tri.x, tri.y }, { tri.y, tri.z }, { tri.z, tri.x }, };
-
-		for (sz e = 0; e < 3; e++)
+		self.triangles[ti].@each_edge(; sz a, sz b)
 		{
-			sz a = edges[e][0];
-			sz b = edges[e][1];
-			Pair key = { math::min(a, b), math::max(a, b) };
-
-			sz count = 0;
-			if (try c = edge_tri_count.get(key))
+			EdgeUse* use = edges.get_ref({ a, b }) ?? null;
+			if (!use)
 			{
-				count = c;
+				edges.set({ a, b }, { .tris = { ti, 0 }, .count = 1 });
 			}
-
-			if (count < 2)
+			else if (use.count < 2)
 			{
-				sz[2] tris;
-				if (try existing = edge_triangles.get(key))
-				{
-					tris = existing;
-				}
-				tris[count] = ti;
-				edge_triangles.set(key, tris);
-				edge_tri_count.set(key, count + 1);
+				use.tris[use.count++] = ti;
 			}
-		}
+		};
 	}
 
-	// For each edge shared by exactly 2 triangles, create a bending constraint
-	edge_tri_count.@each(; Pair key, sz count)
+	// No early `return` in the body: inside a macro body it returns from this
+	// function, which would stop at the first edge that is not shared.
+	edges.@each(; Pair key, EdgeUse use)
 	{
-		if (count != 2) return;
+		if (use.count == 2)
+		{
+			sz opposite0 = find_opposite_vertex(self.triangles[use.tris[0]], key.a, key.b);
+			sz opposite1 = find_opposite_vertex(self.triangles[use.tris[1]], key.a, key.b);
 
-		sz[2] tris = edge_triangles.get(key)!!;
-		Triangle t0 = self.triangles[tris[0]];
-		Triangle t1 = self.triangles[tris[1]];
-
-		// Find the opposite vertices (not on the shared edge)
-		sz opposite0 = find_opposite_vertex(t0, key.a, key.b);
-		sz opposite1 = find_opposite_vertex(t1, key.a, key.b);
-
-		// Compute rest dihedral angle
-		float rest_angle = self.compute_dihedral_angle(key.a, key.b, opposite0, opposite1);
-
-		self.bending_constraints.push(
-			{
-				.p0 = key.a,
-				.p1 = key.b,
-				.p2 = opposite0,
-				.p3 = opposite1,
-				.rest_angle = rest_angle,
-				.compliance = 0.001, // Bending is usually softer
-				.lambda = 0,
-			}
-		);
+			self.bending_constraints.push(
+				{
+					.p0 = key.a,
+					.p1 = key.b,
+					.p2 = opposite0,
+					.p3 = opposite1,
+					.rest_angle = self.compute_dihedral_angle(key.a, key.b, opposite0, opposite1),
+					.compliance = DEFAULT_BENDING_COMPLIANCE,
+					.lambda = 0,
+				}
+			);
+		}
 	};
 }
 
@@ -418,22 +392,37 @@ fn sz find_opposite_vertex(Triangle tri, sz edge_a, sz edge_b) @local
 	return tri.z;
 }
 
-fn float SoftBody.compute_dihedral_angle(&self, sz e0, sz e1, sz opp0, sz opp1)
+// Dihedral angle of the hinge p0-p1 between faces (p0, p2, p1) and (p0, p1, p3).
+struct Dihedral @local
 {
-	Vec3 p0 = self.positions[e0];
-	Vec3 p1 = self.positions[e1];
-	Vec3 p2 = self.positions[opp0];
-	Vec3 p3 = self.positions[opp1];
+	Vec3 n0; // Unit normal of the first face
+	Vec3 n1; // Unit normal of the second face
+	float angle; // Signed, in (-pi, pi]; 0 when degenerate
+	bool valid; // False if the edge or either face has no area
+}
 
-	Vec3 edge = (p1 - p0).normalize();
-	Vec3 n0 = (p2 - p0).cross(p1 - p0).normalize();
-	Vec3 n1 = (p1 - p0).cross(p3 - p0).normalize();
+fn Dihedral dihedral(Vec3 p0, Vec3 p1, Vec3 p2, Vec3 p3) @local
+{
+	Vec3 edge = p1 - p0;
+	float edge_len = edge.length();
+	Vec3 n0 = (p2 - p0).cross(edge);
+	Vec3 n1 = edge.cross(p3 - p0);
+	float n0_len = n0.length();
+	float n1_len = n1.length();
+	if (edge_len < MIN_LENGTH || n0_len < MIN_LENGTH || n1_len < MIN_LENGTH) return {};
 
+	n0 /= n0_len;
+	n1 /= n1_len;
 	float cos_angle = math::clamp(n0.dot(n1), -1.0f, 1.0f);
-	float sin_angle = n0.cross(n1).dot(edge);
+	float sin_angle = n0.cross(n1).dot(edge / edge_len);
 
 	// dmath::atan2: libm atan2 is not cross-platform deterministic
-	return dmath::atan2(sin_angle, cos_angle);
+	return { .n0 = n0, .n1 = n1, .angle = dmath::atan2(sin_angle, cos_angle), .valid = true };
+}
+
+fn float SoftBody.compute_dihedral_angle(&self, sz e0, sz e1, sz opp0, sz opp1)
+{
+	return dihedral(self.positions[e0], self.positions[e1], self.positions[opp0], self.positions[opp1]).angle;
 }
 
 // Compute AABB from current particle positions
@@ -457,195 +446,187 @@ fn Aabb3 SoftBody.compute_aabb(&self)
 // Compute signed volume of the mesh (for volume preservation)
 fn float SoftBody.compute_signed_volume(&self)
 {
-	float volume = 0;
+	float six_volume = 0;
 	foreach (tri : self.triangles)
 	{
-		Vec3 v0 = self.positions[tri.x];
-		Vec3 v1 = self.positions[tri.y];
-		Vec3 v2 = self.positions[tri.z];
-		volume += v0.dot(v1.cross(v2)) / 6.0;
+		six_volume += self.positions[tri.x].dot(self.positions[tri.y].cross(self.positions[tri.z]));
 	}
-	return volume;
+	return six_volume * (1.0f / 6.0f);
 }
 
 // ============================================================
 // XPBD Solver
 // ============================================================
 
+<*
+ Advance the body by `dt` in `substeps` XPBD substeps (Muller et al., "Detailed
+ Rigid Body Simulation with Extended PBD"): predict, project the constraints,
+ re-pin, derive velocities.
+
+ Lagrange multipliers restart from zero every substep, as XPBD requires; they
+ accumulate across the constraint iterations of one substep only.
+
+ @param world : `Resolves rigid-body contacts and pins; null treats both as world-fixed.`
+*>
 fn void SoftBody.xpbd_solve(&self, Vec3 gravity, float dt, PhysicsWorld* world = null)
 {
 	if (self.sleeping) return;
-
-	sz num_particles = self.positions.len();
-	if (num_particles == 0) return;
+	if (self.positions.len() == 0) return;
 
 	float sub_dt = dt / (float)self.substeps;
+	float inv_dt2 = 1.0f / (sub_dt * sub_dt);
+	Vec3 gravity_step = gravity * self.gravity_factor * sub_dt;
+
+	self.bind_bodies(world);
+	self.cache_damping(sub_dt);
 
 	for (uint sub = 0; sub < self.substeps; sub++)
 	{
-		// === Step 0 (opt-in): Apply pins before predicting ===
-		// So a pin the host moved since the last substep is where the
-		// constraints below see it, instead of a substep behind them.
-		if (self.pins_first)
-		{
-			foreach (&pin : self.pins)
-			{
-				self.apply_pin(pin, world);
-			}
-		}
+		self.reset_lambdas();
 
-		// === Step 1: Predict positions ===
-		for (sz i = 0; i < num_particles; i++)
-		{
-			if (self.inverse_masses[i] == 0) continue; // Fixed particle
+		// A pin the host moved since the last substep is where the constraints see it.
+		if (self.pins_first) self.apply_pins();
 
-			// Apply gravity to velocity
-			self.velocities[i] += gravity * self.gravity_factor * sub_dt;
+		self.predict(gravity_step, sub_dt);
 
-			// Save current position
-			self.prev_positions[i] = self.positions[i];
-
-			// Predict new position
-			self.positions[i] += self.velocities[i] * sub_dt;
-		}
-
-		// === Step 2: Project constraints ===
 		for (uint iter = 0; iter < self.constraint_iterations; iter++)
 		{
-			// Distance constraints
-			foreach (&dc : self.distance_constraints)
-			{
-				self.solve_distance_constraint(dc, sub_dt);
-			}
-
-			// Target constraints (pull toward host-supplied world points)
-			foreach (&tc : self.target_constraints)
-			{
-				self.solve_target_constraint(tc, sub_dt);
-			}
-
-			// Swing constraints (cone limits about host-supplied axes)
-			foreach (&sc : self.swing_constraints)
-			{
-				self.solve_swing_constraint(sc, sub_dt);
-			}
-
-			// Volume constraints
-			foreach (&vc : self.volume_constraints)
-			{
-				self.solve_volume_constraint(vc, sub_dt);
-			}
-
-			// Bending constraints
-			foreach (&bc : self.bending_constraints)
-			{
-				self.solve_bending_constraint(bc, sub_dt);
-			}
-
-			// Collision constraints (generated during broad/narrow phase)
-			foreach (&cc : self.collision_constraints)
-			{
-				self.solve_collision_constraint(cc, sub_dt, world);
-			}
+			self.project_constraints(sub_dt, inv_dt2);
 		}
 
-		// === Step 3: Apply pin constraints (after all iterations) ===
-		foreach (&pin : self.pins)
-		{
-			self.apply_pin(pin, world);
-		}
-
-		// === Step 4: Derive velocities from position changes ===
-		for (sz i = 0; i < num_particles; i++)
-		{
-			if (self.inverse_masses[i] == 0) continue;
-
-			self.velocities[i] = (self.positions[i] - self.prev_positions[i]) / sub_dt;
-
-			// Apply damping. A per-particle entry is a per-second fraction and
-			// is normalized by the substep length, so halving the substep does
-			// not double the drag; the whole-body `damping` keeps its original
-			// per-substep meaning for every particle without one.
-			if (i < self.particle_damping.len())
-			{
-				self.velocities[i] *= dmath::pow(self.particle_damping[i], sub_dt);
-			}
-			else
-			{
-				self.velocities[i] *= self.damping;
-			}
-		}
+		self.apply_pins();
+		self.derive_velocities(sub_dt);
 	}
 
-	// Clear per-frame collision constraints
 	self.collision_constraints.clear();
-
-	// Reset Lagrange multipliers for next frame
-	foreach (&dc : self.distance_constraints) dc.lambda = 0;
-	foreach (&tc : self.target_constraints) tc.lambda = 0;
-	foreach (&sc : self.swing_constraints) sc.lambda = 0;
-	foreach (&vc : self.volume_constraints) vc.lambda = 0;
-	foreach (&bc : self.bending_constraints) bc.lambda = 0;
-
-	// Update AABB
+	foreach (&pin : self.pins) pin.body = null;
 	self.aabb = self.compute_aabb();
 }
 
-// XPBD distance constraint solver
-fn void SoftBody.solve_distance_constraint(&self, DistanceConstraint* c, float dt)
+macro void @reset_lambdas(#list) @local
 {
-	Vec3 p0 = self.positions[c.p0];
-	Vec3 p1 = self.positions[c.p1];
+	foreach (&c : #list) c.lambda = 0;
+}
+
+fn void SoftBody.reset_lambdas(&self)
+{
+	@reset_lambdas(self.distance_constraints);
+	@reset_lambdas(self.target_constraints);
+	@reset_lambdas(self.swing_constraints);
+	@reset_lambdas(self.volume_constraints);
+	@reset_lambdas(self.bending_constraints);
+}
+
+// Look up each contact's and pin's rigid body once. The pointers are valid only
+// for this solve: the world's body map may move its storage when bodies change.
+fn void SoftBody.bind_bodies(&self, PhysicsWorld* world)
+{
+	sz last_id = 0;
+	Rigidbody* last = null;
+	foreach (&cc : self.collision_constraints)
+	{
+		if (cc.rigidbody_id != last_id)
+		{
+			last_id = cc.rigidbody_id;
+			last = lookup_body(world, last_id);
+		}
+		cc.body = last;
+	}
+	foreach (&pin : self.pins) pin.body = lookup_body(world, pin.body_id);
+}
+
+fn Rigidbody* lookup_body(PhysicsWorld* world, sz id) @local
+{
+	if (id == 0 || world == null) return null;
+	return world.find_body(id) ?? null;
+}
+
+// Per-second particle damping as a per-substep factor: pow() once per frame, not per substep.
+fn void SoftBody.cache_damping(&self, float sub_dt)
+{
+	self.damping_factors.clear();
+	foreach (d : self.particle_damping) self.damping_factors.push(dmath::pow(d, sub_dt));
+}
+
+fn void SoftBody.predict(&self, Vec3 gravity_step, float sub_dt)
+{
+	for (sz i = 0; i < self.positions.len(); i++)
+	{
+		if (self.inverse_masses[i] == 0) continue;
+
+		self.velocities[i] += gravity_step;
+		self.prev_positions[i] = self.positions[i];
+		self.positions[i] += self.velocities[i] * sub_dt;
+	}
+}
+
+fn void SoftBody.project_constraints(&self, float sub_dt, float inv_dt2)
+{
+	foreach (&c : self.distance_constraints) self.solve_distance_constraint(c, inv_dt2);
+	// Pull toward host-supplied world points
+	foreach (&c : self.target_constraints) self.solve_target_constraint(c, inv_dt2);
+	// Cone limits about host-supplied axes
+	foreach (&c : self.swing_constraints) self.solve_swing_constraint(c, inv_dt2);
+	foreach (&c : self.volume_constraints) self.solve_volume_constraint(c, inv_dt2);
+	foreach (&c : self.bending_constraints) self.solve_bending_constraint(c, inv_dt2);
+	// Generated during the broad/narrow phase
+	foreach (&c : self.collision_constraints) self.solve_collision_constraint(c, sub_dt);
+}
+
+fn void SoftBody.apply_pins(&self)
+{
+	foreach (&pin : self.pins) self.place_pin(pin, pin.body);
+}
+
+fn void SoftBody.derive_velocities(&self, float sub_dt)
+{
+	// A per-particle entry is a per-second fraction (already normalized by the
+	// substep length, so halving the substep does not double the drag); the
+	// whole-body `damping` is per substep, for particles without an entry.
+	for (sz i = 0; i < self.positions.len(); i++)
+	{
+		if (self.inverse_masses[i] == 0) continue;
+
+		float keep = i < self.damping_factors.len() ? self.damping_factors[i] : self.damping;
+		self.velocities[i] = (self.positions[i] - self.prev_positions[i]) / sub_dt * keep;
+	}
+}
+
+// Step a distance-like constraint with violation `|diff| - rest`. Returns the
+// multiplier change and the unit direction of `diff`, or 0 when `diff` has no direction.
+fn float distance_step(Vec3 diff, float rest, float w_sum, float alpha, float* lambda, Vec3* dir) @local
+{
+	float dist = diff.length();
+	if (dist < MIN_LENGTH) return 0;
+
+	*dir = diff / dist;
+	return collision::xpbd_delta_lambda(dist - rest, w_sum, alpha, lambda);
+}
+
+// XPBD distance constraint solver
+fn void SoftBody.solve_distance_constraint(&self, DistanceConstraint* c, float inv_dt2)
+{
 	float w0 = self.inverse_masses[c.p0];
 	float w1 = self.inverse_masses[c.p1];
+	if (w0 + w1 == 0) return;
 
-	float w_sum = w0 + w1;
-	if (w_sum == 0) return;
+	Vec3 dir;
+	float dl = distance_step(self.positions[c.p1] - self.positions[c.p0], c.rest_length, w0 + w1, c.compliance * inv_dt2, &c.lambda, &dir);
 
-	Vec3 diff = p1 - p0;
-	float dist = diff.length();
-	if (dist < 1e-7) return;
-
-	Vec3 grad = diff / dist;
-	float constraint_value = dist - c.rest_length;
-
-	// XPBD: compliance-scaled correction
-	float alpha = c.compliance / (dt * dt);
-	float delta_lambda = -(constraint_value + alpha * c.lambda) / (w_sum + alpha);
-	c.lambda += delta_lambda;
-
-	// Apply position corrections
-	if (w0 > 0) self.positions[c.p0] -= grad * (w0 * delta_lambda);
-	if (w1 > 0) self.positions[c.p1] += grad * (w1 * delta_lambda);
+	if (w0 > 0) self.positions[c.p0] -= dir * (w0 * dl);
+	if (w1 > 0) self.positions[c.p1] += dir * (w1 * dl);
 }
 
 // XPBD target constraint solver — a distance constraint to a fixed world point
 // with rest length 0, so only the particle moves.
-fn void SoftBody.solve_target_constraint(&self, TargetConstraint* c, float dt)
+fn void SoftBody.solve_target_constraint(&self, TargetConstraint* c, float inv_dt2)
 {
 	float w = self.inverse_masses[c.particle];
 	if (w == 0) return;
 
-	Vec3 diff = self.positions[c.particle] - c.target;
-	float dist = diff.length();
-	if (dist < 1e-7) return;
-
-	Vec3 grad = diff / dist;
-
-	// XPBD: compliance-scaled correction
-	float alpha = c.compliance / (dt * dt);
-	float delta_lambda = -(dist + alpha * c.lambda) / (w + alpha);
-	c.lambda += delta_lambda;
-
-	self.positions[c.particle] += grad * (w * delta_lambda);
-}
-
-// Rotate v about a unit axis by `angle` (Rodrigues). dmath::sincos rather than
-// libm, so the result is the same on every platform.
-fn Vec3 rotate_about_axis(Vec3 v, Vec3 axis, float angle) @local
-{
-	float[<2>] sc = dmath::sincos(angle);
-	return v * sc[1] + axis.cross(v) * sc[0] + axis * (axis.dot(v) * (1.0f - sc[1]));
+	Vec3 dir;
+	float dl = distance_step(self.positions[c.particle] - c.target, 0, w, c.compliance * inv_dt2, &c.lambda, &dir);
+	self.positions[c.particle] += dir * (w * dl);
 }
 
 // XPBD swing constraint solver — cone limit on the direction from pivot to child.
@@ -656,7 +637,7 @@ fn Vec3 rotate_about_axis(Vec3 v, Vec3 axis, float angle) @local
 // the two particles is preserved exactly however far the clamp has to turn; the
 // resulting translation is split between the two particles by inverse mass, which
 // leaves their centre of mass where it was.
-fn void SoftBody.solve_swing_constraint(&self, SwingConstraint* c, float dt)
+fn void SoftBody.solve_swing_constraint(&self, SwingConstraint* c, float inv_dt2)
 {
 	float w_pivot = self.inverse_masses[c.p_pivot];
 	float w_child = self.inverse_masses[c.p_child];
@@ -666,173 +647,128 @@ fn void SoftBody.solve_swing_constraint(&self, SwingConstraint* c, float dt)
 	Vec3 pivot = self.positions[c.p_pivot];
 	Vec3 d = self.positions[c.p_child] - pivot;
 	float len = d.length();
-	if (len < 1e-7) return;
+	if (len < MIN_LENGTH) return;
 
 	float ref_len = c.reference_dir.length();
-	if (ref_len < 1e-7) return;
+	if (ref_len < MIN_LENGTH) return;
 
-	Vec3 ref = c.reference_dir / ref_len;
-	Vec3 dir = d / len;
-
-	// Cross length is the sine and the dot the cosine, so this reads the angle
-	// over the whole range instead of saturating past a quarter turn.
-	Vec3 cross_v = ref.cross(dir);
-	float across = cross_v.length();
-	float angle = dmath::atan2(across, math::clamp(ref.dot(dir), -1.0f, 1.0f));
-
-	float max_angle = math::max(c.max_angle, 0.0f);
-	float constraint_value = angle - max_angle;
-	if (constraint_value <= 0) return;
-
+	// Reads the angle over the whole range, not saturating past a quarter turn.
 	Vec3 axis;
-	if (across > 1e-7)
-	{
-		axis = cross_v / across;
-	}
-	else
-	{
-		// Antiparallel: every axis perpendicular to `ref` turns by the same
-		// amount, so pick the one the cross product is furthest from degenerate
-		// on. (Parallel cannot reach here — its angle is 0.)
-		Vec3 aside = math::abs(ref.x) < math::abs(ref.z) ? (Vec3){ 1, 0, 0 } : (Vec3){ 0, 0, 1 };
-		axis = ref.cross(aside).normalize();
-	}
+	float angle = angle_axis_between(c.reference_dir / ref_len, d / len, &axis);
+
+	float constraint_value = angle - math::max(c.max_angle, 0.0f);
+	if (constraint_value <= 0) return;
 
 	// Turning about `axis` by +phi opens the angle, so the correction is negative.
 	// Gradient magnitude of the angle w.r.t. either endpoint is 1/len.
 	float len_sq = len * len;
-	float grad_sq = w_sum / len_sq;
-	float alpha = c.compliance / (dt * dt);
-	float delta_lambda = -(constraint_value + alpha * c.lambda) / (grad_sq + alpha);
-	c.lambda += delta_lambda;
+	float dl = collision::xpbd_delta_lambda(constraint_value, w_sum / len_sq, c.compliance * inv_dt2, &c.lambda);
 
-	float phi = w_sum * delta_lambda / len_sq;
-	Vec3 delta = rotate_about_axis(d, axis, phi) - d;
+	float phi = w_sum * dl / len_sq;
+	Vec3 delta = dmath::rotate_about_axis(d, axis, phi) - d;
 
 	if (w_child > 0) self.positions[c.p_child] += delta * (w_child / w_sum);
 	if (w_pivot > 0) self.positions[c.p_pivot] -= delta * (w_pivot / w_sum);
 }
 
 // XPBD volume constraint solver (pressure-based)
-fn void SoftBody.solve_volume_constraint(&self, VolumeConstraint* c, float dt)
+fn void SoftBody.solve_volume_constraint(&self, VolumeConstraint* c, float inv_dt2)
 {
-	float current_volume = self.compute_signed_volume();
-	float constraint_value = current_volume - c.rest_volume;
-
-	if (math::abs(constraint_value) < 1e-7) return;
-
-	// Compute gradients: dV/dp_i for each particle
-	// For signed volume, gradient w.r.t vertex i involves adjacent triangles
-	// Simplified approach: uniform pressure on all surface vertices
+	// One pass over the triangles builds both six-times-the-volume and the
+	// (six-times) gradient: d(v0 . v1xv2)/dv0 = v1xv2, so each cross serves both.
+	// The scratch is the body's own — see `volume_gradients`.
 	sz n = self.positions.len();
-	float total_grad_sq = 0;
-
-	// For each triangle, compute area-weighted normal contribution. The scratch
-	// is the body's own — see `volume_gradients`.
 	self.volume_gradients.clear();
-	for (sz i = 0; i < n; i++)
-	{
-		self.volume_gradients.push({ 0, 0, 0 });
-	}
+	self.volume_gradients.reserve(n);
+	self.volume_gradients.size = n;
+	foreach (&g : self.volume_gradients) *g = { 0, 0, 0 };
 
+	float six_volume = 0;
 	foreach (tri : self.triangles)
 	{
 		Vec3 v0 = self.positions[tri.x];
 		Vec3 v1 = self.positions[tri.y];
 		Vec3 v2 = self.positions[tri.z];
 
-		// Gradient of signed volume w.r.t each vertex of this triangle
-		Vec3 g0 = v1.cross(v2) / 6.0;
-		Vec3 g1 = v2.cross(v0) / 6.0;
-		Vec3 g2 = v0.cross(v1) / 6.0;
-
+		Vec3 g0 = v1.cross(v2);
+		six_volume += v0.dot(g0);
 		self.volume_gradients[tri.x] += g0;
-		self.volume_gradients[tri.y] += g1;
-		self.volume_gradients[tri.z] += g2;
+		self.volume_gradients[tri.y] += v2.cross(v0);
+		self.volume_gradients[tri.z] += v0.cross(v1);
 	}
 
+	float constraint_value = six_volume * (1.0f / 6.0f) - c.rest_volume;
+	if (math::abs(constraint_value) < VOLUME_EPS) return;
+
+	float total_grad_sq = 0;
+	for (sz i = 0; i < n; i++)
+	{
+		total_grad_sq += self.inverse_masses[i] * self.volume_gradients[i].dot(self.volume_gradients[i]);
+	}
+	total_grad_sq *= 1.0f / 36.0f;
+	if (total_grad_sq < GRAD_SQ_EPS) return;
+
+	float dl = collision::xpbd_delta_lambda(constraint_value, total_grad_sq, c.compliance * inv_dt2, &c.lambda);
+
+	float step = dl * (1.0f / 6.0f);
 	for (sz i = 0; i < n; i++)
 	{
 		float w = self.inverse_masses[i];
-		total_grad_sq += w * self.volume_gradients[i].dot(self.volume_gradients[i]);
-	}
-
-	if (total_grad_sq < 1e-10) return;
-
-	float alpha = c.compliance / (dt * dt);
-	float delta_lambda = -(constraint_value + alpha * c.lambda) / (total_grad_sq + alpha);
-	c.lambda += delta_lambda;
-
-	for (sz i = 0; i < n; i++)
-	{
-		float w = self.inverse_masses[i];
-		if (w > 0)
-		{
-			self.positions[i] += self.volume_gradients[i] * (w * delta_lambda);
-		}
+		if (w > 0) self.positions[i] += self.volume_gradients[i] * (w * step);
 	}
 }
 
 // XPBD bending constraint solver (dihedral angle)
-fn void SoftBody.solve_bending_constraint(&self, BendingConstraint* c, float dt)
+//
+// The gradient is simplified: each opposite vertex moves along its face's unit
+// normal and the edge vertices share the opposite push. That makes the step a
+// distance in model units, not an exact angle gradient.
+fn void SoftBody.solve_bending_constraint(&self, BendingConstraint* c, float inv_dt2)
 {
-	Vec3 p0 = self.positions[c.p0];
-	Vec3 p1 = self.positions[c.p1];
-	Vec3 p2 = self.positions[c.p2];
-	Vec3 p3 = self.positions[c.p3];
+	Dihedral h = dihedral(
+		self.positions[c.p0], self.positions[c.p1], self.positions[c.p2], self.positions[c.p3]
+	);
+	if (!h.valid) return;
+
+	// Wrap angle difference to [-pi, pi]
+	float constraint_value = h.angle - c.rest_angle;
+	if (constraint_value > math::PI)
+	{
+		constraint_value -= 2 * math::PI;
+	}
+	else if (constraint_value < -math::PI)
+	{
+		constraint_value += 2 * math::PI;
+	}
+
+	if (math::abs(constraint_value) < ANGLE_EPS) return;
 
 	float w0 = self.inverse_masses[c.p0];
 	float w1 = self.inverse_masses[c.p1];
 	float w2 = self.inverse_masses[c.p2];
 	float w3 = self.inverse_masses[c.p3];
 
-	// Compute current dihedral angle
-	Vec3 edge = p1 - p0;
-	float edge_len = edge.length();
-	if (edge_len < 1e-7) return;
-
-	Vec3 edge_dir = edge / edge_len;
-
-	Vec3 n0 = (p2 - p0).cross(p1 - p0);
-	Vec3 n1 = (p1 - p0).cross(p3 - p0);
-
-	float n0_len = n0.length();
-	float n1_len = n1.length();
-	if (n0_len < 1e-7 || n1_len < 1e-7) return;
-
-	n0 = n0 / n0_len;
-	n1 = n1 / n1_len;
-
-	float cos_angle = math::clamp(n0.dot(n1), -1.0f, 1.0f);
-	float sin_angle = n0.cross(n1).dot(edge_dir);
-	float current_angle = dmath::atan2(sin_angle, cos_angle);
-
-	float constraint_value = current_angle - c.rest_angle;
-
-	// Wrap angle difference to [-pi, pi]
-	while (constraint_value > math::PI) constraint_value -= 2 * math::PI;
-	while (constraint_value < -math::PI) constraint_value += 2 * math::PI;
-
-	if (math::abs(constraint_value) < 1e-6) return;
-
-	// Simplified gradient: move opposite vertices along face normals
-	Vec3 g2 = n0 / n0_len;
-	Vec3 g3 = n1 / n1_len;
-	// Edge vertices get combined gradients
+	Vec3 g2 = h.n0;
+	Vec3 g3 = h.n1;
 	Vec3 g0 = -(g2 + g3) * 0.5;
-	Vec3 g1 = -(g2 + g3) * 0.5;
+	Vec3 g1 = g0;
 
 	float grad_sq = w0 * g0.dot(g0) + w1 * g1.dot(g1) + w2 * g2.dot(g2) + w3 * g3.dot(g3);
-	if (grad_sq < 1e-10) return;
+	if (grad_sq < GRAD_SQ_EPS) return;
 
-	float alpha = c.compliance / (dt * dt);
-	float delta_lambda = -(constraint_value + alpha * c.lambda) / (grad_sq + alpha);
-	c.lambda += delta_lambda;
+	float dl = collision::xpbd_delta_lambda(constraint_value, grad_sq, c.compliance * inv_dt2, &c.lambda);
 
-	if (w0 > 0) self.positions[c.p0] += g0 * (w0 * delta_lambda);
-	if (w1 > 0) self.positions[c.p1] += g1 * (w1 * delta_lambda);
-	if (w2 > 0) self.positions[c.p2] += g2 * (w2 * delta_lambda);
-	if (w3 > 0) self.positions[c.p3] += g3 * (w3 * delta_lambda);
+	if (w0 > 0) self.positions[c.p0] += g0 * (w0 * dl);
+	if (w1 > 0) self.positions[c.p1] += g1 * (w1 * dl);
+	if (w2 > 0) self.positions[c.p2] += g2 * (w2 * dl);
+	if (w3 > 0) self.positions[c.p3] += g3 * (w3 * dl);
+}
+
+fn void SoftBody.add_contact(&self, sz particle, Vec3 normal, Vec3 point, sz body_id, float friction)
+{
+	self.collision_constraints.push(
+		{ .particle = particle, .normal = normal, .contact_point = point, .rigidbody_id = body_id, .friction = friction, }
+	);
 }
 
 // Apply Coulomb friction to a particle's tangential velocity
@@ -849,7 +785,7 @@ fn void SoftBody.apply_particle_friction(
 	Vec3 vel = self.velocities[particle];
 	Vec3 vt = vel - normal * vel.dot(normal);
 	float vt_mag = vt.length();
-	if (vt_mag > 1e-6)
+	if (vt_mag > FRICTION_SPEED_EPS)
 	{
 		float impulse = math::min(friction * math::abs(correction) / dt, vt_mag);
 		self.velocities[particle] -= (vt / vt_mag) * impulse;
@@ -860,8 +796,7 @@ fn void SoftBody.apply_particle_friction(
 fn void SoftBody.solve_collision_constraint(
 	&self,
 	SoftCollisionConstraint* c,
-	float dt,
-	PhysicsWorld* world = null
+	float dt
 )
 {
 	float w_particle = self.inverse_masses[c.particle];
@@ -873,53 +808,47 @@ fn void SoftBody.solve_collision_constraint(
 
 	float correction = -d;
 
-	// If coupled to a rigid body, share the correction
-	if (c.rigidbody_id != 0 && world != null)
+	// If coupled to a (non-static) rigid body, share the correction
+	Rigidbody* body = c.body;
+	if (body && !body.is_static)
 	{
-		Rigidbody*? body_opt = world.find_body(c.rigidbody_id);
-		if (try body = body_opt)
+		Vec3 r = c.contact_point - body.collider.translation;
+		float w_body = collision::compute_generalized_inverse_mass(body, r, c.normal);
+		float w_total = w_particle + w_body;
+
+		if (w_total > W_TOTAL_EPS)
 		{
-			if (!body.is_static)
-			{
-				Vec3 r = c.contact_point - body.collider.translation;
-				float w_body = collision::compute_generalized_inverse_mass(body, r, c.normal);
-				float w_total = w_particle + w_body;
-
-				if (w_total > 1e-10)
-				{
-					float particle_share = w_particle / w_total;
-					self.positions[c.particle] += c.normal * (correction * particle_share);
-					collision::apply_positional_correction(body, -c.normal, r, correction * (w_body / w_total));
-				}
-
-				self.apply_particle_friction(c.particle, c.normal, correction, c.friction, dt);
-				return;
-			}
+			self.positions[c.particle] += c.normal * (correction * (w_particle / w_total));
+			collision::apply_positional_correction(body, -c.normal, r, correction * (w_body / w_total));
 		}
+
+		self.apply_particle_friction(c.particle, c.normal, correction, c.friction, dt);
+		return;
 	}
 
 	self.positions[c.particle] += c.normal * correction;
 	self.apply_particle_friction(c.particle, c.normal, correction, c.friction, dt);
 }
 
-// Apply particle pin constraint
-fn void SoftBody.apply_pin(&self, ParticlePin* pin, PhysicsWorld* world = null)
+// Place a pinned particle: on its rigid body if `body` is set, else at the world point.
+fn void SoftBody.place_pin(&self, ParticlePin* pin, Rigidbody* body)
 {
-	if (pin.body_id != 0 && world != null)
+	if (body)
 	{
-		// Pin to rigidbody: compute world position from local offset
-		if (try body = world.find_body(pin.body_id))
-		{
-			Vec3 world_pos = body.collider.rotation * pin.local_offset + body.collider.translation;
-			self.positions[pin.particle] = world_pos;
-			self.velocities[pin.particle] = body.relative_velocity(world_pos - body.collider.translation);
-			return;
-		}
+		Vec3 world_pos = body.collider.rotation * pin.local_offset + body.collider.translation;
+		self.positions[pin.particle] = world_pos;
+		self.velocities[pin.particle] = body.relative_velocity(world_pos - body.collider.translation);
+		return;
 	}
 
-	// World-space pin
 	self.positions[pin.particle] = pin.local_offset;
 	self.velocities[pin.particle] = { 0, 0, 0 };
+}
+
+// Apply one pin, looking its body up in `world` (xpbd_solve caches the lookup instead).
+fn void SoftBody.apply_pin(&self, ParticlePin* pin, PhysicsWorld* world = null)
+{
+	self.place_pin(pin, lookup_body(world, pin.body_id));
 }
 
 // Pin a particle to a world position
@@ -1001,32 +930,19 @@ fn void SoftBody.set_swing_reference(&self, sz index, Vec3 dir)
 	self.swing_constraints.get_ref(index).reference_dir = dir;
 }
 
-// Set distance constraint compliance (0 = rigid, higher = softer)
-fn void SoftBody.set_distance_compliance(&self, float compliance)
+macro void @set_compliance(#list, float compliance) @local
 {
-	foreach (&dc : self.distance_constraints)
-	{
-		dc.compliance = compliance;
-	}
+	foreach (&c : #list) c.compliance = compliance;
 }
+
+// Set distance constraint compliance (0 = rigid, higher = softer)
+fn void SoftBody.set_distance_compliance(&self, float compliance) => @set_compliance(self.distance_constraints, compliance);
 
 // Set volume constraint compliance
-fn void SoftBody.set_volume_compliance(&self, float compliance)
-{
-	foreach (&vc : self.volume_constraints)
-	{
-		vc.compliance = compliance;
-	}
-}
+fn void SoftBody.set_volume_compliance(&self, float compliance) => @set_compliance(self.volume_constraints, compliance);
 
 // Set bending constraint compliance
-fn void SoftBody.set_bending_compliance(&self, float compliance)
-{
-	foreach (&bc : self.bending_constraints)
-	{
-		bc.compliance = compliance;
-	}
-}
+fn void SoftBody.set_bending_compliance(&self, float compliance) => @set_compliance(self.bending_constraints, compliance);
 
 // Enable volume preservation
 fn void SoftBody.enable_volume_preservation(&self, float compliance = 0.0)
@@ -1036,7 +952,7 @@ fn void SoftBody.enable_volume_preservation(&self, float compliance = 0.0)
 }
 
 // Enable bending resistance
-fn void SoftBody.enable_bending(&self, float compliance = 0.001)
+fn void SoftBody.enable_bending(&self, float compliance = DEFAULT_BENDING_COMPLIANCE)
 {
 	self.extract_bending_constraints();
 	self.set_bending_compliance(compliance);
@@ -1052,21 +968,16 @@ fn void SoftBody.wake(&self)
 // Check if body has enough velocity to be considered moving
 fn bool SoftBody.is_moving(&self)
 {
-	const float SLEEP_THRESHOLD = 0.01;
 	foreach (v : self.velocities)
 	{
-		if (v.length_sq() > SLEEP_THRESHOLD) return true;
+		if (v.length_sq() > SLEEP_SPEED_SQ) return true;
 	}
 	return false;
 }
 
 <*
- Generate ground plane collision constraints.
-
- `dot(p, normal) < offset` is below the surface and the shortfall is the depth;
- the contact point is the particle projected back onto the plane. This took a
- scalar `ground_z` until the solver stopped assuming an up axis — the arithmetic
- is the same length and now describes a plane at any angle. See `GroundPlane`.
+ Generate ground plane collision constraints: `dot(p, normal) < offset` is below
+ the surface, and the contact point is the particle projected back onto the plane.
 *>
 fn void SoftBody.generate_ground_collisions(&self, GroundPlane plane, float friction = 0.5)
 {
@@ -1078,16 +989,7 @@ fn void SoftBody.generate_ground_collisions(&self, GroundPlane plane, float fric
 		float height = p.dot(plane.normal) - plane.offset;
 		if (height < 0)
 		{
-			self.collision_constraints.push(
-				{
-					.particle = i,
-					.normal = plane.normal,
-					.depth = -height,
-					.contact_point = p - plane.normal * height,
-					.rigidbody_id = 0,
-					.friction = friction,
-				}
-			);
+			self.add_contact(i, plane.normal, p - plane.normal * height, 0, friction);
 		}
 	}
 }
@@ -1126,16 +1028,7 @@ fn void SoftBody.generate_capsule_collisions(&self, Vec3[] seg_a, Vec3[] seg_b, 
 			CapsuleHit hit = collision::capsule_push_point(p, seg_a[s], seg_b[s], radius[s], p_radius);
 			if (!hit.hit) continue;
 
-			self.collision_constraints.push(
-				{
-					.particle = i,
-					.normal = hit.normal,
-					.depth = hit.depth,
-					.contact_point = hit.point,
-					.rigidbody_id = 0,
-					.friction = friction,
-				}
-			);
+			self.add_contact(i, hit.normal, hit.point, 0, friction);
 		}
 	}
 }
@@ -1143,66 +1036,31 @@ fn void SoftBody.generate_capsule_collisions(&self, Vec3[] seg_a, Vec3[] seg_b, 
 // Detect and generate collision constraints against a rigidbody
 fn void SoftBody.generate_rigidbody_collisions(&self, Rigidbody* body)
 {
-	// Quick AABB check
 	if (!self.aabb.collides(body.transformed_aabb)) return;
 
-	// Combined friction
 	float friction = (self.material.static_friction + body.material.static_friction) * 0.5f;
 
-	// Test each surface triangle against the rigidbody
 	foreach (tri : self.triangles)
 	{
-		Vec3 v0 = self.positions[tri.x];
-		Vec3 v1 = self.positions[tri.y];
-		Vec3 v2 = self.positions[tri.z];
-
-		// Quick per-triangle AABB rejection
-		Aabb3 tri_aabb = { .min = math::min(v0, math::min(v1, v2)), .max = math::max(v0, math::max(v1, v2)) };
-
-		if (!tri_aabb.collides(body.transformed_aabb)) continue;
-
 		// Triangle vertices are already in world space
-		TriangleShape tri_shape = { .v = { v0, v1, v2 } };
+		TriangleShape tri_shape = { .v = tri.verts(self.positions.array_view()) };
+		if (!tri_shape.get_aabb().collides(body.transformed_aabb)) continue;
 
 		CollisionInfo info = collision::check_convex_collision(&tri_shape, &body.collider, epa: true);
+		if (!info.collided || info.depth <= 0) continue;
 
-		if (info.collided && info.depth > 0)
+		// Constrain each vertex that has sunk into the body. The returned normal is
+		// the one the triangle escapes along negated (as in the rigid path), so a
+		// vertex inside the body projects POSITIVELY past the contact point; the
+		// solver then pushes along -normal.
+		sz[3] indices = { tri.x, tri.y, tri.z };
+		foreach (idx : indices)
 		{
-			// Create collision constraints for each vertex of the penetrating triangle
-			sz[3] indices = { tri.x, tri.y, tri.z };
-			for (sz v = 0; v < 3; v++)
+			Vec3 p = self.positions[idx];
+			float proj = (p - info.contact_points[1]).dot(info.normal);
+			if (proj > 0)
 			{
-				sz idx = indices[v];
-				Vec3 p = self.positions[idx];
-
-				// How far this vertex is INSIDE the body, along the axis that
-				// separates them. `check_convex_collision(a, b)` answers with the
-				// normal that `a` escapes along NEGATED — the rigid path reads it
-				// as `apply_positional_correction(a, -normal, ..)` — so from the
-				// triangle's side it points into the body, and a vertex that has
-				// sunk in is at a POSITIVE projection past the contact point.
-				//
-				// Reversed, this selected the vertices that were already clear and
-				// left every penetrating one unconstrained, and the constraints it
-				// did make were no-ops: `solve_collision_constraint` measures
-				// d = (p - contact_point) . normal, which for proj < 0 comes out
-				// positive and trips its own `d >= 0` early return. Contacts were
-				// generated every frame and none of them ever pushed, so a soft
-				// body fell through a rigid one at a perfectly constant rate.
-				float proj = (p - info.contact_points[1]).dot(info.normal);
-				if (proj > 0)
-				{
-					self.collision_constraints.push(
-						{
-							.particle = idx,
-							.normal = -info.normal,
-							.depth = info.depth,
-							.contact_point = p - info.normal * proj,
-							.rigidbody_id = body.id,
-							.friction = friction,
-						}
-					);
-				}
+				self.add_contact(idx, -info.normal, p - info.normal * proj, body.id, friction);
 			}
 		}
 	}

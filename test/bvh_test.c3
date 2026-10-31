@@ -4,15 +4,16 @@
 
 	`c3c test --test-filter collision_tests::bvh`
 
- `create_indexed_tri_bvh` hands back a pointer the caller owns, and freeing it
- takes two calls — `free_indexed()` for the nodes and `mem::free()` for the root
- — which is exactly the shape of ownership that goes wrong silently. Under the
- leak-tracked run it does not: forget either and the test fails with a report.
+ `create_tri_bvh` hands back a tree the caller owns; one `free()` releases the
+ nodes, the triangle order and the tree. Under the leak-tracked run a missed
+ free fails the test with a report.
 *>
 module collision_tests::bvh;
 
 import collision;
+import std::collections::list;
 import std::core::test;
+import std::math;
 
 alias Vec3 = float[<3>];
 
@@ -48,16 +49,13 @@ fn void test_bvh() @test
 	Triangle[] terrain_tris = { { 0, 1, 2 }, { 3, 4, 5 }, { 6, 7, 8 }, { 9, 10, 11 } };
 	Triangle[] terrain2_tris = { { 0, 1, 2 }, { 3, 4, 5 }, { 6, 7, 8 } };
 
-	TriBVHNode* bvh = collision::create_indexed_tri_bvh(terrain.ptr, terrain_tris.ptr, terrain_tris.len);
-	TriBVHNode* bvh2 = collision::create_indexed_tri_bvh(terrain2.ptr, terrain2_tris.ptr, terrain2_tris.len);
+	TriBVH* bvh = collision::create_tri_bvh(terrain.ptr, terrain_tris.ptr, terrain_tris.len);
+	TriBVH* bvh2 = collision::create_tri_bvh(terrain2.ptr, terrain2_tris.ptr, terrain2_tris.len);
 
 	defer
 	{
-		bvh.free_indexed();
-		mem::free(bvh);
-
-		bvh2.free_indexed();
-		mem::free(bvh2);
+		bvh.free();
+		bvh2.free();
 	}
 
 	TriangleVerts triangle = { { -1.0f, -1.0f, 0.0f }, { 1.0f, -1.0f, 0.0f }, { 0.0f, 1.0f, 0.0f } };
@@ -100,4 +98,70 @@ fn void test_bvh() @test
 	test::@check(!collision::check_convex_collision(&box, &tri_2).collided);
 	test::@check(!collision::check_convex_collision(&box, &tri_3).collided);
 	// assert(collision::check_convex_collision(&box, &&result_2.triangle.get_aabb()).collided);
+}
+
+// A grid of unit quads, enough triangles for several levels of tree.
+fn void test_bvh_ray_closest_hit_and_box_query() @test
+{
+	List {Vec3} vlist;
+	List {Triangle} tlist;
+	vlist.init(mem);
+	tlist.init(mem);
+	defer
+	{
+		vlist.free();
+		tlist.free();
+	}
+	// Three stacked 8x8 sheets (128 triangles each) at z = 0, 1, 2.
+	for (int layer = 0; layer < 3; layer++)
+	{
+		for (int gx = 0; gx < 8; gx++)
+		{
+			for (int gy = 0; gy < 8; gy++)
+			{
+				uint base = (uint)vlist.len();
+				float x = (float)gx;
+				float y = (float)gy;
+				float z = (float)layer;
+				vlist.push_all({ { x, y, z }, { x + 1, y, z }, { x + 1, y + 1, z }, { x, y + 1, z } });
+				tlist.push({ base, base + 1, base + 2 });
+				tlist.push({ base, base + 2, base + 3 });
+			}
+		}
+	}
+
+	TriBVH* bvh = collision::create_tri_bvh(vlist.entries, tlist.entries, tlist.len());
+	defer bvh.free();
+
+	// From above, the closest sheet is the top one, z = 2: t = 10 - 2.
+	HitInfo hit = bvh.ray_intersects({ .origin = { 3.3, 4.4, 10 }, .direction = { 0, 0, -1 } });
+	test::@check(hit.collided);
+	test::@check(math::abs(hit.depth - 8.0f) < 1e-4f, "closest sheet at t=8, got %f", hit.depth);
+	test::@check(hit.normal.z > 0.99f || hit.normal.z < -0.99f);
+
+	// From below, the bottom sheet.
+	hit = bvh.ray_intersects({ .origin = { 3.3, 4.4, -5 }, .direction = { 0, 0, 1 } });
+	test::@check(hit.collided && math::abs(hit.depth - 5.0f) < 1e-4f, "bottom sheet at t=5, got %f", hit.depth);
+
+	// Sideways through the stack, between the sheets: nothing to hit.
+	hit = bvh.ray_intersects({ .origin = { -3, 4.4, 0.5 }, .direction = { 1, 0, 0 } });
+	test::@check(!hit.collided);
+
+	// Missing the whole tree.
+	hit = bvh.ray_intersects({ .origin = { 30, 30, 10 }, .direction = { 0, 0, -1 } });
+	test::@check(!hit.collided);
+
+	// Box query: the overlap count matches brute force, via @foreach_triangle.
+	Aabb3 query = { { 2.2, 2.2, 0.9 }, { 3.7, 3.7, 1.1 } };
+	sz via_walk = 0;
+	bvh.@foreach_triangle(query; TriangleVerts tri) { via_walk++; };
+	sz brute = 0;
+	foreach (t : tlist)
+	{
+		TriangleVerts tv = { vlist[t.x], vlist[t.y], vlist[t.z] };
+		if (tv.overlaps_aabb(query)) brute++;
+	}
+	test::@check(via_walk == brute && brute > 0, "walk %d vs brute %d", via_walk, brute);
+	test::@check(bvh.box_intersects(query).collided);
+	test::@check(!bvh.box_intersects({ { 2.2, 2.2, 5 }, { 3.7, 3.7, 6 } }).collided);
 }

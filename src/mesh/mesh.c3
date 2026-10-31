@@ -1,14 +1,8 @@
 module collision;
 import std::math, std::collections::list, std::io;
 
-// // 3D Vector structure
+// Below this a volume/length is treated as zero.
 const double VEC_EPSILON = Vec3::size == 12 ? 1e-5 : 1e-9;
-
-fn bool Vec3.equals(Vec3* self, Vec3 v)
-{
-	return math::abs(self.x - v.x) < VEC_EPSILON && math::abs(self.y - v.y) < VEC_EPSILON
-		&& math::abs(self.z - v.z) < VEC_EPSILON;
-}
 
 // Triangle structure
 alias Triangle = uint[<3>];
@@ -20,44 +14,27 @@ fn void MeshList.release(&self)
 	self.free();
 }
 
-fn Vec3 Triangle.get_normal(Triangle* self, Vec3[] vertices)
-{
-	// Bounds check
-	if (self.x >= vertices.len || self.y >= vertices.len || self.z >= vertices.len)
-	{
-		return { 0, 1, 0 }; // Return up vector for invalid triangles
-	}
-	Vec3 e1 = vertices[self.y] - vertices[self.x];
-	Vec3 e2 = vertices[self.z] - vertices[self.x];
-	return e1.cross(e2).normalize();
-}
+<*
+ @require self.in_range(vertices.len) : `Triangle index out of range`
+*>
+fn Vec3 Triangle.get_normal(self, Vec3[] vertices) => self.verts(vertices).normal();
 
-fn Vec3 Triangle.get_center(Triangle* self, Vec3[] vertices)
-{
-	if (self.x >= vertices.len || self.y >= vertices.len || self.z >= vertices.len)
-	{
-		return { 0, 0, 0 };
-	}
-	return (vertices[self.x] + vertices[self.y] + vertices[self.z]) / 3.0;
-}
+<*
+ @require self.in_range(vertices.len) : `Triangle index out of range`
+*>
+fn Vec3 Triangle.get_center(self, Vec3[] vertices) => self.verts(vertices).centroid();
 
-fn double Triangle.get_area(Triangle* self, Vec3[] vertices)
-{
-	if (self.x >= vertices.len || self.y >= vertices.len || self.z >= vertices.len)
-	{
-		return 0;
-	}
-	Vec3 e1 = vertices[self.y] - vertices[self.x];
-	Vec3 e2 = vertices[self.z] - vertices[self.x];
-	return e1.cross(e2).length() * 0.5;
-}
+<*
+ @require self.in_range(vertices.len) : `Triangle index out of range`
+*>
+fn double Triangle.get_area(self, Vec3[] vertices) => self.verts(vertices).area();
 
 // Mesh structure
 struct Mesh (CollisionShape)
 {
 	List {Vec3} vertices;
 	List {Triangle} triangles;
-	TriBVHNode* bvh;
+	TriBVH* bvh;
 	Aabb3 aabb;
 }
 
@@ -75,19 +52,9 @@ fn sz? Mesh.to_format(&self, Formatter* formatter) @dynamic
 <*
  Put the mesh's two lists on a named allocator, once, before anything is added.
 
- **Without this both bind themselves to the *temp* allocator on their first
- push**, which is what `std::collections` does for a zero-valued list. That is
- harmless inside one temp scope and fatal for anything a host keeps: the pool
- is released and the mesh goes on being used as a collider.
-
- `build_bvh` makes it worse than an ordinary dangling read. The tree it builds
- stores `vertices.entries` and `triangles.entries` in every node rather than
- copying them, so a mesh that moved — or whose pool went away — leaves a tree
- pointing at memory that is not the mesh any more, and the failure surfaces as
- a raycast hitting nothing in particular.
-
- Also what makes a leak-tracked run mean anything for a mesh: the runner's
- tracking allocator replaces `mem`, and a temp-bound list never goes near it.
+ A zero-valued list binds to the temp allocator on its first push and dangles when
+ the temp scope ends. The BVH also points into the lists' storage, so the lists must
+ not move or lose their pool.
 
  @param allocator : `Owns both lists; Mesh.free returns them to it.`
 *>
@@ -117,21 +84,40 @@ fn void Mesh.build_bvh(&self)
 	if (self.triangles.len() == 0) return;
 	if (self.bvh != null) return; // Already built
 
-	// Use indexed BVH - no vertex duplication
-	self.bvh = create_indexed_tri_bvh(self.vertices.entries, self.triangles.entries, self.triangles.len());
+	// Indexed BVH: no vertex duplication
+	self.bvh = create_tri_bvh(self.vertices.entries, self.triangles.entries, self.triangles.len());
 }
 
 fn bool Mesh.has_bvh(&self) => self.bvh != null;
+
+<*
+ Build the BVH if the mesh does not have one yet.
+*>
+fn void Mesh.ensure_bvh(&self)
+{
+	if (!self.has_bvh()) self.build_bvh();
+}
+
+<*
+ Visit every triangle with in-range indices as its three vertices. Invalid
+ triangles are skipped.
+*>
+macro void Mesh.@foreach_tri(&self; @body(Vec3 a, Vec3 b, Vec3 c))
+{
+	sz vert_count = self.vertices.len();
+	foreach (tri : self.triangles)
+	{
+		if (!tri.in_range(vert_count)) continue;
+		@body(self.vertices[tri.x], self.vertices[tri.y], self.vertices[tri.z]);
+	}
+}
 
 fn void Mesh.free(&self) @dynamic
 {
 	self.vertices.free();
 	self.triangles.free();
-	if (self.bvh != null)
-	{
-		self.bvh.free_indexed();
-		mem::free(self.bvh);
-	}
+	if (self.bvh != null) self.bvh.free();
+	self.bvh = null;
 }
 
 fn void Mesh.add_triangle(&self, Vec3 v0, Vec3 v1, Vec3 v2)
@@ -143,6 +129,14 @@ fn void Mesh.add_triangle(&self, Vec3 v0, Vec3 v1, Vec3 v2)
 	self.triangles.push({ idx0, idx0 + 1, idx0 + 2 });
 }
 
+<*
+ Add the triangle fan (0, i, i + 1) of a convex polygon; fewer than three points add nothing.
+*>
+fn void Mesh.add_fan(&self, Vec3[] poly)
+{
+	for (sz i = 1; i + 1 < poly.len; i++) self.add_triangle(poly[0], poly[i], poly[i + 1]);
+}
+
 // Load from flat index array (GLTF-style)
 fn void Mesh.set_indices(&self, uint[] indices)
 {
@@ -152,13 +146,6 @@ fn void Mesh.set_indices(&self, uint[] indices)
 		self.triangles.push({ indices[i], indices[i + 1], indices[i + 2] });
 	}
 }
-fn Vec3 Mesh.get_center(&self)
-{
-	Vec3 center = { 0, 0, 0 };
-	foreach (v : self.vertices) center += v;
-	return center / self.vertices.len();
-}
-
 
 // Validate mesh triangles, removing any with out-of-bounds indices
 fn void Mesh.validate(&self)
@@ -166,14 +153,13 @@ fn void Mesh.validate(&self)
 	sz vert_count = self.vertices.len();
 	if (vert_count == 0) return;
 
-	// Filter out invalid triangles
+	// Filter out invalid triangles. The kept list must live on the mesh's own
+	// allocator: it replaces `self.triangles`, which Mesh.free returns to it.
 	List {Triangle} valid_tris;
+	valid_tris.init(self.triangles.allocator.ptr != null ? self.triangles.allocator : mem, self.triangles.len() + 1);
 	foreach (tri : self.triangles)
 	{
-		if (tri.x < vert_count && tri.y < vert_count && tri.z < vert_count)
-		{
-			valid_tris.push(tri);
-		}
+		if (tri.in_range(vert_count)) valid_tris.push(tri);
 	}
 
 	if (valid_tris.len() != self.triangles.len())
@@ -203,20 +189,10 @@ fn List {Mesh} Mesh.decompose(&self, CoacdParameters params = COACD_MEDIUM)
 fn double Mesh.get_volume(&self)
 {
 	double volume = 0.0;
-	sz vert_count = self.vertices.len();
-
-	foreach (tri : self.triangles)
+	self.@foreach_tri(; Vec3 a, Vec3 b, Vec3 c)
 	{
-		// Skip invalid triangles
-		if (tri.x >= vert_count || tri.y >= vert_count || tri.z >= vert_count) continue;
-
-		Vec3 v0 = self.vertices[tri.x];
-		Vec3 v1 = self.vertices[tri.y];
-		Vec3 v2 = self.vertices[tri.z];
-
-		volume += v0.dot(v1.cross(v2)) / 6.0;
-	}
-
+		volume += a.dot(b.cross(c)) / 6.0;
+	};
 	return math::abs(volume);
 }
 
@@ -224,30 +200,21 @@ fn bool Mesh.is_convex(&self)
 {
 	if (self.triangles.len() < 4) return true;
 
-	// Tighter epsilon to ensure proper decomposition of hollow shapes
+	// Tight epsilon so hollow shapes still decompose
 	const double EPSILON = 0.01;
-	sz vert_count = self.vertices.len();
+	Vec3[] verts = self.vertices.array_view();
 
 	foreach (tri : self.triangles)
 	{
-		// Bounds check for invalid meshes
-		if (tri.x >= vert_count || tri.y >= vert_count || tri.z >= vert_count)
-		{
-			return false; // Treat invalid mesh as non-convex (will trigger decomposition)
-		}
+		// An invalid mesh counts as non-convex, which triggers decomposition
+		if (!tri.in_range(verts.len)) return false;
 
-		Vec3[] verts = self.vertices.array_view();
 		Vec3 normal = tri.get_normal(verts);
-		Vec3 p0 = self.vertices[tri.x];
-		double d = normal.dot(p0);
+		double d = normal.dot(verts[tri.x]);
 
-		foreach (v : self.vertices)
+		foreach (v : verts)
 		{
-			double dist = normal.dot(v) - d;
-			if (dist > EPSILON)
-			{
-				return false;
-			}
+			if (normal.dot(v) - d > EPSILON) return false;
 		}
 	}
 
@@ -255,118 +222,70 @@ fn bool Mesh.is_convex(&self)
 }
 
 <*
+ The box of the current vertices. Always recomputed: a cached box goes stale when
+ triangles are added or the mesh is welded or split. The `aabb` field is
+ refreshed as a convenience for readers that want the last value.
+
  @require !self.vertices.is_empty() : `Vertices should not be empty`
 *>
 fn Aabb3 Mesh.get_aabb(&self) @dynamic
 {
-	Vec3 min = { float::max, float::max, float::max };
-	Vec3 max = { -float::max, -float::max, -float::max };
-
-	foreach (point : self.vertices)
-	{
-		min.x = math::min(point.x, min.x);
-		min.y = math::min(point.y, min.y);
-		min.z = math::min(point.z, min.z);
-
-		max.x = math::max(point.x, max.x);
-		max.y = math::max(point.y, max.y);
-		max.z = math::max(point.z, max.z);
-	}
-
-	return { min, max };
+	self.aabb = aabb_of_points(self.vertices.array_view());
+	return self.aabb;
 }
 
-fn Vec3 Mesh.furthest_point(&self, Vec3 direction) @dynamic
-{
-	if (self.vertices.len() == 0)
-	{
-		return { 0, 0, 0 }; // Safeguard for empty mesh
-	}
+fn Vec3 Mesh.furthest_point(&self, Vec3 direction) @dynamic => support_of(self.vertices.array_view(), direction);
 
-	Vec3[] verts = self.vertices.array_view();
-	Vec3 furthest_point = verts[0];
-	float max_distance = furthest_point.dot(direction);
-
-	foreach (point : verts[1..])
-	{
-		float distance = point.dot(direction);
-		if (distance > max_distance)
-		{
-			max_distance = distance;
-			furthest_point = point;
-		}
-	}
-
-	return furthest_point;
-}
-
-fn Vec3 Mesh.center_of_mass(self)
+<*
+ Centroid of the (closed) mesh volume; zero for a degenerate one.
+*>
+fn Vec3 Mesh.center_of_mass(&self)
 {
 	float total_volume = 0;
 	Vec3 weighted_com = { 0, 0, 0 };
 
-	foreach (triangle : self.triangles)
+	self.@foreach_tri(; Vec3 v1, Vec3 v2, Vec3 v3)
 	{
-		Vec3 v1 = self.vertices[triangle.x].xyz;
-		Vec3 v2 = self.vertices[triangle.y].xyz;
-		Vec3 v3 = self.vertices[triangle.z].xyz;
-
-		// Signed volume of tetrahedron from origin to triangle
+		// Signed tetrahedron volume to the origin (times 6); its centroid is (v1 + v2 + v3) / 4.
 		float detJ = v1.dot(v2.cross(v3));
 		total_volume += detJ;
+		weighted_com += detJ * (v1 + v2 + v3);
+	};
 
-		// Centroid of tetrahedron is at (v1 + v2 + v3) / 4 (origin is 4th vertex)
-		// Weight by tetrahedron volume (detJ/6), but we factor out the /6
-		weighted_com.x += detJ * (v1.x + v2.x + v3.x);
-		weighted_com.y += detJ * (v1.y + v2.y + v3.y);
-		weighted_com.z += detJ * (v1.z + v2.z + v3.z);
-	}
-
-	if (math::abs(total_volume) > VEC_EPSILON)
-	{
-		return weighted_com / (4.0f * total_volume);
-	}
+	if (math::abs(total_volume) > VEC_EPSILON) return weighted_com / (4.0f * total_volume);
 	return { 0, 0, 0 };
 }
 
+<*
+ Inertia tensor about the centre of mass for uniform density and total `mass`.
+ One pass accumulates the volume and the inertia about the origin (density 1);
+ the result is then scaled to `mass / volume` and shifted by the parallel-axis theorem.
+*>
 fn Matrix3f Mesh.inertia_tensor(&self, float mass) @dynamic
 {
-	Matrix3f inertia = { }; // Start with zeros, not identity
+	Matrix3f inertia = { };
+	float signed_volume = 0;
+	Vec3 weighted_com = { 0, 0, 0 };
 
-	// Compute with density=1, then scale by actual density
-	foreach (triangle : self.triangles)
+	self.@foreach_tri(; Vec3 v1, Vec3 v2, Vec3 v3)
 	{
-		Vec3 v1 = self.vertices[triangle.x].xyz;
-		Vec3 v2 = self.vertices[triangle.y].xyz;
-		Vec3 v3 = self.vertices[triangle.z].xyz;
-
+		float detJ = v1.dot(v2.cross(v3));
+		signed_volume += detJ;
+		weighted_com += detJ * (v1 + v2 + v3);
 		inertia += compute_inertia_contribution(v1, v2, v3, 1.0f);
-	}
+	};
 
-	// Scale inertia by actual density (mass / volume)
-	double volume = self.get_volume();
-	if (volume > VEC_EPSILON)
-	{
-		float density = mass / (float)volume;
-		inertia.m00 *= density;
-		inertia.m11 *= density;
-		inertia.m22 *= density;
-		inertia.m01 *= density;
-		inertia.m02 *= density;
-		inertia.m12 *= density;
-		inertia.m10 *= density;
-		inertia.m20 *= density;
-		inertia.m21 *= density;
-	}
+	// Dividing by the *signed* volume makes the result independent of winding.
+	float volume = signed_volume / 6.0f;
+	if (math::abs(volume) > VEC_EPSILON) inertia *= mass / volume;
 
-	// Parallel axis theorem: shift from origin to center of mass
-	// I_cm = I_origin - m * d^2  (for diagonal)
-	// I_xy_cm = I_xy_origin - m * x * y  (for off-diagonal)
-	Vec3 c = self.center_of_mass();
+	Vec3 c = math::abs(signed_volume) > VEC_EPSILON ? weighted_com / (4.0f * signed_volume) : (Vec3){ 0, 0, 0 };
 
-	inertia.m00 -= mass * (c.y * c.y + c.z * c.z);
-	inertia.m11 -= mass * (c.x * c.x + c.z * c.z);
-	inertia.m22 -= mass * (c.x * c.x + c.y * c.y);
+	// Parallel axis: I_cm = I_origin - m (|c|² δ - c cᵀ)
+	Vec3 c_sq = c * c;
+	inertia.m00 -= mass * (c_sq.y + c_sq.z);
+	inertia.m11 -= mass * (c_sq.x + c_sq.z);
+	inertia.m22 -= mass * (c_sq.x + c_sq.y);
 
 	inertia.m01 -= mass * c.x * c.y;
 	inertia.m02 -= mass * c.x * c.z;
@@ -395,15 +314,9 @@ fn Plane create_plane(Vec3 n = { 0, 0, 0 }, double dist = 0.0)
 	return { n.normalize(), dist };
 }
 
-fn double Plane.distance(Plane* self, Vec3 p)
+fn double Plane.distance(&self, Vec3 p)
 {
 	return self.normal.dot(p) - self.d;
-}
-
-fn Plane Plane.from_points(&self, Vec3 p0, Vec3 p1, Vec3 p2)
-{
-	Vec3 n = (p1 - p0).cross(p2 - p0).normalize();
-	return create_plane(n, n.dot(p0));
 }
 
 // Compute intersection point between two vertices across a plane

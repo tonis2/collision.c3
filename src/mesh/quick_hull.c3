@@ -4,21 +4,12 @@ import std::math;
 import std::collections::list;
 
 
-// QuickHull 3D Convex Hull Algorithm
-// Used for computing collision meshes from complex GLTF geometry
+// QuickHull 3D convex hull, used to build collision meshes from complex geometry.
 //
-// The face set is kept edge-adjacent: every face knows the face across each of
-// its three edges, and faces are only ever removed by a flood fill that starts
-// at the face the inserted point was assigned to and crosses into neighbours.
-// That connectivity is the load-bearing part. Deciding visibility per face,
-// with no regard for whether the visible faces touch, calls two faces that do
-// not share an edge "visible" as soon as a point sits within epsilon of both -
-// which the near-coplanar panels of a real glTF mesh do constantly - and coning
-// the new vertex to two disjoint horizon loops leaves a surface whose edges are
-// shared by more than two faces. Each later pass then finds one horizon edge
-// per face along such an edge, so the horizon, and with it the face count,
-// multiplies: on truck.glb's third primitive it went 25 -> 109 -> 2867 ->
-// 1677983 and the run never came back. See test_hull_truck_panel.
+// Faces stay edge-adjacent and are removed only by a flood fill from the face the
+// inserted point was assigned to. Per-face visibility tests without that connectivity
+// call two disjoint faces visible for a point within epsilon of both, and the
+// resulting extra horizon loops make the face count explode (see test_hull_truck_panel).
 
 // Use type-appropriate epsilon - float has ~7 digits, double has ~15
 // Vec3::size is 12 for float[<3>] (3*4) or 24 for double[<3>] (3*8)
@@ -27,7 +18,7 @@ const double HULL_EPSILON = Vec3::size == 12 ? 1e-5 : 1e-10;
 // Neighbour slot of a face whose adjacency has not been filled in yet
 const sz NO_FACE @local = -1;
 
-// Face of the convex hull during construction
+// Face of the convex hull during construction (temp-allocated)
 struct HullFace @local
 {
 	sz[3] vertices; // Indices into point array
@@ -36,7 +27,7 @@ struct HullFace @local
 	double distance; // Distance from origin along normal
 	bool alive; // False if face has been removed
 	uint stamp; // Flood fill generation, see find_horizon
-	List {int} outside; // Points outside this face
+	List {int} outside; // Points outside this face; seated lazily by push_outside
 }
 
 // One edge of the horizon: edge `edge` of face `face`, i.e. the directed edge
@@ -56,9 +47,15 @@ struct HorizonStep @local
 	int step;
 }
 
-fn void HullFace.free(&self)
+// Initial capacity of a face's outside list; most faces hold only a few points.
+const sz OUTSIDE_CAPACITY @local = 4;
+
+// All construction scratch lives on the temp allocator inside one `@pool` (see
+// `quickhull`), seated explicitly rather than by a zero-valued list binding to it.
+fn void HullFace.push_outside(&self, int point)
 {
-	self.outside.free();
+	if (self.outside.allocator.ptr == null) self.outside.init(tmem, OUTSIDE_CAPACITY);
+	self.outside.push(point);
 }
 
 // The hull's planes are held in double even though the points are float.
@@ -71,24 +68,31 @@ fn double[<3>] to_double(Vec3 p) @local
 	return { (double)p.x, (double)p.y, (double)p.z };
 }
 
-// Compute face normal and distance from 3 points.
-// Returns false when the three points are collinear: the cross product is zero
-// there and normalizing it stores a NaN plane, which answers false to every
-// comparison and so strands the face in the hull with no way to remove it.
-fn bool HullFace.compute_plane(&self, Vec3[] points)
+// Unit normal and origin distance of the plane through a, b, c.
+// Returns false when the points are collinear: the cross product is zero there
+// and normalizing it stores a NaN plane, which answers false to every
+// comparison and strands the face in the hull with no way to remove it.
+fn bool plane_from_points(double[<3>] a, double[<3>] b, double[<3>] c, double[<3>]* normal, double* distance) @local
 {
-	double[<3>] a = to_double(points[self.vertices[0]]);
-	double[<3>] b = to_double(points[self.vertices[1]]);
-	double[<3>] c = to_double(points[self.vertices[2]]);
-
 	double[<3>] cross = (b - a).cross(c - a);
 	double len = cross.length();
 	// Written this way on purpose: !(len > 0) also rejects a NaN length
 	if (!(len > 0)) return false;
 
-	self.normal = cross * (1.0 / len);
-	self.distance = self.normal.dot(a);
+	*normal = cross * (1.0 / len);
+	*distance = (*normal).dot(a);
 	return true;
+}
+
+fn bool HullFace.compute_plane(&self, Vec3[] points)
+{
+	return plane_from_points(
+		to_double(points[self.vertices[0]]),
+		to_double(points[self.vertices[1]]),
+		to_double(points[self.vertices[2]]),
+		&self.normal,
+		&self.distance
+	);
 }
 
 // Signed distance from point to face plane
@@ -104,31 +108,8 @@ fn double HullFace.point_distance(&self, Vec3 p)
 fn double hull_tolerance(Vec3[] points) @local
 {
 	Vec3 extent = { 0, 0, 0 };
-	foreach (p : points)
-	{
-		extent.x = math::max(extent.x, math::abs(p.x));
-		extent.y = math::max(extent.y, math::abs(p.y));
-		extent.z = math::max(extent.z, math::abs(p.z));
-	}
+	foreach (p : points) extent = math::max(extent, math::abs(p));
 	return HULL_EPSILON * (double)(extent.x + extent.y + extent.z);
-}
-
-// Find the farthest point from origin along a direction
-fn int find_farthest_point(Vec3[] points, Vec3 direction) @local
-{
-	int best = 0;
-	double best_dist = direction.dot(points[0]);
-
-	for (sz i = 1; i < points.len; i++)
-	{
-		double dist = direction.dot(points[i]);
-		if (dist > best_dist)
-		{
-			best_dist = dist;
-			best = (int)i;
-		}
-	}
-	return best;
 }
 
 // Find extreme points along each axis to build initial simplex
@@ -210,16 +191,9 @@ fn int find_farthest_from_line(Vec3[] points, int p0, int p1, double tolerance) 
 // is coplanar and has no volume to enclose.
 fn int find_farthest_from_plane(Vec3[] points, int p0, int p1, int p2, double tolerance) @local
 {
-	double[<3>] a = to_double(points[p0]);
-	double[<3>] b = to_double(points[p1]);
-	double[<3>] c = to_double(points[p2]);
-
-	double[<3>] cross = (b - a).cross(c - a);
-	double len = cross.length();
-	if (!(len > 0)) return -1;
-
-	double[<3>] normal = cross * (1.0 / len);
-	double d = normal.dot(a);
+	double[<3>] normal;
+	double d;
+	if (!plane_from_points(to_double(points[p0]), to_double(points[p1]), to_double(points[p2]), &normal, &d)) return -1;
 
 	double max_dist = tolerance;
 	int result = -1;
@@ -292,12 +266,7 @@ fn bool build_initial_tetrahedron(Vec3[] points, List {HullFace}* faces, double 
 	double dist = normal.dot(points[p3] - points[p0]);
 
 	// Swap p1 and p2 if p3 is above the plane (ensures outward normals)
-	if (dist > 0)
-	{
-		int temp = p1;
-		p1 = p2;
-		p2 = temp;
-	}
+	if (dist > 0) @swap(p1, p2);
 
 	// Create 4 faces of tetrahedron with outward-facing normals. The neighbours
 	// start at NO_FACE rather than at the zero a plain struct would give them,
@@ -331,33 +300,35 @@ fn bool build_initial_tetrahedron(Vec3[] points, List {HullFace}* faces, double 
 	return true;
 }
 
-// Assign each point to the face it's farthest outside of
+// Put point `pi` on the outside list of the face (index >= `first`) it is
+// farthest outside of, if any is outside by more than `tolerance`.
+fn void assign_point(List {HullFace}* faces, sz first, Vec3[] points, int pi, double tolerance) @local
+{
+	double max_dist = tolerance;
+	sz best_face = NO_FACE;
+
+	for (sz f = first; f < faces.len(); f++)
+	{
+		HullFace* face = faces.get_ref(f);
+		if (!face.alive) continue;
+		double dist = face.point_distance(points[pi]);
+		if (dist > max_dist)
+		{
+			max_dist = dist;
+			best_face = f;
+		}
+	}
+
+	if (best_face != NO_FACE) faces.get_ref(best_face).push_outside(pi);
+}
+
+// Assign every point not already a hull vertex to the face it's farthest outside of
 fn void assign_points_to_faces(Vec3[] points, List {HullFace}* faces, bool[] hull_vertices, double tolerance) @local
 {
 	for (sz i = 0; i < points.len; i++)
 	{
-		// Skip the points the initial tetrahedron was built from
 		if (hull_vertices[i]) continue;
-
-		// Find face this point is farthest outside of
-		double max_dist = tolerance;
-		int best_face = -1;
-
-		for (sz f = 0; f < faces.len(); f++)
-		{
-			if (!faces.get(f).alive) continue;
-			double dist = faces.get_ref(f).point_distance(points[i]);
-			if (dist > max_dist)
-			{
-				max_dist = dist;
-				best_face = (int)f;
-			}
-		}
-
-		if (best_face >= 0)
-		{
-			faces.get_ref(best_face).outside.push((int)i);
-		}
+		assign_point(faces, 0, points, (int)i, tolerance);
 	}
 }
 
@@ -368,25 +339,20 @@ fn void assign_points_to_faces(Vec3[] points, List {HullFace}* faces, bool[] hul
 // Visible faces are stamped with `stamp`; nothing is cleared between calls,
 // which is why the stamp is a generation counter and not a flag.
 //
-// A face counts as visible if the eye is on its outer side at all, tolerance or
-// no tolerance. The tolerance decides which points are worth inserting; it has
-// no business deciding which faces an accepted point can see. Stopping the walk
-// at a face the point is only just outside of leaves that face in the hull with
-// the new vertex outside it, and every later insertion builds on the dent: on a
-// 2000 point sphere that left points eighty times the tolerance outside their
-// own hull, and on truck.glb's second primitive twelve times.
+// A face counts as visible if the eye is on its outer side at all, tolerance or not.
+// The tolerance picks which points are worth inserting, not which faces they see;
+// stopping at a barely-outside face leaves a dent that later insertions build on.
 fn void find_horizon(
 	List {HullFace}* faces,
 	Vec3 eye_point,
 	sz seed,
 	uint stamp,
 	List {HorizonEdge}* horizon,
-	List {sz}* visible
+	List {sz}* visible,
+	List {HorizonStep}* walk
 ) @local
 {
-	List {HorizonStep} walk;
-	defer walk.free();
-
+	walk.clear();
 	faces.get_ref(seed).stamp = stamp;
 	visible.push(seed);
 	walk.push({ .face = seed, .start = 0, .step = 0 });
@@ -408,13 +374,14 @@ fn void find_horizon(
 
 		sz next = faces.get_ref(face).neighbours[edge];
 		if (next == NO_FACE) continue;
-		if (faces.get(next).stamp == stamp) continue; // already visible
+		HullFace* next_face = faces.get_ref(next);
+		if (next_face.stamp == stamp) continue; // already visible
 
-		if (faces.get_ref(next).point_distance(eye_point) > 0)
+		if (next_face.point_distance(eye_point) > 0)
 		{
-			faces.get_ref(next).stamp = stamp;
+			next_face.stamp = stamp;
 			visible.push(next);
-			int back = shared_edge(faces.get_ref(next), face);
+			int back = shared_edge(next_face, face);
 			if (back < 0) continue; // adjacency is written in pairs, so unreachable
 			walk.push({ .face = next, .start = (back + 1) % 3, .step = 0 });
 		}
@@ -445,9 +412,10 @@ fn bool horizon_is_simple(
 	{
 		HorizonEdge e = horizon.get(i);
 		HorizonEdge n = horizon.get((i + 1) % count);
-		sz begin = faces.get(e.face).vertices[e.edge];
-		sz end = faces.get(e.face).vertices[(e.edge + 1) % 3];
-		if (end != faces.get(n.face).vertices[n.edge]) return false;
+		HullFace* face = faces.get_ref(e.face);
+		sz begin = face.vertices[e.edge];
+		sz end = face.vertices[(e.edge + 1) % 3];
+		if (end != faces.get_ref(n.face).vertices[n.edge]) return false;
 		if (vertex_stamp[begin] == stamp) return false;
 		vertex_stamp[begin] = stamp;
 	}
@@ -483,8 +451,9 @@ fn void build_cone(List {HullFace}* faces, Vec3[] points, int apex, List {Horizo
 			// Sliver: the new vertex is collinear with the horizon edge. Keep
 			// the plane of the face across that edge, so the triangle still
 			// closes the hull but never claims a point of its own.
-			face.normal = faces.get(outer).normal;
-			face.distance = faces.get(outer).distance;
+			HullFace* across = faces.get_ref(outer);
+			face.normal = across.normal;
+			face.distance = across.distance;
 		}
 
 		faces.push(face);
@@ -513,24 +482,7 @@ fn void redistribute_points(
 		{
 			// Skip points that are now hull vertices
 			if (hull_vertices[pi]) continue;
-
-			double max_dist = tolerance;
-			int best_face = -1;
-
-			for (sz f = first_new; f < faces.len(); f++)
-			{
-				double dist = faces.get_ref(f).point_distance(points[pi]);
-				if (dist > max_dist)
-				{
-					max_dist = dist;
-					best_face = (int)f;
-				}
-			}
-
-			if (best_face >= 0)
-			{
-				faces.get_ref(best_face).outside.push(pi);
-			}
+			assign_point(faces, first_new, points, pi, tolerance);
 		}
 		dead.outside.clear();
 	}
@@ -552,8 +504,19 @@ fn void redistribute_points(
 // degenerate hull without freeing it is not leaking, which is the contract
 // every caller here was already written against.
 //
+// All working storage (faces, point lists, maps) is temp-allocated inside a
+// `@pool` and released on return; only the result is on `allocator`.
+//
 // @param allocator : `Owns the returned mesh's lists; Mesh.free returns them to it.`
 fn Mesh quickhull(Vec3[] points, Allocator allocator = mem)
+{
+	@pool()
+	{
+		return quickhull_in_pool(points, allocator);
+	};
+}
+
+fn Mesh quickhull_in_pool(Vec3[] points, Allocator allocator) @local
 {
 	Mesh result;
 
@@ -566,14 +529,7 @@ fn Mesh quickhull(Vec3[] points, Allocator allocator = mem)
 	double tolerance = hull_tolerance(points);
 
 	List {HullFace} faces;
-	defer
-	{
-		foreach (&f : faces)
-		{
-			f.free();
-		}
-		faces.free();
-	}
+	faces.init(tmem, points.len);
 
 	// Build initial tetrahedron
 	sz[4] tetra;
@@ -583,11 +539,9 @@ fn Mesh quickhull(Vec3[] points, Allocator allocator = mem)
 	}
 
 	// Track which points are already hull vertices (prevents infinite loops with float precision)
-	bool[] hull_vertices = mem::new_array(bool, points.len);
-	defer mem::free(hull_vertices);
+	bool[] hull_vertices = mem::temp_array(bool, points.len);
 	// Generation stamps for the horizon check below, same counter as the faces
-	uint[] vertex_stamp = mem::new_array(uint, points.len);
-	defer mem::free(vertex_stamp);
+	uint[] vertex_stamp = mem::temp_array(uint, points.len);
 	hull_vertices[tetra[0]] = true;
 	hull_vertices[tetra[1]] = true;
 	hull_vertices[tetra[2]] = true;
@@ -601,7 +555,7 @@ fn Mesh quickhull(Vec3[] points, Allocator allocator = mem)
 	// the pass that creates it, and the pass that takes its farthest point
 	// removes the face. The one re-queue is the skipped-point path below.
 	List {sz} pending;
-	defer pending.free();
+	pending.init(tmem);
 	for (sz i = 0; i < faces.len(); i++)
 	{
 		if (faces[i].outside.len() > 0) pending.push(i);
@@ -609,11 +563,10 @@ fn Mesh quickhull(Vec3[] points, Allocator allocator = mem)
 
 	List {sz} visible;
 	List {HorizonEdge} horizon;
-	defer
-	{
-		visible.free();
-		horizon.free();
-	}
+	List {HorizonStep} walk;
+	visible.init(tmem);
+	horizon.init(tmem);
+	walk.init(tmem);
 
 	// No iteration cap, and none needed: a pass either walks past a queue entry
 	// or marks a point as a hull vertex, after which nothing can put that point
@@ -658,7 +611,7 @@ fn Mesh quickhull(Vec3[] points, Allocator allocator = mem)
 		stamp++;
 		visible.clear();
 		horizon.clear();
-		find_horizon(&faces, points[farthest], seed, stamp, &horizon, &visible);
+		find_horizon(&faces, points[farthest], seed, stamp, &horizon, &visible, &walk);
 
 		if (!horizon_is_simple(&faces, &horizon, vertex_stamp, stamp))
 		{
@@ -696,17 +649,11 @@ fn Mesh quickhull(Vec3[] points, Allocator allocator = mem)
 
 	result.init(allocator, alive, alive);
 
-	// First, collect unique vertices
-	List {int} vertex_map; // original index -> new index
-	defer vertex_map.free();
+	// Original point index -> index in the result, or -1 while unused
+	int[] vertex_map = mem::talloc_array(int, points.len);
+	foreach (&slot : vertex_map) *slot = -1;
 
-	// Initialize with -1
-	for (sz i = 0; i < points.len; i++)
-	{
-		vertex_map.push(-1);
-	}
-
-	// Mark used vertices
+	// Collect the vertices the surviving faces use
 	foreach (&f : faces)
 	{
 		if (!f.alive) continue;

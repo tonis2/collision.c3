@@ -113,7 +113,8 @@ fn void test_sphere_rests_on_the_slope() @test
 		}
 	)!!;
 
-	for (int i = 0; i < 240; i++) world.run_step(1.0f / 60.0f, step_count: 20);
+	// 2.5 s: with true sphere inertia the ball rolls fast enough to leave the finite map by ~4 s.
+	for (int i = 0; i < 150; i++) world.run_step(1.0f / 60.0f, step_count: 20);
 
 	Rigidbody* body = world.find_body(2)!!;
 	Vec3 at = body.collider.translation;

@@ -336,11 +336,9 @@ fn void test_particle_chain_cycle_returns_everything() @test
 <*
  Meshes with a BVH on them, built and freed in a cycle.
 
- `Mesh.free` has three things to give back and one of them takes two calls:
- `free_indexed()` releases the sorted-index array the tree shares, and
- `mem::free()` releases the root node the builder returned. A tree freed without
- its root leaks one node per mesh, which is small enough to survive a long time
- and large enough to matter in a level with a thousand colliders.
+ `Mesh.free` gives back the two lists and the tree (nodes, triangle order and
+ header, all released by `TriBVH.free`). A tree freed incompletely leaks per mesh,
+ which matters in a level with a thousand colliders.
 *>
 fn void test_mesh_bvh_cycle_returns_everything() @test
 {

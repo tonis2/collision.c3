@@ -48,12 +48,12 @@ fn bool line_case(Simplex* simplex, Vec3* direction) @private
 
 	if (same_direction(ab, ao))
 	{
-		direction.set(ab.cross(ao).cross(ab));
+		*direction = ab.cross(ao).cross(ab);
 	}
 	else
 	{
 		simplex.replace_array({ a_support });
-		direction.set(ao);
+		*direction = ao;
 	}
 
 	return false;
@@ -82,7 +82,7 @@ fn bool triangle_case(Simplex* simplex, Vec3* direction) @private
 		if (same_direction(ac, ao))
 		{
 			simplex.replace_array({ a_support, c_support });
-			direction.set(ac.cross(ao).cross(ac));
+			*direction = ac.cross(ao).cross(ac);
 		}
 		else
 		{
@@ -99,12 +99,12 @@ fn bool triangle_case(Simplex* simplex, Vec3* direction) @private
 		{
 			if (same_direction(abc, ao))
 			{
-				direction.set(abc);
+				*direction = abc;
 			}
 			else
 			{
 				simplex.replace_array({ a_support, c_support, b_support });
-				direction.set(-abc);
+				*direction = -abc;
 			}
 		}
 	}
@@ -193,16 +193,16 @@ fn CollisionInfo check_convex_collision(CollisionShape shape_1, CollisionShape s
 		// Get new support point
 		Vec3 a_support = shape_1.furthest_point(direction);
 		Vec3 b_support = shape_2.furthest_point(-direction);
-		Vec3 mikowski_difference = a_support - b_support;
+		Vec3 minkowski_difference = a_support - b_support;
 
 		// If we didn't reach the origin, no collision
-		if (mikowski_difference.dot(direction) < GJK_TOLERANCE)
+		if (minkowski_difference.dot(direction) < GJK_TOLERANCE)
 		{
 			return { .collided = false };
 		}
 
 		// Add new point to simplex
-		simplex.push_start({ mikowski_difference, a_support, b_support });
+		simplex.push_start({ minkowski_difference, a_support, b_support });
 
 		if (next_simplex(&simplex, &direction))
 		{

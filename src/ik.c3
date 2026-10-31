@@ -7,21 +7,12 @@
  bend to follow, and behind aiming any jointed thing — a robot arm, a camera
  boom, a tentacle — at a point.
 
- **The chain here is a polyline, not a skeleton.** A rig stores rotations
- relative to a parent, in whatever frame its own convention picks: bone-aligned,
- world-aligned, Y-up, Z-up, with or without a rest rotation to cancel. A library
- cannot guess that convention and should not try to hold one, because then it
- only fits the rigs that already agree with it. So the seam is world space, which
- is the one frame two libraries can agree on without either learning the other's
- rig: the caller runs its own forward kinematics, hands over the world positions
- those produced, and converts the world rotations reported back into whatever it
- stores.
+ **The chain is a polyline, not a skeleton.** Rigs store rotations in conventions a
+ library cannot guess, so the seam is world space: the caller runs its own forward
+ kinematics, hands over world positions, and converts the returned world rotations
+ back into whatever it stores.
 
- What is deliberately absent: joint limits. A knee that cannot bend backwards is
- a real thing to want and `solver/joint.c3` already has the vocabulary for it
- (`Limit`, with its axes, range, stiffness and damping), so it belongs there and
- not in a second half-form here. The solve below takes none, which keeps adding
- them additive rather than a change of shape.
+ Joint limits are deliberately absent; `solver/joint.c3` has the vocabulary (`Limit`).
 *>
 module collision::ik;
 
@@ -166,11 +157,9 @@ fn float? solve_chain(
 }
 
 <*
- `v` rotated by `q`.
-
- The expanded product rather than a matrix build, because this runs once per
- point per pivot per sweep and the standard library has no quaternion-times-
- vector. Assumes `q` is a unit quaternion, which everything here keeps it.
+ `v` rotated by `q`, for a unit `q`. The expanded form (two cross products) is
+ cheaper than std's `q * v` (`rotate_vec3`), and this runs once per point per
+ pivot per sweep.
 *>
 macro Vec3 turned(Quaternionf q, Vec3 v)
 {
@@ -187,11 +176,10 @@ macro Vec3 turned(Quaternionf q, Vec3 v)
  precision left — its derivative is unbounded exactly where the answers matter.
  `atan2` is well conditioned across the whole range.
 
- Two degenerate cases, both real. A zero-length input has no direction to turn
- and gives back the identity. Antiparallel inputs have no *shortest* turn — every
- half-turn about a perpendicular axis is equally short — so one perpendicular is
- picked, chosen against whichever axis the vector leans on least so the cross
- product cannot come out near zero.
+ A zero-length input has no direction to turn and gives back the identity.
+ Antiparallel inputs have no *shortest* turn, so `any_perpendicular` picks one.
+ The quaternion is built with dmath, not std's `from_axis_angle` (libm sin/cos
+ differ between platforms and would break lockstep determinism).
 
  @param limit : `Zero or less removes the clamp.`
 *>
@@ -201,27 +189,10 @@ fn Quaternionf shortest_arc(Vec3 from, Vec3 to, float limit = 0.0)
 	float to_len = to.length();
 	if (from_len <= 0.0f || to_len <= 0.0f) return quaternion::IDENTITY;
 
-	Vec3 a = from / from_len;
-	Vec3 b = to / to_len;
-
-	Vec3 axis = a.cross(b);
-	float across = axis.length();
-
-	// The cross length is the sine and the dot the cosine, so this is the angle
-	// between them over the whole range — including past a quarter turn, where
-	// the cross length alone stops rising. dmath rather than libm, whose atan2
-	// differs between platforms and would break lockstep determinism.
-	float angle = dmath::atan2(across, a.dot(b));
+	Vec3 axis;
+	float angle = collision::angle_axis_between(from / from_len, to / to_len, &axis);
 	if (angle <= 0.0f) return quaternion::IDENTITY;
 
-	if (across <= 0.0f)
-	{
-		// Antiparallel: pick any perpendicular. Crossing with the axis `a` leans
-		// on least is what keeps the result well away from zero length.
-		Vec3 aside = math::abs(a.x) < math::abs(a.z) ? (Vec3){ 1, 0, 0 } : (Vec3){ 0, 0, 1 };
-		axis = a.cross(aside);
-	}
-
 	if (limit > 0.0f && angle > limit) angle = limit;
-	return quaternion::from_axis_angle{float}(axis.normalize(), angle);
+	return dmath::quat_from_axis_angle(axis, angle);
 }

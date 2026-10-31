@@ -4,8 +4,6 @@ import std::math;
 import std::io;
 import std::collections::list;
 
-const float EPSILON @local = 0.0001;
-
 enum ShapeType
 {
 	SPHERE,
@@ -51,12 +49,6 @@ interface CollisionShape
 
 }
 
-interface RayCast
-{
-	fn Vec3 intersect(Vec3 direction);
-
-}
-
 struct Ray (Printable)
 {
 	Vec3 origin;
@@ -92,6 +84,7 @@ struct CompoundPiece
 {
 	CollisionShape shape;
 	Vec3 offset; // Local offset from compound center
+	Aabb3 aabb; // The shape's own box (without `offset`), taken when the piece was added
 }
 
 // Compound shape: multiple convex pieces from CoACD decomposition
@@ -103,11 +96,9 @@ struct CompoundShape (CollisionShape)
 
 fn void CompoundShape.add_piece(&self, CollisionShape shape, Vec3 offset = { 0, 0, 0 })
 {
-	self.shapes.push({ .shape = shape, .offset = offset });
-	// Update combined AABB
-	Aabb3 piece_aabb = shape.get_aabb();
-	piece_aabb.min += offset;
-	piece_aabb.max += offset;
+	Aabb3 local_aabb = shape.get_aabb();
+	self.shapes.push({ .shape = shape, .offset = offset, .aabb = local_aabb });
+	Aabb3 piece_aabb = local_aabb + offset;
 	if (self.shapes.len() == 1)
 	{
 		self.aabb = piece_aabb;
@@ -164,29 +155,16 @@ fn Matrix3f CompoundShape.inertia_tensor(&self, float mass) @dynamic
 }
 
 // A single triangle used as a temporary narrow-phase shape (BVH mesh triangles,
-// soft body surface triangles). Lives on the stack — no allocation per test.
+// soft body surface triangles). Lives on the stack - no allocation per test.
 // Vertices are expected in the space the collision test runs in (usually world).
 struct TriangleShape (CollisionShape)
 {
-	Vec3[3] v;
+	TriangleVerts v;
 }
 
-fn Vec3 TriangleShape.furthest_point(&self, Vec3 direction) @dynamic
-{
-	float d0 = self.v[0].dot(direction);
-	float d1 = self.v[1].dot(direction);
-	float d2 = self.v[2].dot(direction);
-	if (d0 >= d1) return d0 >= d2 ? self.v[0] : self.v[2];
-	return d1 >= d2 ? self.v[1] : self.v[2];
-}
+fn Vec3 TriangleShape.furthest_point(&self, Vec3 direction) @dynamic => support_of(self.v[:3], direction);
 
-fn Aabb3 TriangleShape.get_aabb(&self) @dynamic
-{
-	return {
-		.min = math::min(self.v[0], math::min(self.v[1], self.v[2])),
-		.max = math::max(self.v[0], math::max(self.v[1], self.v[2])),
-	};
-}
+fn Aabb3 TriangleShape.get_aabb(&self) @dynamic => self.v.aabb();
 
 fn ShapeType TriangleShape.get_type(&self) @dynamic => ShapeType.TRIANGLE;
 
@@ -204,14 +182,7 @@ fn sz? Ray.to_format(
 	Formatter* formatter
 ) @dynamic => formatter.printf("origin %s, direction %s", self.origin, self.direction)!;
 
-fn Vec3 Ray.intersect(&self, Vec3 direction)
-{
-	// Assuming direction is a unit vector
-	Vec3 intersection = self.origin + self.direction * direction;
-	return intersection;
-}
-
-fn float Sphere.intersect(&self, Ray ray) @dynamic
+fn float Sphere.intersect(&self, Ray ray)
 {
 	Vec3 oc = ray.origin - self.center;
 	float a = ray.direction.dot(ray.direction);
@@ -234,12 +205,75 @@ fn float Sphere.intersect(&self, Ray ray) @dynamic
 	}
 }
 
+<*
+ Local point to world: `rotation * (local * scale) + translation`.
+*>
+fn Vec3 TransformedShape.to_world(&self, Vec3 local) => self.rotation * (local * self.scale) + self.translation;
+
+<*
+ World point to local: the inverse of `to_world`.
+*>
+fn Vec3 TransformedShape.to_local(&self, Vec3 world)
+{
+	Vec3 inv_scale = (Vec3){ 1, 1, 1 } / self.scale;
+	return (self.rotation.conjugate() * (world - self.translation)) * inv_scale;
+}
+
+<*
+ World direction to local: rotation only, no scale or translation.
+*>
+fn Vec3 TransformedShape.dir_to_local(&self, Vec3 world_dir) => self.rotation.conjugate() * world_dir;
+
+<*
+ Local direction to world: rotation only, no scale or translation.
+*>
+fn Vec3 TransformedShape.dir_to_world(&self, Vec3 local_dir) => self.rotation * local_dir;
+
 fn Vec3 TransformedShape.furthest_point(&self, Vec3 direction) @dynamic
 {
-	Vec3 local_direction = self.rotation.conjugate() * direction;
-	Vec3 point = self.shape.furthest_point(local_direction);
-	return self.rotation * (point * self.scale) + self.translation;
+	return self.to_world(self.shape.furthest_point(self.dir_to_local(direction)));
 }
+
+<*
+ A `TransformedShape` with its rotation matrix cached, for the narrow phase
+ where `furthest_point` runs on every GJK/EPA iteration. The two quaternion
+ products of the original become two sets of three dot products.
+
+ The rows come from `Quaternionf.rows()`, which is deliberately not normalised,
+ so for any quaternion the results scale by `|q|^2` exactly as
+ `TransformedShape.furthest_point` does, and for unit quaternions the two agree
+ to float rounding. Only valid while `shape` is alive and unchanged.
+*>
+struct PreparedShape (CollisionShape)
+{
+	TransformedShape* shape;
+	Vec3[3] rows; // rotation matrix, row i
+	Vec3[3] cols; // its transpose (the conjugate's rows): row i is column i of `rows`
+}
+
+fn PreparedShape TransformedShape.prepare(&self)
+{
+	Vec3[3] r = self.rotation.rows();
+	return {
+		.shape = self,
+		.rows = r,
+		.cols = {
+			{ r[0][0], r[1][0], r[2][0] },
+			{ r[0][1], r[1][1], r[2][1] },
+			{ r[0][2], r[1][2], r[2][2] },
+		},
+	};
+}
+
+fn Vec3 PreparedShape.furthest_point(&self, Vec3 direction) @dynamic
+{
+	Vec3 local_dir = { self.cols[0].dot(direction), self.cols[1].dot(direction), self.cols[2].dot(direction) };
+	Vec3 p = self.shape.shape.furthest_point(local_dir) * self.shape.scale;
+	return (Vec3){ self.rows[0].dot(p), self.rows[1].dot(p), self.rows[2].dot(p) } + self.shape.translation;
+}
+
+fn Aabb3 PreparedShape.get_aabb(&self) @dynamic => self.shape.get_aabb();
+fn ShapeType PreparedShape.get_type(&self) @dynamic => self.shape.get_type();
 
 fn Vec3 Sphere.furthest_point(&self, Vec3 direction) @dynamic => direction.normalize() * self.radius + self.center;
 
@@ -267,20 +301,20 @@ fn Vec3 Capsule.furthest_point(&self, Vec3 direction) @dynamic
 	return direction.dot(top) > direction.dot(bottom) ? top : bottom;
 }
 
+<*
+ World-space inertia tensor of the wrapped shape: the local tensor with the
+ (approximate) scale applied, then rotated with `rotate_inertia` (R I Rᵀ).
+*>
 fn Matrix3f TransformedShape.inertia_tensor(&self, float mass) @dynamic
 {
 	Matrix3f local_inertia = self.shape.inertia_tensor(mass);
 
-	// Apply scale to inertia tensor
-	// Diagonal elements: I_xx involves y² and z², scale accordingly
-	// Products of inertia: I_xy scales as sx * sy
-	float sx2 = self.scale.x * self.scale.x;
-	float sy2 = self.scale.y * self.scale.y;
-	float sz2 = self.scale.z * self.scale.z;
+	// Diagonal I_xx involves y² and z²; products of inertia scale as sx * sy.
+	Vec3 s2 = self.scale * self.scale;
 
-	local_inertia.m00 *= (sy2 + sz2) * 0.5f;
-	local_inertia.m11 *= (sx2 + sz2) * 0.5f;
-	local_inertia.m22 *= (sx2 + sy2) * 0.5f;
+	local_inertia.m00 *= (s2.y + s2.z) * 0.5f;
+	local_inertia.m11 *= (s2.x + s2.z) * 0.5f;
+	local_inertia.m22 *= (s2.x + s2.y) * 0.5f;
 
 	local_inertia.m01 *= self.scale.x * self.scale.y;
 	local_inertia.m02 *= self.scale.x * self.scale.z;
@@ -289,102 +323,76 @@ fn Matrix3f TransformedShape.inertia_tensor(&self, float mass) @dynamic
 	local_inertia.m20 = local_inertia.m02;
 	local_inertia.m21 = local_inertia.m12;
 
-	// Apply rotation to transform inertia to world space
-	Matrix4f matrix = self.rotation.normalize().to_matrix();
-
-	Matrix3f r = (Matrix3f) {
-		matrix.m00,
-		matrix.m01,
-		matrix.m02,
-		matrix.m10,
-		matrix.m11,
-		matrix.m12,
-		matrix.m20,
-		matrix.m21,
-		matrix.m22,
-	};
-
-	return r * local_inertia * r.transpose();
+	return rotate_inertia(local_inertia, self.rotation);
 }
 
-fn Matrix3f TransformedShape.world_inertia_from_local(&self, Matrix3f local_inertia)
-{
-	Matrix3f world_orient = self.rotation.as_mat3();
-	return world_orient * local_inertia * world_orient.transpose();
-}
+fn Matrix3f TransformedShape.world_inertia_from_local(&self, Matrix3f local_inertia) => rotate_inertia(local_inertia, self.rotation);
 
+<*
+ Translation * Rotation * Scale as a column-major 4x4 (translation in m[12..14]).
+*>
 fn Matrix4f TransformedShape.matrix(self)
 {
-	Matrix4f translation_matrix = {
-		1,
-		0,
-		0,
-		self.translation.x,
-		0,
-		1,
-		0,
-		self.translation.y,
-		0,
-		0,
-		1,
-		self.translation.z,
-		0.0,
-		0.0,
-		0.0,
-		1.0,
-	};
-
-	Matrix4f scale_matrix = {
-		self.scale.x,
-		0,
-		0,
-		0,
-		0,
-		self.scale.y,
-		0,
-		0,
-		0,
-		0,
-		self.scale.z,
-		0,
-		0.0,
-		0.0,
-		0.0,
-		1.0,
-	};
-
-	return translation_matrix * self.rotation.to_matrix() * scale_matrix;
+	Matrix4f m = self.rotation.to_matrix();
+	m = m.scale(self.scale);
+	m.m[12] = self.translation.x;
+	m.m[13] = self.translation.y;
+	m.m[14] = self.translation.z;
+	return m;
 }
 
 fn Matrix3f Sphere.inertia_tensor(&self, float mass) @dynamic
 {
-	float r2 = self.radius * self.radius;
-	float i = mass * r2 * 2.0f / 5.0f;
-	return { i, 0, 0, 0, i, 0, 0, 0, i };
+	float i = mass * self.radius * self.radius * 2.0f / 5.0f;
+	return diag_inertia({ i, i, i });
 }
 
+<*
+ Inertia of a cylinder along y with squared radius `r2` and height `h`.
+*>
+fn Vec3 cylinder_inertia(float mass, float r2, float h) @local
+{
+	float transverse = (mass / 12.0f) * (3 * r2 + h * h);
+	return { transverse, 0.5f * mass * r2, transverse };
+}
+
+fn Matrix3f diag_inertia(Vec3 d) @local => { d.x, 0, 0, 0, d.y, 0, 0, 0, d.z };
+
+<*
+ A truncated cone is approximated by the equal-volume cylinder, whose squared
+ radius is the mean of r(y)² over the height: (rt² + rt·rb + rb²) / 3. Exact
+ when the radii match.
+*>
 fn Matrix3f Cylinder.inertia_tensor(&self, float mass) @dynamic
 {
-	float r2 = self.radius_bottom * self.radius_top;
-	float h2 = self.height * self.height;
-
-	float ix = (mass / 12.0f) * (3 * r2 + h2);
-	float iy = (mass / 2.0f) * r2;
-	float iz = (mass / 12.0f) * (3 * r2 + h2);
-
-	return { ix, 0, 0, 0, iy, 0, 0, 0, iz };
+	float rt = self.radius_top;
+	float rb = self.radius_bottom;
+	return diag_inertia(cylinder_inertia(mass, (rt * rt + rt * rb + rb * rb) / 3.0f, self.height));
 }
 
+<*
+ Cylinder plus two hemispheres (a sphere's worth), mass split by volume. With
+ differing end radii the mean radius is used. About the centre, the hemispheres
+ contribute m_h (2/5 r² + h²/4 + 3hr/8) transversely and 2/5 m_h r² axially.
+*>
 fn Matrix3f Capsule.inertia_tensor(&self, float mass) @dynamic
 {
-	float r2 = self.radius_bottom * self.radius_top;
-	float h2 = self.height * self.height;
+	float r = (self.radius_top + self.radius_bottom) * 0.5f;
+	float h = self.height;
+	float v_cyl = math::PI * r * r * h;
+	float v_caps = 4.0f / 3.0f * math::PI * r * r * r;
+	float total = v_cyl + v_caps;
+	if (total <= 0) return diag_inertia({ 0, 0, 0 });
 
-	float ix = (mass / 12.0f) * (3 * r2 + h2);
-	float iy = (mass / 2.0f) * r2;
-	float iz = (mass / 12.0f) * (3 * r2 + h2);
+	float m_cyl = mass * v_cyl / total;
+	float m_caps = mass - m_cyl;
 
-	return { ix, 0, 0, 0, iy, 0, 0, 0, iz };
+	Vec3 i = cylinder_inertia(m_cyl, r * r, h);
+	float transverse_caps = m_caps * (0.4f * r * r + 0.25f * h * h + 0.375f * h * r);
+	i.x += transverse_caps;
+	i.z += transverse_caps;
+	i.y += 0.4f * m_caps * r * r;
+	return diag_inertia(i);
 }
 
 fn ShapeType TransformedShape.get_type(&self) @dynamic => self.shape.get_type();
@@ -416,18 +424,4 @@ fn Aabb3 Cylinder.get_aabb(&self) @dynamic
 	float half = self.height * 0.5f;
 
 	return { .min = { -radius_max, -half, -radius_max }, .max = { radius_max, half, radius_max } };
-}
-
-fn Vec3 TransformedShape.get_world_center_of_mass(
-	&self,
-	Vec3 center_of_mass
-) => self.rotation * center_of_mass + self.translation;
-
-fn float scalar_triple_product(Vec3 a, Vec3 b, Vec3 c) @local
-{
-	// (a x b) . c
-	float cross_x = a.y * b.z - a.z * b.y;
-	float cross_y = a.z * b.x - a.x * b.z;
-	float cross_z = a.x * b.y - a.y * b.x;
-	return cross_x * c.x + cross_y * c.y + cross_z * c.z;
 }

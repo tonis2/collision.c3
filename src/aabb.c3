@@ -36,45 +36,18 @@ fn bool Aabb3.is_empty(self) => self.size().length_sq() == 0;
 
 fn void Aabb3.fix(&self)
 {
-	self.min = {
-		math::min(self.min.x, self.max.x),
-		math::min(self.min.y, self.max.y),
-		math::min(self.min.z, self.max.z)
-	};
-	self.max = {
-		math::max(self.min.x, self.max.x),
-		math::max(self.min.y, self.max.y),
-		math::max(self.min.z, self.max.z)
-	};
+	Vec3 lo = math::min(self.min, self.max);
+	self.max = math::max(self.min, self.max);
+	self.min = lo;
 }
 
-fn bool Aabb3.collides(self, Aabb3 target)
-{
-	bool overlapX = (self.max.x >= target.min.x) && (self.min.x <= target.max.x);
-	bool overlapY = (self.max.y >= target.min.y) && (self.min.y <= target.max.y);
-	bool overlapZ = (self.max.z >= target.min.z) && (self.min.z <= target.max.z);
-	return overlapX && overlapY && overlapZ;
-}
+fn bool Aabb3.collides(self, Aabb3 target) => self.max.comp_ge(target.min).and() && self.min.comp_le(target.max).and();
 
-fn bool Aabb3.contains_point(self, Vec3 point)
-{
-	return (point.x >= self.min.x && point.x <= self.max.x) && (point.y >= self.min.y && point.y <= self.max.y)
-		&& (point.z >= self.min.z && point.z <= self.max.z);
-}
+fn bool Aabb3.contains_point(self, Vec3 point) => point.comp_ge(self.min).and() && point.comp_le(self.max).and();
 
-fn void Aabb3.expand_min(&self, Vec3 point)
-{
-	self.min.x = math::min(self.min.x, point.x);
-	self.min.y = math::min(self.min.y, point.y);
-	self.min.z = math::min(self.min.z, point.z);
-}
+fn void Aabb3.expand_min(&self, Vec3 point) => self.min = math::min(self.min, point);
 
-fn void Aabb3.expand_max(&self, Vec3 point)
-{
-	self.max.x = math::max(self.max.x, point.x);
-	self.max.y = math::max(self.max.y, point.y);
-	self.max.z = math::max(self.max.z, point.z);
-}
+fn void Aabb3.expand_max(&self, Vec3 point) => self.max = math::max(self.max, point);
 
 fn void Aabb3.expand_by_point(&self, Vec3 point)
 {
@@ -105,11 +78,9 @@ fn Aabb3 Aabb3.scale(self, Vec3 scale) @operator(*)
 <*
  The three rows of the rotation matrix a quaternion stands for.
 
- Written out rather than taken from `Quaternionf.to_matrix`, and deliberately
- *not* normalised. `q * v * q.conjugate()` scales its result by `|q|²`, and so
- does this, so the two agree for any quaternion rather than only for unit ones —
- which matters because that is the product the eight-corner code used to compute
- and nothing in this library promises its colliders carry normalised rotations.
+ Deliberately *not* normalised (unlike `Quaternionf.to_matrix`): `q * v * q.conjugate()`
+ scales its result by `|q|²`, and so does this, so the two agree for any
+ quaternion. Nothing promises colliders carry normalised rotations.
 *>
 fn Vec3[3] Quaternionf.rows(self)
 {
@@ -141,16 +112,10 @@ fn Vec3[3] Quaternionf.rows(self)
 <*
  The bound of a box under a linear map, given that map's rows.
 
- The whole of the arithmetic the three entry points below share, and the reason
- they can share it: whatever produced the rows — a quaternion, a quaternion and
- a scale, or the linear part of a 4×4 — the answer is the same two lines. The
- centre goes through the map; the extent goes through its *absolute value*,
- which is what keeps the result correct under a reflection as well as a
- rotation.
-
- `extent` is expected non-negative. The callers take it through `abs` because an
- inverted box does reach this library, and the eight-corner code this replaced
- repaired one implicitly by taking a min and a max.
+ Shared by the three entry points below. The centre goes through the map; the
+ extent goes through its *absolute value*, which keeps the result correct under
+ a reflection as well as a rotation. `extent` must be non-negative (callers
+ take `abs`, since an inverted box can reach this library).
 *>
 fn Aabb3 bound_from_rows(Vec3[3] rows, Vec3 centre, Vec3 extent, Vec3 translation) @local
 {
@@ -171,30 +136,16 @@ fn Aabb3 bound_from_rows(Vec3[3] rows, Vec3 centre, Vec3 extent, Vec3 translatio
 
  ## Centre and extent, not eight corners
 
- The axis-aligned bound of an affinely transformed box is exact in closed form:
- the new centre is the old centre through the transform, and the new extent
- along each world axis is the *absolute* row of the linear part dotted with the
- old extent. Rotating eight corners and taking their min and max computes the
- same two numbers the long way round — the corners are symmetric about the
- centre, so half of the arithmetic re-derives what the other half already said.
+ The bound of an affinely transformed box is exact in closed form: the new
+ centre is the old centre through the transform, and the new extent along each
+ world axis is the *absolute* row of the linear part dotted with the old extent.
+ That is one matrix build and six dot products, about 13x faster than rotating
+ eight corners (77 ns vs 5.9 ns at -O3), and it runs for every body every step.
 
- That is not a small saving here. `Quaternionf.rotate_vec3` is two full
- quaternion products, so the corner loop paid sixteen of them plus forty-eight
- comparisons; this pays one nine-term matrix build and six dot products, with no
- branches and nothing to spill. Measured at `-O3` on an M5, both behind
- `@noinline` so the call is real: **77 ns down to 5.9 ns**, a bit over thirteen
- times. `Rigidbody.get_transformed_aabb` runs this for every body every step,
- which is where it is felt.
+ The scale is folded into the centre and extent rather than the rows, which is
+ exact for negative or non-uniform scale and for an inverted input box.
 
- The scale is folded into the centre and the extent rather than into the rows,
- which is why `bound_from_rows` sees a pure rotation. That is exact for a
- negative or non-uniform scale — the extent it receives has already been through
- `abs`, so a mirrored axis widens the box instead of inverting it — and it is
- exact for a box that arrives inverted, which is the same repair the old min/max
- over corners performed implicitly.
-
- `skip_rotation` now does what its name says. It was accepted and ignored
- before; no caller in this library passed it.
+ `skip_rotation` skips the rotation and applies only scale and translation.
 *>
 fn Aabb3 Aabb3.transform(
 	&self,
@@ -221,11 +172,9 @@ fn Aabb3 Aabb3.transform(
  quaternion's conjugate is the transpose of the matrix of the quaternion, so the
  columns read here are the rows built there and no second build is needed.
 
- Note what this is and is not. It is the tightest axis-aligned box in local
- space that contains the *world box* — not the box you started from before
- `transform`, which was tighter. Rotating a bound and rotating it back grows it;
- that was true of the eight-corner version too, and callers such as the mesh
- broadphase rely on the result being conservative rather than exact.
+ This is the tightest local-space box containing the *world box*, not the box
+ you started from before `transform`: rotating a bound and back grows it. Callers
+ such as the mesh broadphase rely on it being conservative rather than exact.
 *>
 fn Aabb3 Aabb3.inverse_transform(
 	&self,
@@ -234,7 +183,7 @@ fn Aabb3 Aabb3.inverse_transform(
 	Quaternionf rotation = { 0, 0, 0, 1 }
 )
 {
-	Vec3 inv_scale = { 1.0f / scale.x, 1.0f / scale.y, 1.0f / scale.z };
+	Vec3 inv_scale = (Vec3){ 1, 1, 1 } / scale;
 	Vec3[3] r = rotation.rows();
 
 	// The rows of `inv_scale * transpose(r)` — the transpose because a
@@ -253,15 +202,11 @@ fn Aabb3 Aabb3.inverse_transform(
 <*
  A box in world space, given a local box and the 4×4 that places it.
 
- The same closed form as `transform`, entered from the other end. A renderer
- usually has the node's world matrix already composed and would have to take it
- apart to call the TRS form, so this reads the linear part's rows straight off
- it instead. Column-major, translation at `m[12..14]`.
+ The same closed form as `transform`, reading the linear part's rows straight
+ off a composed world matrix. Column-major, translation at `m[12..14]`.
 
- Exact for any affine matrix — rotation, non-uniform scale, reflection, shear —
- which is what lets frustum culling, a ray broad phase and a shadow-map fit all
- share one function. It is *not* correct for a projective matrix: the
- perspective row is ignored rather than divided through, so do not hand it one.
+ Exact for any affine matrix (rotation, non-uniform scale, reflection, shear).
+ Not correct for a projective matrix: the perspective row is ignored.
 *>
 fn Aabb3 Aabb3.transform_matrix(&self, Matrix4f m)
 {
@@ -275,38 +220,52 @@ fn Aabb3 Aabb3.transform_matrix(&self, Matrix4f m)
 	return bound_from_rows(rows, self.center(), math::abs(self.extent()), (Vec3){ v[12], v[13], v[14] });
 }
 
+<*
+ Octant `index` of the box: bit 0 selects the upper half in x, bit 1 in y, bit 2 in z.
+*>
 fn Aabb3 Aabb3.child_bounds(self, uint index)
 {
-	Vec3 c      = self.center();
-	Vec3 newMin = self.min;
-	Vec3 newMax = self.max;
+	Vec3 c = self.center();
+	bool[<3>] upper = { (index & 1) != 0, (index & 2) != 0, (index & 4) != 0 };
+	return { .min = math::select(upper, c, self.min), .max = math::select(upper, self.max, c) };
+}
 
-	if (index & 1)
-	{
-		newMin.x = c.x;
-	}
-	else
-	{
-		newMax.x = c.x;
-	}
-	if (index & 2)
-	{
-		newMin.y = c.y;
-	}
-	else
-	{
-		newMax.y = c.y;
-	}
-	if (index & 4)
-	{
-		newMin.z = c.z;
-	}
-	else
-	{
-		newMax.z = c.z;
-	}
+<*
+ Total area of the six faces.
+*>
+fn float Aabb3.surface_area(self)
+{
+	Vec3 s = self.size();
+	return 2.0f * (s.x * s.y + s.y * s.z + s.z * s.x);
+}
 
-	return { newMin, newMax };
+<*
+ The eight corners, in the order: min, +x, +y, +z, +xy, +xz, +yz, max
+ (each "+a" is min with the max value on axis a).
+*>
+fn Vec3[8] Aabb3.corners(self)
+{
+	return {
+		self.min,
+		{ self.max.x, self.min.y, self.min.z },
+		{ self.min.x, self.max.y, self.min.z },
+		{ self.min.x, self.min.y, self.max.z },
+		{ self.max.x, self.max.y, self.min.z },
+		{ self.max.x, self.min.y, self.max.z },
+		{ self.min.x, self.max.y, self.max.z },
+		self.max,
+	};
+}
+
+<*
+ The tightest box around `pts`. An empty slice gives `NEW_AABB3` (inverted, so
+ any later `expand_by_point` fixes it).
+*>
+fn Aabb3 aabb_of_points(Vec3[] pts)
+{
+	Aabb3 box = NEW_AABB3;
+	foreach (p : pts) box.expand_by_point(p);
+	return box;
 }
 
 fn sz Aabb3.longest_axis(self)
