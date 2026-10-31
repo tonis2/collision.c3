@@ -1,5 +1,6 @@
 {
   "provides": "collision",
+  "version": 0.05,
   "sources": [
     "src/**"
   ],
