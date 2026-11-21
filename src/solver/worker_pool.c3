@@ -2,7 +2,7 @@ module collision;
 
 import std::math;
 import std::thread;
-import std::thread::cpu;
+import std::os; // num_cpu: std::thread::cpu answers 1 on Android
 
 // Runtime-sized worker pool for the physics solver.
 //
@@ -22,7 +22,7 @@ const sz MAX_WORKER_THREADS = 32;
 *>
 fn sz default_worker_count()
 {
-	return (sz)math::clamp(cpu::native_cpu() - 1, 1, (int)MAX_WORKER_THREADS);
+	return (sz)math::clamp(os::num_cpu() - 1, 1, (int)MAX_WORKER_THREADS);
 }
 
 struct WorkItem @local

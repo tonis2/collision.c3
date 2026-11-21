@@ -5,6 +5,7 @@
     "src/**"
   ],
   "targets": {
+    "android-aarch64": {},
     "macos-x64": {},
     "linux-x64": {},
     "windows-x64": {},
