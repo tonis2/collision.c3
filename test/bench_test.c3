@@ -48,7 +48,10 @@ fn void test_bench_box_pile() @test
 
 	Aabb3 box_shape = { { -0.4f, -0.4f, -0.4f }, { 0.4f, 0.4f, 0.4f } };
 	Sphere sphere_shape = { .center = { 0, 0, 0 }, .radius = 0.4f };
-	Capsule capsule_shape = { .height = 1, .radius_top = 0.3f, .radius_bottom = 0.3f };
+	// 1.2 long, inside the 1.3 spacing. At 1.6 every column of capsules started
+	// 0.3 deep in each other, which EPA on two round shapes never resolved: once
+	// it was found, pushing them apart fired the ends of each column off the ground.
+	Capsule capsule_shape = { .height = 0.6f, .radius_top = 0.3f, .radius_bottom = 0.3f };
 
 	int n = 300;
 	for (int i = 0; i < n; i++)

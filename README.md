@@ -5,8 +5,9 @@ A physics and collision detection library for the [C3 language](https://c3-lang.
 ## Features
 
 **Collision Detection**
-- GJK (Gilbert-Johnson-Keerthi) narrow-phase collision
-- EPA (Expanding Polytope Algorithm) for contact points and penetration depth
+- GJK (Gilbert-Johnson-Keerthi) narrow-phase collision, and as a distance query for pairs inside the contact margin
+- EPA (Expanding Polytope Algorithm) for contact points and penetration depth, run only on overlaps
+- Spheres and capsules as a core and a radius, so their contacts need no EPA until the cores overlap
 - A separating-axis test for box against box, exact and without EPA
 - Spatial hashing for broad-phase optimization
 - `TriBVH` (Bounding Volume Hierarchy) for triangle mesh collision and ray casts

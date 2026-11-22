@@ -249,11 +249,31 @@ struct PreparedShape (CollisionShape)
 	TransformedShape* shape;
 	Vec3[3] rows; // rotation matrix, row i
 	Vec3[3] cols; // its transpose (the conjugate's rows): row i is column i of `rows`
+	// The shapes `support` answers for itself rather than through the interface.
+	PreparedKind kind;
+}
+
+// What a `PreparedShape` wraps, as far as its support function cares. Zero is
+// the general case, so a shape nobody classified is still answered right.
+enum PreparedKind : char
+{
+	GENERIC,
+	BOX,
+	SPHERE,
+	CAPSULE,
 }
 
 fn PreparedShape TransformedShape.prepare(&self)
 {
 	Vec3[3] r = self.rotation.rows();
+	PreparedKind kind;
+	switch (self.get_type())
+	{
+		case BOX: kind = BOX;
+		case SPHERE: kind = SPHERE;
+		case CAPSULE: kind = CAPSULE;
+		default: kind = GENERIC;
+	}
 	return {
 		.shape = self,
 		.rows = r,
@@ -262,15 +282,45 @@ fn PreparedShape TransformedShape.prepare(&self)
 			{ r[0][1], r[1][1], r[2][1] },
 			{ r[0][2], r[1][2], r[2][2] },
 		},
+		.kind = kind,
 	};
 }
 
-fn Vec3 PreparedShape.furthest_point(&self, Vec3 direction) @dynamic
+<*
+ The support point, with a box's and a sphere's worked out here: each call
+ through the interface is a method search, and GJK and EPA make two a step.
+*>
+fn Vec3 PreparedShape.support(&self, Vec3 direction)
 {
 	Vec3 local_dir = { self.cols[0].dot(direction), self.cols[1].dot(direction), self.cols[2].dot(direction) };
-	Vec3 p = self.shape.shape.furthest_point(local_dir) * self.shape.scale;
+	Vec3 p;
+	switch (self.kind)
+	{
+		case BOX:
+			Aabb3* box = (Aabb3*)self.shape.shape;
+			p = {
+				local_dir.x > 0 ? box.max.x : box.min.x,
+				local_dir.y > 0 ? box.max.y : box.min.y,
+				local_dir.z > 0 ? box.max.z : box.min.z,
+			};
+		case SPHERE:
+			Sphere* sphere = (Sphere*)self.shape.shape;
+			p = local_dir.normalize() * sphere.radius + sphere.center;
+		case CAPSULE:
+		case GENERIC:
+			p = self.shape.shape.furthest_point(local_dir);
+	}
+	return self.to_world(p);
+}
+
+// A point in the shape's own frame, in the world.
+fn Vec3 PreparedShape.to_world(&self, Vec3 local) @inline
+{
+	Vec3 p = local * self.shape.scale;
 	return (Vec3){ self.rows[0].dot(p), self.rows[1].dot(p), self.rows[2].dot(p) } + self.shape.translation;
 }
+
+fn Vec3 PreparedShape.furthest_point(&self, Vec3 direction) @dynamic => self.support(direction);
 
 fn Aabb3 PreparedShape.get_aabb(&self) @dynamic => self.shape.get_aabb();
 fn ShapeType PreparedShape.get_type(&self) @dynamic => self.shape.get_type();

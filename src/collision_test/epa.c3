@@ -65,7 +65,7 @@ fn Face SupportArray.create_face(&self, sz a_index, sz b_index, sz c_index, Vec3
 	Vec3 b = self.get(b_index).point;
 	Vec3 c = self.get(c_index).point;
 
-	Vec3 cross = (b - a).cross(c - a);
+	Vec3 cross = cross3(b - a, c - a);
 	float area_sq = cross.length_sq();
 
 	// Written as a positive test so a NaN area fails it rather than passing.
@@ -90,7 +90,10 @@ fn Face SupportArray.create_face(&self, sz a_index, sz b_index, sz c_index, Vec3
 *>
 fn bool SupportArray.reconstruct(&self, FaceArray* faces, Vec3 new_point, Vec3 interior)
 {
-	EdgeArray edges;
+	// Not zeroed: a kilobyte cleared on every step of the expansion, for a list
+	// whose size is all that has to start at zero.
+	EdgeArray edges @noinit;
+	edges.size = 0;
 
 	// Reverse loop
 	for (int i = (int)faces.len() - 1; i >= 0; i--)
@@ -102,7 +105,8 @@ fn bool SupportArray.reconstruct(&self, FaceArray* faces, Vec3 new_point, Vec3 i
 			edges.add_if_new({ face.a, face.b });
 			edges.add_if_new({ face.b, face.c });
 			edges.add_if_new({ face.c, face.a });
-			faces.remove_at(i);
+			// The last face has been looked at already, so it can fill the gap.
+			faces.remove_unordered_at(i);
 		}
 	}
 
@@ -154,14 +158,17 @@ fn uint Face[].get_closest(self)
 *>
 fn bool epa_core(CollisionInfo* info, CollisionShape shape_1, CollisionShape shape_2) @local
 {
-	SupportArray vertices;
+	// Not zeroed, like the edges: several kilobytes a call otherwise.
+	SupportArray vertices @noinit;
+	vertices.size = 0;
 
 	foreach (item : info.simplex) vertices.push(item);
 
 	// The seed tetrahedron's centroid stays inside the polytope as it grows.
 	Vec3 interior = (vertices[0].point + vertices[1].point + vertices[2].point + vertices[3].point) * 0.25f;
 
-	FaceArray faces;
+	FaceArray faces @noinit;
+	faces.size = 0;
 	Face[4] seed = {
 		vertices.create_face(0, 1, 2, interior),
 		vertices.create_face(0, 3, 1, interior),

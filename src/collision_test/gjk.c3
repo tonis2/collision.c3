@@ -48,7 +48,7 @@ fn bool line_case(Simplex* simplex, Vec3* direction) @private
 
 	if (same_direction(ab, ao))
 	{
-		*direction = ab.cross(ao).cross(ab);
+		*direction = cross3(cross3(ab, ao), ab);
 	}
 	else
 	{
@@ -75,14 +75,14 @@ fn bool triangle_case(Simplex* simplex, Vec3* direction) @private
 	Vec3 ac = c - a;
 	Vec3 ao = -a;
 
-	Vec3 abc = ab.cross(ac);
+	Vec3 abc = cross3(ab, ac);
 
-	if (same_direction(abc.cross(ac), ao))
+	if (same_direction(cross3(abc, ac), ao))
 	{
 		if (same_direction(ac, ao))
 		{
 			simplex.replace_array({ a_support, c_support });
-			*direction = ac.cross(ao).cross(ac);
+			*direction = cross3(cross3(ac, ao), ac);
 		}
 		else
 		{
@@ -91,7 +91,7 @@ fn bool triangle_case(Simplex* simplex, Vec3* direction) @private
 	}
 	else
 	{
-		if (same_direction(ab.cross(abc), ao))
+		if (same_direction(cross3(ab, abc), ao))
 		{
 			return line_case(simplex, direction);
 		}
@@ -130,9 +130,9 @@ fn bool tetrahedron_case(Simplex* simplex, Vec3* direction) @private
 	Vec3 ad = d - a;
 	Vec3 ao = -a;
 
-	Vec3 abc = ab.cross(ac);
-	Vec3 acd = ac.cross(ad);
-	Vec3 adb = ad.cross(ab);
+	Vec3 abc = cross3(ab, ac);
+	Vec3 acd = cross3(ac, ad);
+	Vec3 adb = cross3(ad, ab);
 
 	if (same_direction(abc, ao))
 	{
