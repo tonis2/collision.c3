@@ -19,7 +19,7 @@ fn float compute_generalized_inverse_mass(Rigidbody* body, Vec3 r, Vec3 n)
 {
 	if (body.is_static) return 0;
 	Vec3 rn = cross3(r, n);
-	Vec3 inertia_term = apply3(body.get_inverse_world_inertia(), rn);
+	Vec3 inertia_term = body.inverse_inertia_times(rn);
 	return body.inverse_mass + inertia_term.dot(rn);
 }
 
@@ -45,7 +45,7 @@ fn void apply_positional_correction(Rigidbody* body, Vec3 n, Vec3 r, float delta
 {
 	if (body.is_static) return;
 	body.collider.translation += n * (body.inverse_mass * delta_lambda);
-	apply_angular_rotation(body, apply3(body.get_inverse_world_inertia(), cross3(r, n)) * delta_lambda);
+	apply_angular_rotation(body, body.inverse_inertia_times(cross3(r, n)) * delta_lambda);
 }
 
 // Push `a` along -n and `b` along +n by delta_lambda, each at its own arm.
@@ -251,10 +251,8 @@ fn void solve_joint_angular(XpbdConstraint* c, uint iteration, uint total_iterat
 	float ang_error = world_err.dot(axis) - c.c_value;
 
 	// Zero for static bodies, which makes both the weight and the rotation no-ops
-	Matrix3f inv_inertia_a = a.get_inverse_world_inertia();
-	Matrix3f inv_inertia_b = b.get_inverse_world_inertia();
-	Vec3 accel_a = apply3(inv_inertia_a, axis);
-	Vec3 accel_b = apply3(inv_inertia_b, axis);
+	Vec3 accel_a = a.inverse_inertia_times(axis);
+	Vec3 accel_b = b.inverse_inertia_times(axis);
 
 	float weight = accel_a.dot(axis) + accel_b.dot(axis);
 	if (weight < WEIGHT_EPSILON) return;
@@ -280,8 +278,8 @@ fn void solve_joint_orient(XpbdConstraint* c, uint iteration, uint total_iterati
 	Vec3 axis = error / angle;
 	c.normal = axis;
 
-	Vec3 accel_a = apply3(a.get_inverse_world_inertia(), axis);
-	Vec3 accel_b = apply3(b.get_inverse_world_inertia(), axis);
+	Vec3 accel_a = a.inverse_inertia_times(axis);
+	Vec3 accel_b = b.inverse_inertia_times(axis);
 	float weight = accel_a.dot(axis) + accel_b.dot(axis);
 	if (weight < WEIGHT_EPSILON) return;
 

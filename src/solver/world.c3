@@ -240,6 +240,9 @@ struct Rigidbody
 	// The same about every axis (a cube, a sphere), so turning the body leaves
 	// its world inertia the local one and the cache is never rebuilt.
 	bool isotropic_inertia;
+	// Diagonal in the body frame (a box, a capsule), and its three entries.
+	bool diagonal_inertia;
+	Vec3 inv_local_diagonal;
 
 	// Conservative inner radius for swept CCD, set by add_body. A body whose
 	// per-substep displacement exceeds this is swept against static geometry.
@@ -716,6 +719,8 @@ fn void? PhysicsWorld.add_body(&self, Rigidbody body)
 	{
 		body.inv_local_inertia = body.compute_inv_local_inertia();
 		body.isotropic_inertia = is_isotropic(body.inv_local_inertia);
+		body.diagonal_inertia = is_diagonal(body.inv_local_inertia);
+		body.inv_local_diagonal = { body.inv_local_inertia.m00, body.inv_local_inertia.m11, body.inv_local_inertia.m22 };
 		body.inv_world_rotation = { }; // Never a unit rotation: forces the first read to build the cache
 
 		// Conservative inner radius for swept CCD: half the smallest world-space extent
@@ -976,6 +981,30 @@ fn bool is_isotropic(Matrix3f m) @local
 		&& m.m10 == 0 && m.m20 == 0 && m.m01 == 0 && m.m21 == 0 && m.m02 == 0 && m.m12 == 0;
 }
 
+// Zero off the diagonal.
+fn bool is_diagonal(Matrix3f m) @local
+{
+	return m.m10 == 0 && m.m20 == 0 && m.m01 == 0 && m.m21 == 0 && m.m02 == 0 && m.m12 == 0;
+}
+
+<*
+ The world-space inverse inertia applied to `v`, `R * inv_local_inertia * Rᵀ * v`.
+ A diagonal tensor is applied by turning `v` into the body frame and back, which
+ is cheaper than building the world tensor: the solver turns a body between
+ nearly every two queries, so a cached tensor is rebuilt almost every time.
+
+ @param v : "A world-space vector"
+ @return "Zero for static and kinematic bodies"
+*>
+fn Vec3 Rigidbody.inverse_inertia_times(&self, Vec3 v)
+{
+	if (self.is_static) return { };
+	if (self.isotropic_inertia) return v * self.inv_local_inertia.m00;
+	if (!self.diagonal_inertia) return apply3(self.get_inverse_world_inertia(), v);
+	QuaternionValue q = self.collider.rotation;
+	return rotate3(q, rotate3(quat_conj(q), v) * self.inv_local_diagonal);
+}
+
 <*
  World-space inverse inertia, `R * inv_local_inertia * Rᵀ`. Static and kinematic
  bodies answer zero (infinite inertia), so angular impulses are no-ops.
@@ -1001,8 +1030,7 @@ fn void Rigidbody.apply_linear_impulse(&self, Vec3 impulse) => self.linear_veloc
 
 fn void Rigidbody.apply_angular_impulse(&self, Vec3 impulse)
 {
-	Matrix3f inertia = self.get_inverse_world_inertia();
-	self.angular_velocity += inertia * impulse;
+	self.angular_velocity += self.inverse_inertia_times(impulse);
 }
 
 fn void Rigidbody.apply_impulse(&self, Vec3 impulse, Vec3 point)
