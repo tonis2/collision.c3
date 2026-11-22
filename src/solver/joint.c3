@@ -31,6 +31,40 @@ struct GenericJoint3D
 	sz body_b;
 
 	float stiffness;
+
+	// The caller's name for the joint, reported back in a `JointBreak`. The world
+	// never reads it.
+	sz id;
+
+	// The load the joint breaks at: newtons through its linear limits and
+	// newton-metres through its angular ones. 0 never breaks. A joint that
+	// carries more in any substep is removed at the end of that substep's solve
+	// and reported in `PhysicsWorld.joint_breaks`.
+	float break_force;
+	float break_torque;
+
+	// What the joint carried in the last substep it was solved, in the same
+	// units; kept while both its bodies sleep. Written by the world.
+	float force;
+	float torque;
+
+	// Where this substep's constraints for the joint start in
+	// `PhysicsWorld.constraints`, and how many there are. Written by
+	// `create_xpbd_constraint`; meaningless outside a substep.
+	sz first_constraint;
+	sz constraint_count;
+}
+
+<*
+ A joint that carried more than it was rated for, and was removed.
+*>
+struct JointBreak
+{
+	sz joint_id; // `GenericJoint3D.id`
+	sz body_a;
+	sz body_b;
+	float force; // Newtons, in the substep it broke
+	float torque; // Newton-metres, in the same substep
 }
 
 <*
@@ -96,6 +130,9 @@ fn void GenericJoint3D.create_xpbd_constraint(&joint, PhysicsWorld* world, float
 	Rigidbody* a = world.find_body(joint.body_a)!!;
 	Rigidbody* b = world.find_body(joint.body_b)!!;
 
+	joint.first_constraint = world.constraints.len();
+	defer joint.constraint_count = world.constraints.len() - joint.first_constraint;
+
 	Vec3 world_a = a.collider.translation + (a.collider.rotation * joint.anchor_a);
 	Vec3 world_b = b.collider.translation + (b.collider.rotation * joint.anchor_b);
 
@@ -153,4 +190,97 @@ fn void GenericJoint3D.create_xpbd_constraint(&joint, PhysicsWorld* world, float
 			push_angular_constraint(world, a, b, joint, world_axis, normal, limit.max, -1, compliance);
 		}
 	}
+}
+
+<*
+ Whether the joint carried more than it is rated for in the last substep.
+*>
+fn bool GenericJoint3D.overloaded(&self)
+{
+	return (self.break_force > 0 && self.force > self.break_force)
+		|| (self.break_torque > 0 && self.torque > self.break_torque);
+}
+
+<*
+ Reads what each joint carried off the multipliers this substep's solve
+ accumulated, then removes and reports the joints that carried more than they
+ are rated for. A multiplier is a position-level impulse, so the force it stands
+ for is λ / h² (Müller et al. 2020, "Detailed Rigid Body Simulation with
+ Extended Position Based Dynamics").
+
+ Runs between the solve and the derive, while `constraints` still holds the
+ multipliers. A joint broken here held for this substep and is gone from the
+ next. Its bodies collide again unless another joint between them still keeps
+ them apart.
+
+ @param dt : `The substep's length`
+*>
+fn void PhysicsWorld.measure_joints(&self, float dt)
+{
+	if (self.joints.len() == 0) return;
+	float inv_h2 = 1.0f / (dt * dt);
+	XpbdConstraint[] cs = self.constraints.array_view();
+
+	bool broke = false;
+	foreach (&joint : self.joints)
+	{
+		XpbdConstraint[] own = cs[joint.first_constraint:joint.constraint_count];
+		if (own.len > 0 && !own[0].body_a.is_active() && !own[0].body_b.is_active()) continue;
+
+		Vec3 force;
+		Vec3 torque;
+		foreach (&c : own)
+		{
+			if (c.type == JOINT_POSITION)
+			{
+				force += c.normal * c.lambda;
+			}
+			else
+			{
+				torque += c.normal * c.lambda;
+			}
+		}
+		joint.force = force.length() * inv_h2;
+		joint.torque = torque.length() * inv_h2;
+		if (joint.overloaded()) broke = true;
+	}
+	if (!broke) return;
+
+	// Reported in list order, then compacted, so the survivors keep theirs.
+	GenericJoint3D[] all = self.joints.array_view();
+	foreach (&joint : all)
+	{
+		if (!joint.overloaded()) continue;
+		self.joint_breaks.push(
+			{
+				.joint_id = joint.id,
+				.body_a = joint.body_a,
+				.body_b = joint.body_b,
+				.force = joint.force,
+				.torque = joint.torque,
+			}
+		);
+		if (!joint.collides && !self.holds_apart(joint.body_a, joint.body_b))
+		{
+			self.filters.remove({ joint.body_a, joint.body_b });
+		}
+	}
+	sz kept = 0;
+	foreach (joint : all)
+	{
+		if (!joint.overloaded()) all[kept++] = joint;
+	}
+	while (self.joints.len() > kept) self.joints.remove_last();
+	self.islands_dirty = true;
+}
+
+// Whether a joint that is not breaking this substep keeps `a` and `b` from colliding.
+fn bool PhysicsWorld.holds_apart(&self, sz a, sz b)
+{
+	foreach (&joint : self.joints)
+	{
+		if (joint.collides || joint.overloaded()) continue;
+		if ((joint.body_a == a && joint.body_b == b) || (joint.body_a == b && joint.body_b == a)) return true;
+	}
+	return false;
 }

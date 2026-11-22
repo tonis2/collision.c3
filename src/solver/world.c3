@@ -288,6 +288,10 @@ struct PhysicsWorld
 	ContactOverlapSet active_contacts; // Currently contacting body pairs
 	ContactOverlapSet contacts_next;
 
+	// Joints that broke during the last run_step, in the order they broke; see
+	// `GenericJoint3D.break_force`.
+	List {JointBreak} joint_breaks;
+
 	// Static-friction anchors per touching pair, double-buffered: a substep reads
 	// `friction_anchors` and writes the survivors to `anchors_next`.
 	FrictionAnchorMap friction_anchors;
@@ -483,6 +487,7 @@ fn void PhysicsWorld.init(&self, Allocator allocator)
 	self.island_parent.init(allocator);
 	self.trigger_events.init(allocator);
 	self.contact_events.init(allocator);
+	self.joint_breaks.init(allocator);
 	self.soft_bodies.init(allocator);
 	self.collision_tasks.init(allocator);
 	self.collision_results.init(allocator);
@@ -528,6 +533,7 @@ fn void PhysicsWorld.free(&self)
 	self.phase_tasks.free();
 	self.active_bodies.free();
 	self.trigger_events.free();
+	self.joint_breaks.free();
 	self.active_triggers.free();
 	self.triggers_next.free();
 	self.contact_events.free();

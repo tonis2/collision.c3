@@ -122,7 +122,7 @@ fn void WorldSnapshot.free(&self)
 <*
  Capture all dynamic simulation state. Static topology (bodies, joints,
  filters, colliders) is NOT captured: restore() requires the same body and
- soft-body set to still exist. Free the snapshot with WorldSnapshot.free().
+ soft-body set to still exist, and a joint that broke since stays broken. Free the snapshot with WorldSnapshot.free().
 
  Every list is seated on `allocator` before anything is pushed: a snapshot is
  taken inside a frame scope and used outside it, and a zero-valued list would

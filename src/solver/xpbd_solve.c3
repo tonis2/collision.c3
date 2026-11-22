@@ -528,6 +528,7 @@ fn void PhysicsWorld.run_step(&self, float time, uint step_count = 1, uint sub_s
 
 	self.trigger_events.clear();
 	self.contact_events.clear();
+	self.joint_breaks.clear();
 
 	float sub_time = time / (float)sub_steps;
 	for (uint i = 0; i < sub_steps; i++)
@@ -580,6 +581,7 @@ fn void PhysicsWorld.run_substep(&self, float time, uint step_count)
 	self.expand_manifolds();
 	self.build_constraints(time);
 	self.xpbd_solve_constraints(step_count);
+	self.measure_joints(time);
 	self.update_friction_anchors(time);
 	self.collisions.clear();
 	self.solve_soft_bodies(time);
@@ -1034,7 +1036,13 @@ fn void PhysicsWorld.apply_contact_restitution(&self)
 // XPBD derive phase: compute velocities from position deltas, restitution, update spatial map
 fn void PhysicsWorld.xpbd_derive_and_update(&self, float dt)
 {
-	if (self.active_bodies.len() == 0) return;
+	// Cleared with nothing awake too: joints build constraints every substep
+	// whether or not their bodies sleep.
+	if (self.active_bodies.len() == 0)
+	{
+		self.constraints.clear();
+		return;
+	}
 
 	self.dispatch_phase_tasks(dt, &derive_worker);
 	self.apply_contact_restitution();

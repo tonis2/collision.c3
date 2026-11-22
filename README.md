@@ -16,7 +16,7 @@ A physics and collision detection library for the [C3 language](https://c3-lang.
 - Multi-contact manifolds for stable stacking and mesh contacts, down to boxes a few centimetres across
 - Swept CCD — fast bodies don't tunnel through static geometry
 - Gravity, linear/angular damping, and sleep states
-- Generic 6-DOF joint constraints with one-sided `min`/`max` limits per axis
+- Generic 6-DOF joint constraints with one-sided `min`/`max` limits per axis, which measure their load and can break past a rating
 - XPBD soft bodies with distance, volume and bending constraints
 
 **Collision Shapes**
@@ -231,6 +231,22 @@ joint.linear_limits.push({ .axes = {0, 0, 1}, .stiffness = 100 });
 joint.angular_limits.push({ .axes = {1, 0, 0}, .min = -0.5, .max = 1.0, .stiffness = 100 });
 world.add_constraint(joint)!!;
 ```
+
+Every substep the world writes what each joint carried into `joint.force` (newtons,
+through its linear limits) and `joint.torque` (newton-metres, through its angular
+ones). A 2 kg weight hanging still reads 19.6 N at any substep count. Give a joint
+a `break_force` or `break_torque` and the world removes it in the substep it
+carries more, and reports it after the step:
+
+```c3
+GenericJoint3D weld = { .id = 7, .body_a = 1, .body_b = 2, .break_force = 500, .break_torque = 200, ... };
+world.add_constraint(weld)!!;
+world.run_step(1.0 / 60.0, 1, 4);
+foreach (broke : world.joint_breaks) io::printfn("joint %d broke at %f N", broke.joint_id, broke.force);
+```
+
+A broken joint's bodies collide again, unless another joint between them still
+keeps them apart.
 
 ## Configuration
 
