@@ -14,6 +14,9 @@ import collision::dmath;
 const MANIFOLD_VERTEX_LIMIT @private = 24;
 // Two contacts closer than DEDUP_DIST_SQ with normals this aligned are one contact.
 const float NORMAL_DEDUP_COS @private = 0.99f;
+// How far below a body's furthest vertex, as a fraction of its size, another
+// still counts as on the same face (`has_face_along`).
+const float FACE_BAND @private = 0.001f;
 
 fn bool Rigidbody.has_mesh_bvh(&self)
 {
@@ -110,7 +113,15 @@ fn int collision_test_worker(void* arg) @private
 	return 0;
 }
 
-// Plain convex-vs-convex pair: one GJK/EPA contact, or none.
+<*
+ Plain convex-vs-convex pair: one GJK/EPA contact, or none.
+
+ A pair the exact test finds apart is tested again with `a` grown by the world's
+ contact margin, so a pair up to that far apart still gets a contact, with the
+ depth negative by the gap (see `PhysicsWorld.contact_margin`). Exact first,
+ because EPA on the rounded edges growing makes takes more iterations, and a
+ pair that overlaps needs none of it.
+*>
 fn sz test_convex_collision(
 	PhysicsWorld* world, Rigidbody* body_a, Rigidbody* body_b, Pair pair, Collision[] out_contacts
 ) @private
@@ -118,7 +129,17 @@ fn sz test_convex_collision(
 	PreparedShape prep_a = body_a.collider.prepare();
 	PreparedShape prep_b = body_b.collider.prepare();
 	CollisionInfo info = collision::check_convex_collision(&prep_a, &prep_b, epa: true);
-	if (!info.collided) return 0;
+	if (!info.collided)
+	{
+		float margin = world.contact_margin;
+		if (margin <= 0) return 0;
+		GrownShape grown = { .inner = &prep_a, .by = margin };
+		info = collision::check_convex_collision(&grown, &prep_b, epa: true);
+		if (!info.collided) return 0;
+		// Back from the grown surface to the real one.
+		info.depth -= margin;
+		info.contact_points[0] -= info.normal * margin;
+	}
 	out_contacts[0] = collision_from_info(pair, info);
 	return 1;
 }
@@ -214,6 +235,47 @@ fn Vec3 rotate_by_rows(Vec3[3] rows, Vec3 v) @private @inline
 }
 
 <*
+ The body's vertices in its own frame, for a manifold shape: a box's corners
+ (written into `corners`) or the hull's points.
+
+ @param [out] corners : `Storage for a box's corners`
+ @return `Borrowed: the hull's own list, or corners`
+*>
+fn Vec3[] Rigidbody.manifold_vertices(&self, Vec3[8]* corners)
+{
+	if (self.collider.get_type() == ShapeType.BOX)
+	{
+		*corners = ((Aabb3*)self.collider.shape).corners();
+		return corners;
+	}
+	Mesh* mesh = (Mesh*)self.collider.shape;
+	return mesh.vertices.entries[:mesh.vertices.size];
+}
+
+<*
+ Whether a face of this body faces `direction`: three or more of its vertices
+ are its furthest along it, to within a thousandth of its size. A box resting
+ on its face has four; one on an edge has two.
+*>
+fn bool Rigidbody.has_face_along(&self, Vec3 direction)
+{
+	Vec3[8] corners;
+	Vec3[] local_verts = self.manifold_vertices(&corners);
+	Vec3[3] rows = self.collider.rotation.rows();
+	Vec3 scale = self.collider.scale;
+	float band = self.transformed_aabb.size().length() * FACE_BAND;
+
+	float furthest = -float::max;
+	foreach (local_v : local_verts) furthest = math::max(furthest, rotate_by_rows(rows, local_v * scale).dot(direction));
+	int on_face = 0;
+	foreach (local_v : local_verts)
+	{
+		if (rotate_by_rows(rows, local_v * scale).dot(direction) >= furthest - band) on_face++;
+	}
+	return on_face >= 3;
+}
+
+<*
  Expand a single EPA contact into a multi-contact manifold.
 
  For flat-on-flat contacts (box on floor), projects the vertices of the incident
@@ -247,9 +309,34 @@ fn void PhysicsWorld.generate_manifold(&self, Collision* collision)
 		return;
 	}
 
-	// Of two candidates, the smaller one is the incident body
+	// The reference is the body whose face the normal is; the incident's
+	// vertices are projected onto that face. Picked the other way round, a box's
+	// own face corners are projected onto its own face and glued to the other
+	// body as points under it that are not on it: a box tilted on another one
+	// stands on them instead of rocking flat, and a stack tips over them.
+	// Of two faces (face on face, or no face at all), the smaller body is the
+	// incident, as before.
 	bool incident_is_a = a_candidate;
-	if (a_candidate && b_candidate)
+	if (a_manifold && b_manifold)
+	{
+		bool a_face = a.has_face_along(collision.normal);
+		bool b_face = b.has_face_along(-collision.normal);
+		if (a_face != b_face)
+		{
+			incident_is_a = b_face;
+			// The incident would be static ground: keep EPA's single contact.
+			if (incident_is_a ? !a_candidate : !b_candidate)
+			{
+				self.collisions.push(*collision);
+				return;
+			}
+		}
+		else if (a_candidate && b_candidate)
+		{
+			incident_is_a = a.transformed_aabb.surface_area() <= b.transformed_aabb.surface_area();
+		}
+	}
+	else if (a_candidate && b_candidate)
 	{
 		incident_is_a = a.transformed_aabb.surface_area() <= b.transformed_aabb.surface_area();
 	}
@@ -257,18 +344,7 @@ fn void PhysicsWorld.generate_manifold(&self, Collision* collision)
 	Rigidbody* incident = incident_is_a ? a : b;
 
 	Vec3[8] box_corners;
-	Vec3[] local_verts;
-
-	if (incident.collider.get_type() == ShapeType.BOX)
-	{
-		box_corners = ((Aabb3*)incident.collider.shape).corners();
-		local_verts = &box_corners;
-	}
-	else
-	{
-		Mesh* mesh = (Mesh*)incident.collider.shape;
-		local_verts = mesh.vertices.entries[:mesh.vertices.size];
-	}
+	Vec3[] local_verts = incident.manifold_vertices(&box_corners);
 
 	Vec3 plane_point = incident_is_a ? collision.contact[1] : collision.contact[0];
 	Vec3 plane_normal = incident_is_a ? -collision.normal : collision.normal;

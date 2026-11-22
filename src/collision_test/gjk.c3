@@ -195,8 +195,12 @@ fn CollisionInfo check_convex_collision(CollisionShape shape_1, CollisionShape s
 		Vec3 b_support = shape_2.furthest_point(-direction);
 		Vec3 minkowski_difference = a_support - b_support;
 
-		// If we didn't reach the origin, no collision
-		if (minkowski_difference.dot(direction) < GJK_TOLERANCE)
+		// If we didn't reach the origin, no collision. `direction` is not unit
+		// length (it comes from cross products of the simplex's edges, so it
+		// scales with the square of the shapes' size): the tolerance is scaled by
+		// it so it stays a distance. Compared raw, it let boxes 8 cm across
+		// overlap by millimetres and still read as apart.
+		if (minkowski_difference.dot(direction) < GJK_TOLERANCE * direction.length())
 		{
 			return { .collided = false };
 		}

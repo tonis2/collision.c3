@@ -13,7 +13,7 @@ A physics and collision detection library for the [C3 language](https://c3-lang.
 **Physics Simulation**
 - Rigid body dynamics with mass and shape-specific inertia (sphere, capsule, cylinder, mesh)
 - XPBD position-based solver with friction and restitution
-- Multi-contact manifolds for stable stacking and mesh contacts
+- Multi-contact manifolds for stable stacking and mesh contacts, down to boxes a few centimetres across
 - Swept CCD — fast bodies don't tunnel through static geometry
 - Gravity, linear/angular damping, and sleep states
 - Generic 6-DOF joint constraints with one-sided `min`/`max` limits per axis
@@ -247,6 +247,7 @@ config.linear_dampening = 0.9;       // Velocity damping per step
 config.angular_dampening = 0.9;
 config.sleep_delta = 0.1;            // Velocity threshold for sleep
 config.ccd_enabled = true;           // Swept CCD for fast-moving bodies
+config.contact_margin = 0.005;       // Convex pairs this close get a contact before they touch
 config.thread_count = 0;             // Solver worker threads; 0 = auto (CPU cores - 1)
 
 PhysicsWorld world = collision::create_world(config);

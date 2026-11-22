@@ -301,6 +301,17 @@ struct PhysicsWorld
 	// Swept CCD for fast-moving bodies (see apply_ccd)
 	bool ccd_enabled;
 
+	// How close two convex bodies come before they get a contact, in world units.
+	// The solver moves bodies while it runs, so a pair that is apart when the
+	// narrow phase looks can be pressed together a moment later: the box under
+	// a stack is pushed up into the one above. Without a contact for that pair
+	// the upper box sinks in for a substep and is kicked out the next, and a
+	// stack of small boxes shakes itself apart. A contact that stays apart
+	// never pushes (`solve_contact_normal`), so this changes nothing else.
+	// Change it with `set_contact_margin` once bodies exist: the broadphase keeps
+	// their boxes grown by half of it.
+	float contact_margin;
+
 	// Where this world's storage lives. Set by `init`; anything that creates a
 	// collection which outlives a step reads it, falling back to the heap.
 	Allocator allocator;
@@ -486,7 +497,8 @@ fn void PhysicsWorld.init(&self, Allocator allocator)
  A configured world with its storage already seated — `DEFAULT_PHYSICS_WORLD`
  followed by `init` in one call. `config` is copied before `init` runs and
  `init` only binds allocators, so everything set on the way in survives:
- gravity, `spatial_map.cell_size`, `thread_count`, `ccd_enabled`, sleep figures.
+ gravity, `spatial_map.cell_size`, `thread_count`, `ccd_enabled`, `contact_margin`,
+ sleep figures.
 
  @param config : `The settings to keep. Defaults to the library's own.`
  @param allocator : `Where the world's containers live. It has to outlive the world.`
@@ -554,6 +566,9 @@ const PhysicsWorld DEFAULT_PHYSICS_WORLD = {
 	.angular_dampening = 0.9,
 	.sleep_delta = 0.2,
 	.ccd_enabled = true,
+	// Above what a stack's supports move in one substep (g * dt^2 is 0.17 mm at
+	// 240 Hz), and small enough that a gap this size reads as touching.
+	.contact_margin = 0.005,
 };
 
 <*
@@ -628,7 +643,7 @@ fn bool Rigidbody.is_fixed_geometry(&self) => self.is_static && !self.is_kinemat
 fn void PhysicsWorld.insert_body(&self, Rigidbody* body)
 {
 	self.bodies.set(body.id, *body);
-	self.spatial_map.insert(body.transformed_aabb, body.id, is_static: body.is_fixed_geometry());
+	self.spatial_map.insert(self.pair_box(body.transformed_aabb), body.id, is_static: body.is_fixed_geometry());
 	self.members_dirty = true;
 }
 
@@ -720,7 +735,7 @@ fn bool PhysicsWorld.remove_body(&self, sz id)
 	Rigidbody*? found = self.bodies.get_ref(id);
 	if (catch found) return false;
 
-	self.spatial_map.remove(found.transformed_aabb, id);
+	self.spatial_map.remove(self.pair_box(found.transformed_aabb), id);
 
 	// The `*_next` buffers (seated) take the survivors; the retired pairs become events.
 	self.seat_storage();
@@ -771,8 +786,35 @@ fn bool PhysicsWorld.remove_body(&self, sz id)
 fn void PhysicsWorld.refresh_broadphase(&self, Rigidbody* body)
 {
 	Aabb3 new_aabb = body.get_transformed_aabb();
-	self.spatial_map.update(body.transformed_aabb, new_aabb, body.id);
+	self.spatial_map.update(self.pair_box(body.transformed_aabb), self.pair_box(new_aabb), body.id);
 	body.transformed_aabb = new_aabb;
+}
+
+<*
+ A body's box as the broadphase pairs it: grown by half the contact margin, so
+ two bodies closer than the margin pair up.
+*>
+fn Aabb3 PhysicsWorld.pair_box(&self, Aabb3 box) => self.contact_margin > 0 ? box.grow(self.contact_margin * 0.5f) : box;
+
+<*
+ Changes `contact_margin` with bodies already in the world. Every body is filed
+ in the broadphase under a box grown by half the margin, and taken out under the
+ same box, so each one is moved to its new box here rather than left where a
+ later removal would not find it.
+
+ @param margin : `World units; 0 gives no contact before touching`
+ @require margin >= 0 : `A negative margin`
+*>
+fn void PhysicsWorld.set_contact_margin(&self, float margin)
+{
+	if (margin == self.contact_margin) return;
+	float old_half = self.contact_margin > 0 ? self.contact_margin * 0.5f : 0;
+	float new_half = margin * 0.5f;
+	self.@each_body(; Rigidbody* body)
+	{
+		self.spatial_map.update(body.transformed_aabb.grow(old_half), body.transformed_aabb.grow(new_half), body.id);
+	};
+	self.contact_margin = margin;
 }
 
 <*

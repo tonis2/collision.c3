@@ -275,6 +275,27 @@ fn Vec3 PreparedShape.furthest_point(&self, Vec3 direction) @dynamic
 fn Aabb3 PreparedShape.get_aabb(&self) @dynamic => self.shape.get_aabb();
 fn ShapeType PreparedShape.get_type(&self) @dynamic => self.shape.get_type();
 
+<*
+ A convex shape with every surface pushed out by `by`: the support point moves
+ along the direction asked for. GJK and EPA on it find pairs that are up to `by`
+ apart, at a depth `by` deeper than the real one.
+*>
+struct GrownShape (CollisionShape)
+{
+	CollisionShape inner;
+	float by;
+}
+
+fn Vec3 GrownShape.furthest_point(&self, Vec3 direction) @dynamic
+{
+	Vec3 p = self.inner.furthest_point(direction);
+	float length = direction.length();
+	return length > 1e-12f ? p + direction * (self.by / length) : p;
+}
+
+fn Aabb3 GrownShape.get_aabb(&self) @dynamic => self.inner.get_aabb().grow(self.by);
+fn ShapeType GrownShape.get_type(&self) @dynamic => self.inner.get_type();
+
 fn Vec3 Sphere.furthest_point(&self, Vec3 direction) @dynamic => direction.normalize() * self.radius + self.center;
 
 fn Vec3 Cylinder.furthest_point(&self, Vec3 direction) @dynamic

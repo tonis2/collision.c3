@@ -145,12 +145,20 @@ fn void solve_contact_friction(XpbdConstraint* c, float max_friction) @private
 	solve_tangent_friction(a, b, c, c.tangent2, &c.lambda_tangent2, slip.dot(c.tangent2), max_friction);
 }
 
+// Normal passes over a manifold per sweep, alternating direction (`solve_manifold`).
+const int MANIFOLD_NORMAL_PASSES @private = 2;
+
 <*
  One manifold: every point's normal first, then friction. Solving each point's
  friction straight after its own normal lets the later points' pushes rotate the
  body and re-slip the earlier ones, which nothing corrects — a box creeps across
  a flat floor. The normal load is pooled over the points that carry any, since
  the first push of a sweep takes most of it and would starve the rest.
+
+ The normals take two passes, forward then back. In one, the first point pushes
+ the whole penetration out at its corner and tilts the box, the rest only partly
+ undo it, and the tilt left over always leans the same way: a box rocks, and a
+ stack of them rocks itself over. Back over the same points cancels most of it.
 
  Friction runs on the loaded points pushed in this sweep, as it always has: with
  more than one iteration, re-running it on every loaded point each iteration
@@ -166,17 +174,35 @@ fn void solve_manifold(XpbdConstraint*[] run) @private
 		return;
 	}
 
+	ulong hit = 0; // Bit k: run[k] was pushed in this sweep (manifolds are under 64 points)
+	for (int pass = 0; pass < MANIFOLD_NORMAL_PASSES; pass++)
+	{
+		if (pass % 2 == 0)
+		{
+			foreach (k, c : run)
+			{
+				if (solve_contact_normal(c) && k < 64) hit |= 1UL << k;
+			}
+		}
+		else
+		{
+			foreach_r (k, c : run)
+			{
+				if (solve_contact_normal(c) && k < 64) hit |= 1UL << k;
+			}
+		}
+	}
+
 	float load = 0;
 	int touching = 0;
-	ulong pushed = 0; // Bit k: run[k] carries load and was pushed in this sweep (manifolds are under 64 points)
+	ulong pushed = 0; // Bit k: run[k] carries load and was pushed in this sweep
 	foreach (k, c : run)
 	{
-		bool hit = solve_contact_normal(c);
 		if (c.lambda_normal > EPSILON)
 		{
 			load += c.lambda_normal;
 			touching++;
-			if (hit && k < 64) pushed |= 1UL << k;
+			if (k < 64 && hit & (1UL << k)) pushed |= 1UL << k;
 		}
 	}
 	if (pushed == 0) return;
@@ -573,10 +599,13 @@ fn void PhysicsWorld.register_pair(&self, Pair pair)
 	bool skip_static = body_a.is_fixed_geometry() && body_b.is_fixed_geometry();
 
 	bool has_filter = skip_static || self.filters.has_key({ body_a.id, body_b.id });
-	if (has_filter || !body_a.transformed_aabb.collides(body_b.transformed_aabb)) return;
+	if (has_filter || !self.pair_box(body_a.transformed_aabb).collides(self.pair_box(body_b.transformed_aabb))) return;
 
 	if (body_a.is_trigger || body_b.is_trigger)
 	{
+		// A trigger reports overlap, so the contact margin is not for it.
+		if (!body_a.transformed_aabb.collides(body_b.transformed_aabb)) return;
+
 		// Normalize so the trigger is always first
 		Pair trigger_pair = body_a.is_trigger ? pair : { pair.b, pair.a };
 		self.triggers_next.set(trigger_pair, true);
@@ -709,6 +738,10 @@ fn void PhysicsWorld.update_contact_events(&self, sz events_start)
 
 	foreach (&collision : self.collisions)
 	{
+		// A pair inside the contact margin but apart is not touching yet. Half
+		// the margin is the line, so a resting pair's rounding either side of
+		// zero does not flicker START and END.
+		if (collision.depth < -self.contact_margin * 0.5f) continue;
 		Pair contact_pair = { collision.a, collision.b };
 		self.contacts_next.set(contact_pair, true);
 
