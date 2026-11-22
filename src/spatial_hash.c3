@@ -39,6 +39,7 @@ struct BoxEntry
 struct GridEntry @local
 {
 	sz id;
+	Aabb3 box;
 	int[<3>] min_cell;
 	bool is_static;
 }
@@ -376,9 +377,12 @@ fn void SpatialHash3D.update(&self, Aabb3 old_box, Aabb3 new_box, sz id)
 }
 
 <*
- Every pair of ids that share a cell, plus every pair a large body overlaps.
- Each unique pair is reported exactly once, normalized `a < b`, and pairs of two
- static ids are never reported.
+ Every pair of ids whose boxes overlap. Each unique pair is reported exactly
+ once, normalized `a < b`, and pairs of two static ids are never reported.
+
+ The boxes are tested here rather than left to the caller: a cell is 2 units
+ by default, so a pile of small bodies shares one and every pair of them would
+ otherwise be handed on, n² of them, only to be rejected there.
 
  **Grid phase, no dedup set.** A pair sharing several cells is reported only
  from the cell holding the componentwise maximum of the two boxes' minimum-corner
@@ -405,7 +409,7 @@ macro void SpatialHash3D.@get_pairs(&self; @callback(Pair pair))
 			{
 				sz id = cells.entries[i];
 				BoxEntry*? info = self.boxes.get_ref(id);
-				if (try info) self.scratch.push({ id, info.min_cell, info.is_static });
+				if (try info) self.scratch.push({ id, info.box, info.min_cell, info.is_static });
 			}
 
 			sz m = self.scratch.len();
@@ -416,6 +420,7 @@ macro void SpatialHash3D.@get_pairs(&self; @callback(Pair pair))
 				{
 					GridEntry second = self.scratch.entries[j];
 					if (first.id == second.id || (first.is_static && second.is_static)) continue;
+					if (!first.box.collides(second.box)) continue;
 
 					int[<3>] owner = math::max(first.min_cell, second.min_cell);
 					if (self.cell_key(owner.x, owner.y, owner.z) != cell_id) continue;

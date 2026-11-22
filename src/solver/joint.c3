@@ -53,6 +53,10 @@ struct GenericJoint3D
 	// `create_xpbd_constraint`; meaningless outside a substep.
 	sz first_constraint;
 	sz constraint_count;
+
+	// Neither end awake nor driven this substep, so the joint is not solved and
+	// keeps its last load. Written by `create_xpbd_constraint`.
+	bool resting;
 }
 
 <*
@@ -74,10 +78,10 @@ struct JointBreak
 *>
 fn Vec3 joint_angular_error(QuaternionValue qa, QuaternionValue qb, QuaternionValue rest)
 {
-	QuaternionValue error = qa.conjugate() * qb * rest.conjugate();
+	QuaternionValue error = quat_mul(quat_mul(quat_conj(qa), qb), quat_conj(rest));
 	float direction = error.l >= 0 ? 1.0f : -1.0f;
 	Vec3 error_local = error.v.xyz * 2 * direction;
-	return qa * error_local;
+	return rotate3(qa, error_local);
 }
 
 // A linear joint constraint along `normal`; `target` is the position the error is
@@ -102,6 +106,42 @@ fn void push_linear_constraint(
 		}
 	);
 }
+
+// All three angular axes held at zero, as one constraint about the rotation error.
+fn void push_orient_constraint(PhysicsWorld* world, Rigidbody* a, Rigidbody* b, GenericJoint3D* joint, float compliance) @local
+{
+	world.constraints.push(
+		{
+			.body_a = a,
+			.body_b = b,
+			.compliance = compliance,
+			.type = JOINT_ORIENT,
+			.joint_orientation = joint.relative_orientation,
+		}
+	);
+}
+
+<*
+ Whether the limits hold three perpendicular axes at zero with one stiffness:
+ a lock the solver can take as one constraint along the error rather than three.
+*>
+fn bool Limits.locks_all(&self)
+{
+	if (self.len() != 3) return false;
+	Limit x = self.get(0);
+	Limit y = self.get(1);
+	Limit z = self.get(2);
+	foreach (limit : *self)
+	{
+		if (limit.min != 0 || limit.max != 0 || limit.stiffness != x.stiffness) return false;
+	}
+	return math::abs(x.axes.dot(y.axes)) < LOCK_SQUARENESS
+		&& math::abs(x.axes.dot(z.axes)) < LOCK_SQUARENESS
+		&& math::abs(y.axes.dot(z.axes)) < LOCK_SQUARENESS;
+}
+
+// How far from perpendicular three locked axes may be and still be one lock.
+const float LOCK_SQUARENESS @local = 1e-3f;
 
 // An angular joint constraint about `world_axis` (`local_axis` in body A's frame,
 // recomputed by the solver); `target` is the rotation the error is measured against.
@@ -133,6 +173,11 @@ fn void GenericJoint3D.create_xpbd_constraint(&joint, PhysicsWorld* world, float
 	joint.first_constraint = world.constraints.len();
 	defer joint.constraint_count = world.constraints.len() - joint.first_constraint;
 
+	// A sleeping island stays put, so solving its welds every substep only cost
+	// time. A kinematic end moves on its own and still drags the other.
+	joint.resting = !a.is_active() && !a.is_kinematic && !b.is_active() && !b.is_kinematic;
+	if (joint.resting) return;
+
 	Vec3 world_a = a.collider.translation + (a.collider.rotation * joint.anchor_a);
 	Vec3 world_b = b.collider.translation + (b.collider.rotation * joint.anchor_b);
 
@@ -161,6 +206,14 @@ fn void GenericJoint3D.create_xpbd_constraint(&joint, PhysicsWorld* world, float
 		{
 			push_linear_constraint(world, a, b, joint, normal, limit.max, -1, compliance);
 		}
+	}
+
+	// A weld's three angular axes as one constraint, about the error itself. Not
+	// its three linear ones: along the gap alone, a welded stack never settled.
+	if (joint.angular_limits.locks_all())
+	{
+		push_orient_constraint(world, a, b, joint, stiffness_to_compliance(joint.angular_limits.get(0).stiffness, dt, base_compliance));
+		return;
 	}
 
 	Vec3 world_error = joint_angular_error(a.collider.rotation, b.collider.rotation, joint.relative_orientation);
@@ -225,7 +278,7 @@ fn void PhysicsWorld.measure_joints(&self, float dt)
 	foreach (&joint : self.joints)
 	{
 		XpbdConstraint[] own = cs[joint.first_constraint:joint.constraint_count];
-		if (own.len > 0 && !own[0].body_a.is_active() && !own[0].body_b.is_active()) continue;
+		if (joint.resting || (own.len > 0 && !own[0].body_a.is_active() && !own[0].body_b.is_active())) continue;
 
 		Vec3 force;
 		Vec3 torque;

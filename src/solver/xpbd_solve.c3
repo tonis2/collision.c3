@@ -18,8 +18,8 @@ import collision::dmath;
 fn float compute_generalized_inverse_mass(Rigidbody* body, Vec3 r, Vec3 n)
 {
 	if (body.is_static) return 0;
-	Vec3 rn = r.cross(n);
-	Vec3 inertia_term = body.get_inverse_world_inertia() * rn;
+	Vec3 rn = cross3(r, n);
+	Vec3 inertia_term = apply3(body.get_inverse_world_inertia(), rn);
 	return body.inverse_mass + inertia_term.dot(rn);
 }
 
@@ -37,7 +37,7 @@ fn void apply_angular_rotation(Rigidbody* body, Vec3 correction) @private
 	float angle = correction.length();
 	if (angle <= EPSILON) return;
 	QuaternionValue dq = dmath::quat_from_axis_angle(correction / angle, angle);
-	body.collider.rotation = (dq * body.collider.rotation).normalize();
+	body.collider.rotation = quat_mul(dq, body.collider.rotation).normalize();
 }
 
 // XPBD positional correction: apply delta_lambda along direction n at contact arm r
@@ -45,7 +45,7 @@ fn void apply_positional_correction(Rigidbody* body, Vec3 n, Vec3 r, float delta
 {
 	if (body.is_static) return;
 	body.collider.translation += n * (body.inverse_mass * delta_lambda);
-	apply_angular_rotation(body, body.get_inverse_world_inertia() * r.cross(n) * delta_lambda);
+	apply_angular_rotation(body, apply3(body.get_inverse_world_inertia(), cross3(r, n)) * delta_lambda);
 }
 
 // Push `a` along -n and `b` along +n by delta_lambda, each at its own arm.
@@ -98,8 +98,8 @@ fn bool solve_contact_normal(XpbdConstraint* c) @private
 	Rigidbody* a = c.body_a;
 	Rigidbody* b = c.body_b;
 
-	Vec3 cur_r_a = a.collider.rotation * c.r_a_local;
-	Vec3 cur_r_b = b.collider.rotation * c.r_b_local;
+	Vec3 cur_r_a = rotate3(a.collider.rotation, c.r_a_local);
+	Vec3 cur_r_b = rotate3(b.collider.rotation, c.r_b_local);
 	Vec3 pa = a.collider.translation + cur_r_a;
 	Vec3 pb = b.collider.translation + cur_r_b;
 
@@ -136,9 +136,9 @@ fn void solve_contact_friction(XpbdConstraint* c, float max_friction) @private
 	Rigidbody* a = c.body_a;
 	Rigidbody* b = c.body_b;
 
-	c.r_a = a.collider.rotation * c.r_a_local;
-	c.r_b = b.collider.rotation * c.r_b_local;
-	Vec3 held = a.collider.translation + a.collider.rotation * c.friction_anchor;
+	c.r_a = rotate3(a.collider.rotation, c.r_a_local);
+	c.r_b = rotate3(b.collider.rotation, c.r_b_local);
+	Vec3 held = a.collider.translation + rotate3(a.collider.rotation, c.friction_anchor);
 	Vec3 slip = held - (b.collider.translation + c.r_b);
 
 	solve_tangent_friction(a, b, c, c.tangent1, &c.lambda_tangent1, slip.dot(c.tangent1), max_friction);
@@ -223,8 +223,8 @@ fn void solve_joint_position(XpbdConstraint* c, uint iteration, uint total_itera
 	Rigidbody* a = c.body_a;
 	Rigidbody* b = c.body_b;
 
-	Vec3 arm_a = a.collider.rotation * c.r_a;
-	Vec3 arm_b = b.collider.rotation * c.r_b;
+	Vec3 arm_a = rotate3(a.collider.rotation, c.r_a);
+	Vec3 arm_b = rotate3(b.collider.rotation, c.r_b);
 	Vec3 world_a = a.collider.translation + arm_a;
 	Vec3 world_b = b.collider.translation + arm_b;
 	float pos_error = (world_b - world_a).dot(c.normal) - c.c_value;
@@ -246,15 +246,15 @@ fn void solve_joint_angular(XpbdConstraint* c, uint iteration, uint total_iterat
 	Rigidbody* a = c.body_a;
 	Rigidbody* b = c.body_b;
 
-	Vec3 axis = a.collider.rotation * c.r_a;
+	Vec3 axis = rotate3(a.collider.rotation, c.r_a);
 	Vec3 world_err = joint_angular_error(a.collider.rotation, b.collider.rotation, c.joint_orientation);
 	float ang_error = world_err.dot(axis) - c.c_value;
 
 	// Zero for static bodies, which makes both the weight and the rotation no-ops
 	Matrix3f inv_inertia_a = a.get_inverse_world_inertia();
 	Matrix3f inv_inertia_b = b.get_inverse_world_inertia();
-	Vec3 accel_a = inv_inertia_a * axis;
-	Vec3 accel_b = inv_inertia_b * axis;
+	Vec3 accel_a = apply3(inv_inertia_a, axis);
+	Vec3 accel_b = apply3(inv_inertia_b, axis);
 
 	float weight = accel_a.dot(axis) + accel_b.dot(axis);
 	if (weight < WEIGHT_EPSILON) return;
@@ -267,6 +267,33 @@ fn void solve_joint_angular(XpbdConstraint* c, uint iteration, uint total_iterat
 	if (!a.is_static) apply_angular_rotation(a, accel_a * (-delta_lambda));
 	if (!b.is_static) apply_angular_rotation(b, accel_b * delta_lambda);
 }
+
+// All three angular axes of a joint: turned back about the rotation error itself.
+fn void solve_joint_orient(XpbdConstraint* c, uint iteration, uint total_iterations) @private
+{
+	Rigidbody* a = c.body_a;
+	Rigidbody* b = c.body_b;
+
+	Vec3 error = joint_angular_error(a.collider.rotation, b.collider.rotation, c.joint_orientation);
+	float angle = error.length();
+	if (angle < JOINT_EPSILON) return;
+	Vec3 axis = error / angle;
+	c.normal = axis;
+
+	Vec3 accel_a = apply3(a.get_inverse_world_inertia(), axis);
+	Vec3 accel_b = apply3(b.get_inverse_world_inertia(), axis);
+	float weight = accel_a.dot(axis) + accel_b.dot(axis);
+	if (weight < WEIGHT_EPSILON) return;
+
+	float alpha = ramped_compliance(c.compliance, iteration, total_iterations);
+	float delta_lambda = xpbd_delta_lambda(angle, weight, alpha, &c.lambda);
+
+	if (!a.is_static) apply_angular_rotation(a, accel_a * (-delta_lambda));
+	if (!b.is_static) apply_angular_rotation(b, accel_b * delta_lambda);
+}
+
+// An error below this has no direction worth solving along, in radians.
+const float JOINT_EPSILON @local = 1e-7f;
 
 <*
  One Gauss-Seidel sweep: contacts a manifold at a time, joints one by one. The
@@ -289,6 +316,9 @@ fn void solve_constraint_sweep(XpbdConstraint*[] cs, uint iteration, uint total_
 				i++;
 			case JOINT_ANGULAR:
 				solve_joint_angular(c, iteration, total_iterations);
+				i++;
+			case JOINT_ORIENT:
+				solve_joint_orient(c, iteration, total_iterations);
 				i++;
 		}
 	}
@@ -1099,8 +1129,8 @@ fn void PhysicsWorld.apply_contact_restitution(&self)
 // XPBD derive phase: compute velocities from position deltas, restitution, update spatial map
 fn void PhysicsWorld.xpbd_derive_and_update(&self, float dt)
 {
-	// Cleared with nothing awake too: joints build constraints every substep
-	// whether or not their bodies sleep.
+	// Cleared with nothing awake too: a joint on a kinematic body builds
+	// constraints whether or not the body it holds sleeps.
 	if (self.active_bodies.len() == 0)
 	{
 		self.constraints.clear();

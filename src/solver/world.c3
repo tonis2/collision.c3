@@ -106,6 +106,8 @@ enum XpbdConstraintType : char
 	CONTACT_NORMAL,
 	JOINT_POSITION,
 	JOINT_ANGULAR,
+	// All three angular axes locked: one constraint about the rotation error.
+	JOINT_ORIENT,
 }
 
 struct XpbdConstraint
@@ -235,6 +237,9 @@ struct Rigidbody
 	// writer of `collider.rotation` — solver, snapshot restore, the host — stays correct).
 	Matrix3f inv_world_inertia;
 	QuaternionValue inv_world_rotation;
+	// The same about every axis (a cube, a sphere), so turning the body leaves
+	// its world inertia the local one and the cache is never rebuilt.
+	bool isotropic_inertia;
 
 	// Conservative inner radius for swept CCD, set by add_body. A body whose
 	// per-substep displacement exceeds this is swept against static geometry.
@@ -690,6 +695,7 @@ fn void? PhysicsWorld.add_body(&self, Rigidbody body)
 	if (!body.is_static)
 	{
 		body.inv_local_inertia = body.compute_inv_local_inertia();
+		body.isotropic_inertia = is_isotropic(body.inv_local_inertia);
 		body.inv_world_rotation = { }; // Never a unit rotation: forces the first read to build the cache
 
 		// Conservative inner radius for swept CCD: half the smallest world-space extent
@@ -937,6 +943,15 @@ fn Aabb3 Rigidbody.get_transformed_aabb(&self)
 	);
 }
 
+// A diagonal tensor with three equal entries, to a millionth.
+fn bool is_isotropic(Matrix3f m) @local
+{
+	float d = m.m00;
+	float tolerance = math::abs(d) * 1e-6f;
+	return math::abs(m.m11 - d) <= tolerance && math::abs(m.m22 - d) <= tolerance
+		&& m.m10 == 0 && m.m20 == 0 && m.m01 == 0 && m.m21 == 0 && m.m02 == 0 && m.m12 == 0;
+}
+
 <*
  World-space inverse inertia, `R * inv_local_inertia * Rᵀ`. Static and kinematic
  bodies answer zero (infinite inertia), so angular impulses are no-ops.
@@ -949,6 +964,7 @@ fn Aabb3 Rigidbody.get_transformed_aabb(&self)
 fn Matrix3f Rigidbody.get_inverse_world_inertia(&self)
 {
 	if (self.is_static) return { };
+	if (self.isotropic_inertia) return self.inv_local_inertia;
 	if (self.inv_world_rotation.v != self.collider.rotation.v)
 	{
 		self.inv_world_inertia = self.collider.world_inertia_from_local(self.inv_local_inertia);

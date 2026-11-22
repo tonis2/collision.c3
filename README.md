@@ -7,6 +7,7 @@ A physics and collision detection library for the [C3 language](https://c3-lang.
 **Collision Detection**
 - GJK (Gilbert-Johnson-Keerthi) narrow-phase collision
 - EPA (Expanding Polytope Algorithm) for contact points and penetration depth
+- A separating-axis test for box against box, exact and without EPA
 - Spatial hashing for broad-phase optimization
 - `TriBVH` (Bounding Volume Hierarchy) for triangle mesh collision and ray casts
 
@@ -15,7 +16,7 @@ A physics and collision detection library for the [C3 language](https://c3-lang.
 - XPBD position-based solver with friction and restitution
 - Multi-contact manifolds for stable stacking and mesh contacts, down to boxes a few centimetres across
 - Swept CCD — fast bodies don't tunnel through static geometry or through moving bodies, and a moving body they hit takes the momentum
-- Gravity, linear/angular damping, and sleep states
+- Gravity, linear/angular damping, and sleep states; a sleeping island's joints are not solved
 - Generic 6-DOF joint constraints with one-sided `min`/`max` limits per axis, which measure their load and can break past a rating
 - XPBD soft bodies with distance, volume and bending constraints
 

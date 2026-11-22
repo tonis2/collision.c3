@@ -114,7 +114,8 @@ fn int collision_test_worker(void* arg) @private
 }
 
 <*
- Plain convex-vs-convex pair: one GJK/EPA contact, or none.
+ Plain convex-vs-convex pair: one GJK/EPA contact, or none. Two boxes take
+ `box_box_collision` instead, which answers the same thing exactly and faster.
 
  A pair the exact test finds apart is tested again with `a` grown by the world's
  contact margin, so a pair up to that far apart still gets a contact, with the
@@ -126,6 +127,14 @@ fn sz test_convex_collision(
 	PhysicsWorld* world, Rigidbody* body_a, Rigidbody* body_b, Pair pair, Collision[] out_contacts
 ) @private
 {
+	if (body_a.collider.get_type() == ShapeType.BOX && body_b.collider.get_type() == ShapeType.BOX)
+	{
+		CollisionInfo boxes = box_box_collision(&body_a.collider, &body_b.collider, math::max(world.contact_margin, 0.0f));
+		if (!boxes.collided) return 0;
+		out_contacts[0] = collision_from_info(pair, boxes);
+		return 1;
+	}
+
 	PreparedShape prep_a = body_a.collider.prepare();
 	PreparedShape prep_b = body_b.collider.prepare();
 	CollisionInfo info = collision::check_convex_collision(&prep_a, &prep_b, epa: true);

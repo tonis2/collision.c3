@@ -402,3 +402,24 @@ fn void test_spatial_hash_pair_order_is_deterministic() @test
 		test::@check(runs[0][i].a == runs[1][i].a && runs[0][i].b == runs[1][i].b, "pair %d differs", i);
 	}
 }
+
+// Two boxes in one cell are a pair only when they overlap. A cell is 2 units by
+// default, so a pile of small bodies shares one, and every pair of them used to
+// be handed to the solver to reject: 45,000 a substep for a 300-block castle.
+fn void test_spatial_hash_pairs_only_boxes_that_overlap() @test
+{
+	SpatialHash3D spatial_map = { .cell_size = 2.0 };
+	defer spatial_map.free();
+
+	spatial_map.insert({ { 0.1, 0.1, 0.1 }, { 0.4, 0.4, 0.4 } }, 0);
+	spatial_map.insert({ { 1.0, 1.0, 1.0 }, { 1.5, 1.5, 1.5 } }, 1);
+	spatial_map.insert({ { 0.3, 0.3, 0.3 }, { 0.6, 0.6, 0.6 } }, 2);
+
+	sz pair_count = 0;
+	spatial_map.@get_pairs(; Pair pair)
+	{
+		pair_count++;
+		test::@check(pair.a == 0 && pair.b == 2, "only 0 and 2 overlap, not %d and %d", pair.a, pair.b);
+	};
+	test::eq(pair_count, 1);
+}

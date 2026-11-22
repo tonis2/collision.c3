@@ -128,6 +128,9 @@ fn void a_sleeping_weight_still_reads_its_weight() @test
 	// The joint's constraints are built every substep, asleep or not; they
 	// piled up while everything slept, and the solve over them grew each frame.
 	test::eq(world.constraints.len(), 0);
+	// Nor solved: a sleeping island's welds cost a castle nothing while it stands.
+	test::@check(world.joints[0].resting, "the joint of a sleeping weight was still solved");
+	test::eq(world.joints[0].constraint_count, 0);
 	float force = world.joints[0].force;
 	test::@check(math::abs(force - 2 * G) < 0.02f * 2 * G, "asleep, the joint reads %f N", force);
 }
