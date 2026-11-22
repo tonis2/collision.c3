@@ -364,6 +364,24 @@ struct PhysicsWorld
 	// binary search plus a run instead of a scan of every body.
 	List {Rigidbody*} island_members;
 	bool members_dirty;
+	// Scratch for `update_sleep_state`: one entry per island.
+	List {SleepRun} sleep_runs;
+}
+
+<*
+ An island's run in `island_members`, and the islands it touches: those sleep
+ together or not at all.
+*>
+struct SleepRun
+{
+	sz start;
+	sz end;
+	// Union-find parent: an index into `sleep_runs`.
+	sz group;
+	// Every body in this island could sleep.
+	bool quiet;
+	// On a group's root: every island in the group is quiet.
+	bool group_quiet;
 }
 
 // Seats a collection on `allocator` unless it already has one.
@@ -476,6 +494,7 @@ fn void PhysicsWorld.seat_storage(&self)
 	@seat(self.ccd_obstacles, a);
 	@seat(self.ccd_movers, a);
 	@seat(self.island_members, a);
+	@seat(self.sleep_runs, a);
 }
 
 <*
@@ -562,6 +581,7 @@ fn void PhysicsWorld.free(&self)
 	self.ccd_obstacles.free();
 	self.ccd_movers.free();
 	self.island_members.free();
+	self.sleep_runs.free();
 	foreach (&sb : self.soft_bodies) sb.free();
 	self.soft_bodies.free();
 }
@@ -710,6 +730,10 @@ fn void? PhysicsWorld.add_body(&self, Rigidbody body)
 	body.save_previous();
 
 	self.insert_body(&body);
+	// Its own island until a joint joins it to another. Left alone it kept island
+	// 0, which every body added after the last joint shared: one island that slept
+	// and woke as one.
+	self.islands_dirty = true;
 }
 
 <*

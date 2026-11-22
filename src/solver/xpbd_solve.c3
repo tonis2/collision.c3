@@ -1395,43 +1395,105 @@ fn void PhysicsWorld.solve_soft_bodies(&self, float time)
 
 // Put whole islands to sleep once every non-static member has been still long
 // enough. Walks the island-sorted member list run by run, so it allocates nothing.
+<*
+ Puts to sleep every island that has been still for `sleep_timer`, together
+ with every island its bodies' boxes overlap. One left awake beside a sleeping
+ one wakes it on the next substep, so two islands that came to rest at
+ different times took turns waking each other and never slept.
+*>
 fn void PhysicsWorld.update_sleep_state(&self)
 {
 	if (self.members_dirty) self.rebuild_island_members();
 	Rigidbody*[] members = self.island_members.array_view();
 
+	self.sleep_runs.clear();
 	sz start = 0;
 	while (start < members.len)
 	{
 		sz island = members[start].island_id;
-		bool can_sleep = true;
+		bool quiet = true;
 		sz end = start;
 		while (end < members.len && members[end].island_id == island)
 		{
 			Rigidbody* body = members[end];
 			if (!body.can_sleep || body.is_moving() || body.is_rotating() || body.sleep_timer < self.sleep_timer)
 			{
-				can_sleep = false;
+				quiet = false;
 			}
 			end++;
 		}
-
-		if (can_sleep)
-		{
-			for (sz i = start; i < end; i++)
-			{
-				Rigidbody* body = members[i];
-				if (body.sleeping) continue;
-				body.sleeping = true;
-				body.sleep_timer = 0;
-				// `wake_island` does not clear residual creep, so zero it here or
-				// the body resumes at that speed when touched.
-				body.linear_velocity = { 0, 0, 0 };
-				body.angular_velocity = { 0, 0, 0 };
-			}
-		}
+		self.sleep_runs.push({ .start = start, .end = end, .group = self.sleep_runs.len(), .quiet = quiet, .group_quiet = true });
 		start = end;
 	}
+	SleepRun[] runs = self.sleep_runs.array_view();
+
+	// The pairs the broad phase found this substep: every one that would wake a sleeper.
+	foreach (pair : self.candidate_pairs)
+	{
+		sz? a = self.sleep_run_of(pair.a);
+		sz? b = self.sleep_run_of(pair.b);
+		if (catch a, b) continue;
+		sz root_a = sleep_root(runs, a);
+		sz root_b = sleep_root(runs, b);
+		if (root_a != root_b) runs[root_a].group = root_b;
+	}
+	foreach (i, &run : runs)
+	{
+		if (!run.quiet) runs[sleep_root(runs, i)].group_quiet = false;
+	}
+
+	foreach (i, run : runs)
+	{
+		if (!runs[sleep_root(runs, i)].group_quiet) continue;
+		for (sz k = run.start; k < run.end; k++)
+		{
+			Rigidbody* body = members[k];
+			if (body.sleeping) continue;
+			body.sleeping = true;
+			body.sleep_timer = 0;
+			// `wake_island` does not clear residual creep, so zero it here or
+			// the body resumes at that speed when touched.
+			body.linear_velocity = { 0, 0, 0 };
+			body.angular_velocity = { 0, 0, 0 };
+		}
+	}
+}
+
+// The index in `sleep_runs` of the island a body belongs to; none for a static body.
+fn sz? PhysicsWorld.sleep_run_of(&self, sz id)
+{
+	Rigidbody* body = self.find_body(id)!;
+	if (body.is_static) return NOT_FOUND~;
+	Rigidbody*[] members = self.island_members.array_view();
+	SleepRun[] runs = self.sleep_runs.array_view();
+	sz lo = 0;
+	sz hi = runs.len;
+	while (lo < hi)
+	{
+		sz mid = lo + (hi - lo) / 2;
+		sz island = members[runs[mid].start].island_id;
+		if (island == body.island_id) return mid;
+		if (island < body.island_id)
+		{
+			lo = mid + 1;
+		}
+		else
+		{
+			hi = mid;
+		}
+	}
+	return NOT_FOUND~;
+}
+
+// A group's root, halving the path on the way.
+fn sz sleep_root(SleepRun[] runs, sz i) @private
+{
+	while (runs[i].group != i)
+	{
+		runs[i].group = runs[runs[i].group].group;
+		i = runs[i].group;
+	}
+	return i;
 }
 
 // ============================================================================

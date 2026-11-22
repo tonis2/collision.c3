@@ -108,6 +108,62 @@ fn void small_cubes_stack_and_sleep() @test
 	}
 }
 
+// Welds `upper` on top of `lower`, as a castle's blocks are.
+fn void weld(PhysicsWorld* world, sz id, sz lower, sz upper)
+{
+	GenericJoint3D joint = {
+		.id = id, .body_a = lower, .body_b = upper,
+		.anchor_a = { 0, SIDE * 0.5f, 0 }, .anchor_b = { 0, -SIDE * 0.5f, 0 },
+		.relative_orientation = { 0, 0, 0, 1 },
+	};
+	joint.linear_limits.push({ .axes = { 1, 0, 0 } });
+	joint.linear_limits.push({ .axes = { 0, 1, 0 } });
+	joint.linear_limits.push({ .axes = { 0, 0, 1 } });
+	joint.angular_limits.push({ .axes = { 1, 0, 0 } });
+	joint.angular_limits.push({ .axes = { 0, 1, 0 } });
+	joint.angular_limits.push({ .axes = { 0, 0, 1 } });
+	world.add_constraint(joint)!!;
+}
+
+// A small hop for a sleeping body, which wakes its island.
+fn void hop(PhysicsWorld* world, sz id)
+{
+	Rigidbody* body = world.find_body(id)!!;
+	world.wake_island(body);
+	body.linear_velocity = { 0, 0.3f, 0 };
+}
+
+fn void touching_islands_that_settle_apart_still_sleep() @test
+{
+	// Two welded pairs side by side, touching: two islands, as a castle's tower
+	// and the wall against it are. Hopped a quarter second apart, one came to rest
+	// first and fell asleep, and the other, still awake, woke it; then the other
+	// fell asleep and was woken in turn, for ever.
+	PhysicsWorld* world = make_world();
+	defer free_world(world);
+	add_cube(world, 10, level_at(0));
+	add_cube(world, 11, level_at(1));
+	add_cube(world, 12, level_at(0) + (Vec3){ SIDE, 0, 0 });
+	add_cube(world, 13, level_at(1) + (Vec3){ SIDE, 0, 0 });
+	weld(world, 20, 10, 11);
+	weld(world, 21, 12, 13);
+	step(world, 120);
+	hop(world, 10);
+	step(world, 15);
+	hop(world, 12);
+
+	step(world, 180);
+	int asleep = 0;
+	for (int f = 0; f < 60; f++)
+	{
+		step(world, 1);
+		bool all = true;
+		for (sz id = 10; id <= 13; id++) all = all && world.find_body(id)!!.sleeping;
+		if (all) asleep++;
+	}
+	test::@check(asleep == 60, "all four asleep on %d of the last 60 frames", asleep);
+}
+
 fn void a_hand_placed_stack_stands() @test
 {
 	// One cube every half second, dropped 1 cm onto the top, a few millimetres
