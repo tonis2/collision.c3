@@ -884,19 +884,30 @@ fn void PhysicsWorld.dispatch_phase_tasks(&self, float dt, ThreadFn worker_fn)
 }
 
 <*
- Swept CCD against static geometry. A body whose predicted displacement this
- substep exceeds its own ccd_radius ray-casts its motion (center segment from
- prev_position to the predicted position) against static bodies — exact BVH
- triangle casts for meshes, world-AABB casts for other shapes — and is clamped
- just short of the first hit. The narrow phase then sees a regular overlap
- instead of the body skipping through, and the derive phase absorbs the lost
- velocity automatically.
+ Swept CCD. A body whose predicted displacement this substep exceeds its own
+ ccd_radius ray-casts its motion (center segment from prev_position to the
+ predicted position) and is stopped at the first thing it would cross.
+
+ **Static geometry** - exact BVH triangle casts for meshes, world-AABB casts for
+ other shapes - clamps it just short of the hit. The narrow phase then sees a
+ regular overlap instead of the body skipping through, and the derive phase
+ absorbs the lost velocity automatically.
+
+ **Moving bodies** are cast against in their own frame, against their local box
+ grown by the fast body's radius: exact for a box, conservative for anything
+ rounder. A body already inside that grown box is left to the narrow phase, so a
+ box's empty corner can only delay a body by one substep, never hold it. A hit
+ sets the fast body `CCD_SLOP` into the other and keeps its velocity, by moving
+ its `prev_position` with it: the contact then corrects that small overlap, and
+ restitution hands the other body the momentum of the hit. Absorbing it as the
+ static case does would knock a block over with whatever the clamp left.
 
  Obstacles are gathered once per call (and only if some body is fast), then
  rejected per body by the AABB of its motion segment before any ray is cast.
 
- Limitations: rotation during the sweep is ignored, dynamic-vs-dynamic pairs
- are not swept, and kinematic movers are treated as stationary obstacles.
+ Limitations: rotation during the sweep is ignored, a moving body is taken
+ where it is predicted to be this substep, and kinematic movers are treated as
+ stationary obstacles.
 *>
 fn void PhysicsWorld.apply_ccd(&self)
 {
@@ -914,9 +925,18 @@ fn void PhysicsWorld.apply_ccd(&self)
 		if (!obstacles_ready)
 		{
 			self.ccd_obstacles.clear();
+			self.ccd_movers.clear();
 			self.@each_body(; Rigidbody* obstacle)
 			{
-				if (obstacle.is_static && !obstacle.is_trigger) self.ccd_obstacles.push(obstacle);
+				if (obstacle.is_trigger) continue;
+				if (obstacle.is_static)
+				{
+					self.ccd_obstacles.push(obstacle);
+				}
+				else
+				{
+					self.ccd_movers.push(obstacle);
+				}
 			};
 			obstacles_ready = true;
 		}
@@ -956,15 +976,58 @@ fn void PhysicsWorld.apply_ccd(&self)
 			}
 		}
 
-		if (best_fraction < float::max)
+		float length = math::sqrt(disp_sq);
+		// Where the static hit stops the body, in the same terms as a moving one's.
+		float back_off = radius * CCD_BACKOFF / length;
+		float static_stop = best_fraction < float::max ? math::max(0.0f, best_fraction - back_off) : float::max;
+
+		Aabb3 reach = { .min = sweep.min - (Vec3){ radius, radius, radius }, .max = sweep.max + (Vec3){ radius, radius, radius } };
+		float moving_stop = float::max;
+		foreach (other : self.ccd_movers)
+		{
+			if (other == body || !reach.collides(other.transformed_aabb)) continue;
+			// A joint that keeps the two apart keeps the sweep out of it too.
+			if (self.filters.has_key({ body.id, other.id }) || self.filters.has_key({ other.id, body.id })) continue;
+			float touch = other.swept_touch(body.prev_position, body.collider.translation, radius);
+			if (touch >= 0 && touch < moving_stop) moving_stop = touch;
+		}
+
+		if (moving_stop < float::max && moving_stop <= static_stop)
+		{
+			float stop = math::min(1.0f, moving_stop + CCD_SLOP / length);
+			body.collider.translation = body.prev_position + disp * stop;
+			body.prev_position = body.collider.translation - disp;
+		}
+		else if (static_stop < float::max)
 		{
 			// Stop just short of the impact point so the next narrow phase
 			// generates a regular contact at the surface
-			float back_off = radius * CCD_BACKOFF / math::sqrt(disp_sq);
-			float clamped = math::max(0.0f, best_fraction - back_off);
-			body.collider.translation = body.prev_position + disp * clamped;
+			body.collider.translation = body.prev_position + disp * static_stop;
 		}
 	}
+}
+
+<*
+ Where a ball of `radius` moving from `start` to `end` first touches this body's
+ own box, as a fraction of the move: exact for a box, early for a rounder shape.
+
+ @param radius : "The moving ball's radius, in world units"
+ @return "The fraction, or -1 when it misses or starts already touching"
+*>
+fn float Rigidbody.swept_touch(&self, Vec3 start, Vec3 end, float radius)
+{
+	Vec3 scale = math::abs(self.collider.scale);
+	Vec3 grow = {
+		scale.x > 1e-6f ? radius / scale.x : radius,
+		scale.y > 1e-6f ? radius / scale.y : radius,
+		scale.z > 1e-6f ? radius / scale.z : radius,
+	};
+	Aabb3 grown = { .min = self.aabb.min - grow, .max = self.aabb.max + grow };
+	Vec3 from = self.collider.to_local(start);
+	Vec3 to = self.collider.to_local(end);
+	HitInfo hit = grown.intersect_ray({ .origin = from, .direction = to - from });
+	if (!hit.collided || hit.depth <= 0 || hit.depth > 1.0f) return -1;
+	return hit.depth;
 }
 
 // XPBD predict phase: save prev state, apply gravity, advance positions

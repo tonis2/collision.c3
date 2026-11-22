@@ -23,6 +23,7 @@ const float DEGENERATE_DIST_SQ @private = 0.00001f * 0.00001f;
 const float CLAMPED_DEPTH_MAX @private = 1.0f;
 const float TANGENT_HELPER_DOT @private = 0.99f; // |normal.y| above this: build the tangent from x instead of y
 const float CCD_BACKOFF @private = 0.99f; // Fraction of ccd_radius a clamped body stops short of the hit
+const float CCD_SLOP @private = 0.001f; // How far a swept body is set into a moving body it hits, in units
 const float MIN_RESTITUTION @private = 0.01f; // Below this a contact is treated as inelastic
 const sz SERIAL_CONSTRAINT_LIMIT @private = 16; // At most this many constraints solve inline
 const sz PHASE_TASKS_PER_WORKER @private = 2; // Fewer bodies than workers * this run predict/derive inline
@@ -351,6 +352,8 @@ struct PhysicsWorld
 	List {SoftBodySolveTask} soft_tasks;
 	List {SoftBody*} coupled_soft;
 	List {Rigidbody*} ccd_obstacles;
+	// The moving bodies a fast one is swept against: dynamic and not triggers.
+	List {Rigidbody*} ccd_movers;
 
 	// Non-static bodies sorted by (island_id, id), so waking an island is a
 	// binary search plus a run instead of a scan of every body.
@@ -466,6 +469,7 @@ fn void PhysicsWorld.seat_storage(&self)
 	@seat(self.soft_tasks, a);
 	@seat(self.coupled_soft, a);
 	@seat(self.ccd_obstacles, a);
+	@seat(self.ccd_movers, a);
 	@seat(self.island_members, a);
 }
 
@@ -551,6 +555,7 @@ fn void PhysicsWorld.free(&self)
 	self.soft_tasks.free();
 	self.coupled_soft.free();
 	self.ccd_obstacles.free();
+	self.ccd_movers.free();
 	self.island_members.free();
 	foreach (&sb : self.soft_bodies) sb.free();
 	self.soft_bodies.free();

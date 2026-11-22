@@ -161,6 +161,78 @@ fn void test_ccd_fast_projectile() @test
 	test::@check(z < 1.0f);
 }
 
+// A body for the sweep tests: no gravity, never asleep, upright at `at`.
+macro Rigidbody swept_body(sz id, CollisionShape shape, Vec3 at, float mass, Vec3 velocity = { 0, 0, 0 })
+{
+	return {
+		.id = id,
+		.mass = mass,
+		.gravity_factor = 0,
+		.can_sleep = false,
+		.linear_velocity = velocity,
+		.collider = { .shape = shape, .translation = at, .rotation = { 0, 0, 0, 1 }, .scale = { 1, 1, 1 } },
+	};
+}
+
+<*
+ A fast ball is stopped by a thin plank that is free to move, and hands it the
+ momentum of the hit. Swept only against static geometry, the plank was a window
+ the ball's substep positions could straddle: at 40 m/s in four substeps of a
+ 90 Hz step it moves 11 cm a substep, and the plank and ball together are 9.
+*>
+fn void test_ccd_stops_a_ball_at_a_moving_plank() @test
+{
+	PhysicsWorld world = collision::DEFAULT_PHYSICS_WORLD;
+	defer world.free();
+
+	Aabb3 plank = collision::aabb_from_half({ 0.15f, 0.15f, 0.015f });
+	world.add_body(swept_body(1, &plank, { 0, 0, 0 }, 2))!!;
+	Sphere stone = { .radius = 0.03f };
+	world.add_body(swept_body(2, &stone, { 0, 0, 0.5f }, 0.3f, { 0, 0, -40 }))!!;
+
+	for (int i = 0; i < 30; i++) world.run_step(1.0f / 90.0f, 1, 4);
+
+	Rigidbody* board = world.find_body(1)!!;
+	Rigidbody* ball = world.find_body(2)!!;
+	test::@check(ball.collider.translation.z > board.collider.translation.z,
+		"the ball went through: ball at z %f, plank at z %f", ball.collider.translation.z, board.collider.translation.z);
+	// 0.3 kg at 40 m/s is 12 kg m/s, and with no bounce the two go on together at
+	// 5.2 m/s. A clamp that let the speed go would have handed on much less.
+	float momentum = 2 * board.linear_velocity.z + 0.3f * ball.linear_velocity.z;
+	test::@check(momentum < -11.0f && board.linear_velocity.z < -4.5f,
+		"the hit's momentum: %f kg m/s, the plank at %f m/s", momentum, board.linear_velocity.z);
+}
+
+<*
+ A sweep against a moving body's box is early for anything rounder than a box,
+ and that must only ever delay a fast body, never hold it: a ball through the
+ empty corner of another ball's box goes on at full speed, a fraction of a
+ substep behind one that met nothing.
+*>
+fn void test_ccd_passes_through_the_empty_corner_of_a_box() @test
+{
+	PhysicsWorld world = collision::DEFAULT_PHYSICS_WORLD;
+	defer world.free();
+
+	Sphere big = { .radius = 0.15f };
+	world.add_body(swept_body(1, &big, { 0, 0, 0 }, 2))!!;
+	Sphere small = { .radius = 0.02f };
+	// 0.2 m from the big ball's centre, so 0.03 clear of it, and well inside its box.
+	world.add_body(swept_body(2, &small, { 0.14f, 0.14f, 1 }, 0.3f, { 0, 0, -30 }))!!;
+	world.add_body(swept_body(3, &small, { 20, 0, 1 }, 0.3f, { 0, 0, -30 }))!!;
+
+	for (int i = 0; i < 20; i++) world.run_step(1.0f / 60.0f, 1, 4);
+
+	Rigidbody* past = world.find_body(2)!!;
+	Rigidbody* alone = world.find_body(3)!!;
+	float behind = past.collider.translation.z - alone.collider.translation.z;
+	// One substep at 30 m/s is 12.5 cm.
+	test::@check(behind >= 0 && behind < 0.125f, "the ball past the corner is %f m behind", behind);
+	test::@check(math::abs(past.linear_velocity.z - alone.linear_velocity.z) < 0.01f,
+		"and as fast: %f against %f", past.linear_velocity.z, alone.linear_velocity.z);
+	test::@check(world.find_body(1)!!.collider.translation.length() < 1e-4f, "the big ball was not touched");
+}
+
 fn void test_mesh_contact_manifold() @test
 {
 	PhysicsWorld world = collision::DEFAULT_PHYSICS_WORLD;
